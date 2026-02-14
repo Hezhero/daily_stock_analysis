@@ -23,8 +23,6 @@ A股自选股智能分析系统 - 主调度程序
 """
 import os
 from src.config import setup_env
-from src.core.pipeline import StockAnalysisPipeline
-from src.core.market_review import run_market_review
 setup_env()
 
 # 代理配置 - 通过 USE_PROXY 环境变量控制，默认关闭
@@ -45,6 +43,9 @@ import uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import List, Optional
+
+from src.core.pipeline import StockAnalysisPipeline
+from src.core.market_review import run_market_review
 
 from src.config import get_config, Config
 from src.logging_config import setup_logging
