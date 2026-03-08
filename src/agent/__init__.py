@@ -13,6 +13,7 @@ when only lightweight sub-modules like tools.registry are needed::
     from src.agent.executor import AgentExecutor, AgentResult
     from src.agent.runner import run_agent_loop, RunLoopResult
     from src.agent.protocols import AgentContext, AgentOpinion, StageResult, AgentRunStats
+    from src.agent.orchestrator import AgentOrchestrator
 """
 
 
@@ -30,6 +31,15 @@ def __getattr__(name):
     if name in ("AgentContext", "AgentOpinion", "StageResult", "AgentRunStats"):
         from src.agent import protocols
         return getattr(protocols, name)
+    if name == "AgentOrchestrator":
+        from src.agent.orchestrator import AgentOrchestrator
+        return AgentOrchestrator
+    if name == "ResearchAgent":
+        from src.agent.research import ResearchAgent
+        return ResearchAgent
+    if name == "AgentMemory":
+        from src.agent.memory import AgentMemory
+        return AgentMemory
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -41,4 +51,7 @@ __all__ = [
     "AgentOpinion",
     "StageResult",
     "AgentRunStats",
+    "AgentOrchestrator",
+    "ResearchAgent",
+    "AgentMemory",
 ]
