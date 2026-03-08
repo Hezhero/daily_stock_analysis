@@ -352,14 +352,13 @@ User: "analyze TSLA and NVDA using trend strategy"
     #   - 2-5 uppercase ASCII letters (US tickers)
     #   - Common finance/analysis keywords (Chinese and English)
     _NL_PREFILTER = re.compile(
-        r'[036]\d{5}'                # A-share code
-        r'|(?:hk|HK)\d{5}'          # HK code
-        r'|(?<![a-z])[A-Z]{2,5}(?![a-z])'  # US ticker (not part of a word)
+        r'[036]\d{5}'                          # A-share code
+        r'|(?:hk|HK)\d{5}'                    # HK code
+        r'|(?<![a-zA-Z])[A-Z]{2,5}(?![a-zA-Z])'  # US ticker — UPPERCASE only, no IGNORECASE
         r'|分析|看看|查一?下|研究|诊断|怎么样|走势|趋势'
         r'|能买|可以买|涨还是跌|怎么看|能追|建议|目标价'
         r'|支撑|压力|阻力|止损|买点|卖点|技术面|基本面|筹码'
-        r'|analyz|stock|buy|sell|trend|backtest|strateg',
-        re.IGNORECASE,
+        r'|(?i:analyz|stock|buy|sell|trend|backtest|strateg)',
     )
 
     def _try_nl_routing(self, message: BotMessage) -> Optional[BotResponse]:

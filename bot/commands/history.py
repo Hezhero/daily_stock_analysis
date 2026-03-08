@@ -116,10 +116,10 @@ class HistoryCommand(BotCommand):
                 title = sess.get("title", "新对话")
                 msg_count = sess.get("message_count", 0)
                 last_active = sess.get("last_active", "")[:16] if sess.get("last_active") else ""
-                sid_short = sess["session_id"][:30]
+                sid = sess["session_id"]
                 lines.append(f"**{i}.** {title}")
                 lines.append(f"   💬 {msg_count} 条消息 | 🕐 {last_active}")
-                lines.append(f"   ID: `{sid_short}`")
+                lines.append(f"   ID: `{sid}`")
                 lines.append("")
 
             lines.append(f"💡 使用 `/history <session_id>` 查看具体会话内容")

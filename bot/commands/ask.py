@@ -154,10 +154,13 @@ class AskCommand(BotCommand):
     def _get_strategy_args(self, args: List[str]) -> List[str]:
         """Extract strategy-related args (everything after codes and 'vs' tokens)."""
         # Skip leading code tokens and 'vs'
+        # Regex must accept dotted tickers (e.g. BRK.B) to stay consistent
+        # with _validate_single_code.
+        _CODE_RE = r"^(\d{6}|hk\d{5}|[A-Za-z]{1,5}(\.[A-Za-z]{1,2})?)$"
         rest = list(args[1:])
-        while rest and (rest[0].lower() == "vs" or re.match(r"^(\d{6}|hk\d{5}|[A-Za-z]{1,5})$", rest[0], re.IGNORECASE)):
+        while rest and (rest[0].lower() == "vs" or re.match(_CODE_RE, rest[0], re.IGNORECASE)):
             rest = rest[1:] if rest[0].lower() == "vs" else rest
-            if rest and re.match(r"^(\d{6}|hk\d{5}|[A-Za-z]{1,5})$", rest[0], re.IGNORECASE):
+            if rest and re.match(_CODE_RE, rest[0], re.IGNORECASE):
                 rest = rest[1:]
         return rest
 
