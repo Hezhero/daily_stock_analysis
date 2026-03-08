@@ -61,9 +61,10 @@ def get_tool_registry():
     from src.agent.tools.analysis_tools import ALL_ANALYSIS_TOOLS
     from src.agent.tools.search_tools import ALL_SEARCH_TOOLS
     from src.agent.tools.market_tools import ALL_MARKET_TOOLS
+    from src.agent.tools.backtest_tools import ALL_BACKTEST_TOOLS
 
     registry = ToolRegistry()
-    for tool_fn in ALL_DATA_TOOLS + ALL_ANALYSIS_TOOLS + ALL_SEARCH_TOOLS + ALL_MARKET_TOOLS:
+    for tool_fn in ALL_DATA_TOOLS + ALL_ANALYSIS_TOOLS + ALL_SEARCH_TOOLS + ALL_MARKET_TOOLS + ALL_BACKTEST_TOOLS:
         registry.register(tool_fn)
 
     _TOOL_REGISTRY = registry
@@ -114,7 +115,11 @@ def get_skill_manager(config=None):
 
 
 def build_agent_executor(config=None, skills: Optional[List[str]] = None):
-    """Build and return a configured AgentExecutor.
+    """Build and return a configured AgentExecutor (or future orchestrator).
+
+    When ``AGENT_ARCH=multi``, this will eventually return an orchestrator
+    that manages multiple specialised agents.  For now the multi path logs a
+    notice and falls back to the single executor until Phase 2 is implemented.
 
     Args:
         config: Application config object.  When *None*, ``get_config()`` is
@@ -130,6 +135,10 @@ def build_agent_executor(config=None, skills: Optional[List[str]] = None):
         from src.config import get_config
         config = get_config()
 
+    arch = getattr(config, "agent_arch", "single")
+    if arch == "multi":
+        logger.info("[AgentFactory] AGENT_ARCH=multi requested — orchestrator not yet implemented, falling back to single agent")
+
     from src.agent.executor import AgentExecutor
     from src.agent.llm_adapter import LLMToolAdapter
 
@@ -138,7 +147,7 @@ def build_agent_executor(config=None, skills: Optional[List[str]] = None):
 
     skills_to_activate = skills if skills is not None else (getattr(config, "agent_skills", None) or DEFAULT_AGENT_SKILLS)
     skill_manager.activate(skills_to_activate if skills_to_activate else ["all"])
-    logger.info("[AgentFactory] Activated strategies: %s", skills_to_activate)
+    logger.info("[AgentFactory] Activated strategies: %s (arch=%s)", skills_to_activate, arch)
 
     llm_adapter = LLMToolAdapter(config)
     return AgentExecutor(

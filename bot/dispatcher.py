@@ -8,6 +8,7 @@
 """
 
 import logging
+import re
 import time
 from collections import defaultdict
 from typing import Dict, List, Optional, Type, Callable
@@ -248,7 +249,11 @@ class CommandDispatcher:
         cmd_name, args = message.get_command_and_args(self.command_prefix)
         
         if cmd_name is None:
-            # 不是命令，检查是否 @了机器人
+            # Not a command — try natural language routing before falling back
+            nl_result = self._try_nl_routing(message)
+            if nl_result is not None:
+                return nl_result
+            # No NL match — check if @mentioned for a help hint
             if message.mentioned:
                 return BotResponse.text_response(
                     "你好！我是股票分析助手。\n"
@@ -299,6 +304,190 @@ class CommandDispatcher:
             getter: 回调函数，返回命令列表
         """
         self._help_command_getter = getter
+
+    # ------------------------------------------------------------------ #
+    #  Natural language routing (LLM-based)                              #
+    # ------------------------------------------------------------------ #
+
+    # Lightweight intent-parsing prompt.  Asks the LLM to output a small
+    # JSON object so we can route to the right command.
+    _NL_PARSE_PROMPT = """\
+You are a stock analysis assistant router.  Given a user's natural-language
+message, determine whether it contains a stock-analysis request.
+
+Return a JSON object (and NOTHING else) with these fields:
+- "intent": one of "analysis", "chat", "none"
+  * "analysis" → the user wants stock analysis / diagnosis / comparison
+  * "chat" → the user is asking a general question related to finance
+  * "none" → the message is irrelevant or you are unsure
+- "codes": a list of stock codes mentioned (may be empty).
+  Format: A-share 6-digit ("600519"), HK with prefix ("hk00700"), US ticker uppercase ("AAPL").
+- "strategy": strategy/technique name if the user specified one, else null.
+  e.g. "缠论", "MACD", "趋势跟踪", "chan_theory", etc.
+
+Examples:
+User: "帮我分析一下600519和000858"
+{"intent":"analysis","codes":["600519","000858"],"strategy":null}
+
+User: "用缠论看看AAPL"
+{"intent":"analysis","codes":["AAPL"],"strategy":"缠论"}
+
+User: "今天大盘怎么样"
+{"intent":"chat","codes":[],"strategy":null}
+
+User: "明天天气如何"
+{"intent":"none","codes":[],"strategy":null}
+
+User: "600519"
+{"intent":"analysis","codes":["600519"],"strategy":null}
+
+User: "analyze TSLA and NVDA using trend strategy"
+{"intent":"analysis","codes":["TSLA","NVDA"],"strategy":"trend"}
+"""
+
+    # Cheap pre-filter: only invoke LLM when the message plausibly contains
+    # stock-related content.  This regex checks for:
+    #   - 6-digit A-share codes (0/3/6/8 prefixes)
+    #   - HK codes like hk00700
+    #   - 2-5 uppercase ASCII letters (US tickers)
+    #   - Common finance/analysis keywords (Chinese and English)
+    _NL_PREFILTER = re.compile(
+        r'[036]\d{5}'                # A-share code
+        r'|(?:hk|HK)\d{5}'          # HK code
+        r'|(?<![a-z])[A-Z]{2,5}(?![a-z])'  # US ticker (not part of a word)
+        r'|分析|看看|查一?下|研究|诊断|怎么样|走势|趋势'
+        r'|能买|可以买|涨还是跌|怎么看|能追|建议|目标价'
+        r'|支撑|压力|阻力|止损|买点|卖点|技术面|基本面|筹码'
+        r'|analyz|stock|buy|sell|trend|backtest|strateg',
+        re.IGNORECASE,
+    )
+
+    def _try_nl_routing(self, message: BotMessage) -> Optional[BotResponse]:
+        """Route a non-command message to the appropriate command via LLM intent parsing.
+
+        Two-layer approach to balance cost and accuracy:
+        1. **Cheap regex pre-filter**: skip messages that clearly have no stock
+           or finance content (avoids LLM cost for irrelevant messages).
+        2. **LLM intent parsing**: extract intent, stock codes, and strategy
+           from the user text with full multilingual support.
+
+        Only activates when:
+        - ``AGENT_NL_ROUTING=true`` in config, **and**
+        - the message is in a private chat, **or** the bot was @mentioned.
+
+        Returns ``BotResponse`` if a route was found, ``None`` otherwise.
+        """
+        from src.config import get_config
+        config = get_config()
+
+        if not getattr(config, 'agent_nl_routing', False):
+            return None
+
+        # Only handle private chat or @mentioned messages to avoid hijacking
+        is_private = message.chat_type.value == "private"
+        if not is_private and not message.mentioned:
+            return None
+
+        # Agent must be available
+        if not config.is_agent_available():
+            return None
+
+        text = message.content.strip()
+        if not text or len(text) > 500:
+            return None
+
+        # Layer 1: cheap pre-filter — skip obviously irrelevant messages
+        if not self._NL_PREFILTER.search(text):
+            return None
+
+        # Layer 2: LLM intent parsing — extract codes, intent, strategy
+        parsed = self._parse_intent_via_llm(text, config)
+        if parsed is None:
+            return None
+
+        intent = parsed.get("intent", "none")
+        codes = parsed.get("codes") or []
+        strategy = parsed.get("strategy")
+
+        if intent == "none":
+            return None
+
+        # "chat" intent → route to /chat with original text
+        if intent == "chat":
+            chat_cmd = self.get_command("chat")
+            if chat_cmd:
+                logger.info("[Dispatcher] NL routing → /chat: %s", text[:60])
+                return chat_cmd.execute(message, [text])
+            return None
+
+        # "analysis" intent → route to /ask
+        if intent == "analysis" and codes:
+            ask_cmd = self.get_command("ask")
+            if not ask_cmd:
+                return None
+
+            # Build args: "code1,code2 [strategy]"
+            code_str = ",".join(codes[:5])  # cap at 5
+            args = [code_str]
+            if strategy:
+                args.append(strategy)
+
+            logger.info(
+                "[Dispatcher] NL routing → /ask %s (strategy=%s, text=%s)",
+                code_str, strategy, text[:60],
+            )
+            return ask_cmd.execute(message, args)
+
+        return None
+
+    @staticmethod
+    def _parse_intent_via_llm(text: str, config) -> Optional[dict]:
+        """Call LLM to parse user intent.  Returns parsed dict or None on failure."""
+        import json as _json
+
+        try:
+            import litellm
+        except ImportError:
+            logger.debug("[Dispatcher] litellm not installed, skipping NL routing")
+            return None
+
+        model = config.litellm_model
+        if not model:
+            return None
+
+        messages = [
+            {"role": "system", "content": CommandDispatcher._NL_PARSE_PROMPT},
+            {"role": "user", "content": text},
+        ]
+
+        try:
+            # Use litellm directly for a fast, lightweight call (no tools needed)
+            resp = litellm.completion(
+                model=model,
+                messages=messages,
+                temperature=0,
+                max_tokens=200,
+                timeout=10,
+            )
+            raw = resp.choices[0].message.content.strip()
+
+            # Strip markdown fences if present
+            if raw.startswith("```"):
+                raw = re.sub(r'^```(?:json)?\s*', '', raw)
+                raw = re.sub(r'\s*```$', '', raw)
+
+            result = _json.loads(raw)
+            if isinstance(result, dict) and "intent" in result:
+                return result
+
+            logger.debug("[Dispatcher] NL parse: unexpected structure: %s", raw[:200])
+            return None
+        except _json.JSONDecodeError:
+            logger.debug("[Dispatcher] NL parse: invalid JSON from LLM: %s", raw[:200] if 'raw' in dir() else "N/A")
+            return None
+        except Exception as exc:
+            logger.debug("[Dispatcher] NL parse LLM call failed: %s", exc)
+            return None
 
 
 # 全局分发器实例

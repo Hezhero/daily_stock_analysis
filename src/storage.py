@@ -1391,9 +1391,15 @@ class DatabaseManager:
             # 倒序返回，保证时间顺序
             return [{"role": msg.role, "content": msg.content} for msg in reversed(messages)]
 
-    def get_chat_sessions(self, limit: int = 50) -> List[Dict[str, Any]]:
+    def get_chat_sessions(self, limit: int = 50, session_prefix: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         获取聊天会话列表（从 conversation_messages 聚合）
+
+        Args:
+            limit: Maximum number of sessions to return.
+            session_prefix: If provided, only return sessions whose session_id
+                starts with this prefix.  Used for per-user isolation (e.g.
+                ``"telegram_12345"``).
 
         Returns:
             按最近活跃时间倒序的会话列表，每条包含 session_id, title, message_count, last_active
@@ -1402,13 +1408,18 @@ class DatabaseManager:
 
         with self.session_scope() as session:
             # 聚合每个 session 的消息数和最后活跃时间
-            stmt = (
+            base = (
                 select(
                     ConversationMessage.session_id,
                     func.count(ConversationMessage.id).label("message_count"),
                     func.min(ConversationMessage.created_at).label("created_at"),
                     func.max(ConversationMessage.created_at).label("last_active"),
                 )
+            )
+            if session_prefix:
+                base = base.where(ConversationMessage.session_id.startswith(session_prefix))
+            stmt = (
+                base
                 .group_by(ConversationMessage.session_id)
                 .order_by(desc(func.max(ConversationMessage.created_at)))
                 .limit(limit)

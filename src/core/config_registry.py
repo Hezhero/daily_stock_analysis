@@ -1426,6 +1426,37 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "validation": {},
         "display_order": 40,
     },
+    "AGENT_NL_ROUTING": {
+        "title": "Agent NL Routing",
+        "description": "Enable natural-language routing in bot dispatcher. When on, high-confidence stock queries in private chat (or @mentions) are routed to the agent even without an explicit command.",
+        "category": "agent",
+        "data_type": "boolean",
+        "ui_control": "switch",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "false",
+        "options": [],
+        "validation": {},
+        "display_order": 50,
+    },
+    "AGENT_ARCH": {
+        "title": "Agent Architecture",
+        "description": "Agent execution architecture. 'single' uses the classic ReAct executor; 'multi' will use the orchestrator pipeline (when implemented).",
+        "category": "agent",
+        "data_type": "string",
+        "ui_control": "select",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "single",
+        "options": [
+            {"label": "Single Agent", "value": "single"},
+            {"label": "Multi Agent (Orchestrator)", "value": "multi"},
+        ],
+        "validation": {},
+        "display_order": 60,
+    },
 }
 
 

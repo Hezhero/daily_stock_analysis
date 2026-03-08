@@ -78,7 +78,7 @@ async def agent_chat(request: ChatRequest):
     """
     config = get_config()
     
-    if not config.agent_mode:
+    if not config.is_agent_available():
         raise HTTPException(status_code=400, detail="Agent mode is not enabled")
         
     session_id = request.session_id or str(uuid.uuid4())
@@ -194,7 +194,7 @@ async def agent_chat_stream(request: ChatRequest):
       - error: error occurred, contains 'message'
     """
     config = get_config()
-    if not config.agent_mode:
+    if not config.is_agent_available():
         raise HTTPException(status_code=400, detail="Agent mode is not enabled")
 
     session_id = request.session_id or str(uuid.uuid4())

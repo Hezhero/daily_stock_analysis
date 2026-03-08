@@ -221,7 +221,7 @@ class StockAnalysisPipeline:
                 logger.warning(f"{stock_name}({code}) 获取筹码分布失败: {e}")
 
             # If agent mode is enabled, or specific agent skills are configured, use the Agent analysis pipeline
-            use_agent = getattr(self.config, 'agent_mode', False)
+            use_agent = self.config.is_agent_available()
             if not use_agent:
                 # Auto-enable agent mode when specific skills are configured (e.g., scheduled task with strategy)
                 configured_skills = getattr(self.config, 'agent_skills', [])
