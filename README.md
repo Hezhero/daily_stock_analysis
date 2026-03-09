@@ -291,10 +291,16 @@ python main.py
 - **Bot 命令**：
   - `/ask <代码> [策略]` — 策略分析（支持多股对比：`/ask 600519,000858 缠论`）
   - `/chat <问题>` — 自由对话
+  - `/research <代码|主题> [问题]` — 深度研究（多轮搜索 + 综合分析）
   - `/strategies` — 查看可用策略及激活状态
   - `/history` — 查看对话历史（按用户隔离）
 - **自然语言路由**：开启 `AGENT_NL_ROUTING=true` 后，私聊或 @机器人时可直接说「帮我分析茅台」，自动路由到对应命令
 - **自定义策略**：在 `strategies/` 目录下新建 YAML 文件即可添加策略，无需写代码
+- **多 Agent 架构**（实验性）：设置 `AGENT_ARCH=multi` 可启用多 Agent 编排模式，通过 Technical → Intel → Risk → Strategy → Decision 级联分析。使用 `AGENT_ORCHESTRATOR_MODE` 控制深度：
+  - `quick` — 仅技术 + 决策（最快）
+  - `standard` — 技术 + 情报 + 决策（默认）
+  - `full` — 技术 + 情报 + 风控 + 决策
+  - `strategy` — 技术 + 情报 + 风控 + 策略评估 + 决策
 
 > **注意**：Agent 模式在 `LITELLM_MODEL` 配置后自动启用，无需手动设置 `AGENT_MODE=true`。如需显式关闭可设置 `AGENT_MODE=false`。每次对话会产生 LLM API 调用费用。
 

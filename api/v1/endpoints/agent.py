@@ -86,12 +86,17 @@ async def agent_chat(request: ChatRequest):
     try:
         executor = _build_executor(config, request.skills)
 
+        # Merge skills into context so the orchestrator can route strategies
+        ctx = dict(request.context or {})
+        if request.skills:
+            ctx.setdefault("strategies", request.skills)
+
         # Offload the blocking call to a thread to avoid blocking the event loop.
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             None,
             lambda: executor.chat(message=request.message, session_id=session_id,
-                                  context=request.context),
+                                  context=ctx),
         )
 
         return ChatResponse(
@@ -123,10 +128,17 @@ class SessionMessagesResponse(BaseModel):
 
 
 @router.get("/chat/sessions", response_model=SessionsResponse)
-async def list_chat_sessions(limit: int = 50):
-    """获取聊天会话列表"""
+async def list_chat_sessions(limit: int = 50, user_id: Optional[str] = None):
+    """获取聊天会话列表
+
+    Args:
+        limit: Maximum number of sessions to return.
+        user_id: Optional user identifier for session isolation.
+            When provided, only sessions whose session_id starts with
+            this prefix are returned (e.g. ``telegram_12345``).
+    """
     from src.storage import get_db
-    sessions = get_db().get_chat_sessions(limit=limit)
+    sessions = get_db().get_chat_sessions(limit=limit, session_prefix=user_id)
     return SessionsResponse(sessions=sessions)
 
 
@@ -181,6 +193,67 @@ def _build_executor(config, skills: Optional[List[str]] = None):
     return build_agent_executor(config, skills=skills)
 
 
+# ============================================================
+# Deep research endpoint
+# ============================================================
+
+class ResearchRequest(BaseModel):
+    question: str
+    stock_code: Optional[str] = None
+
+class ResearchResponse(BaseModel):
+    success: bool
+    content: str
+    sources: List[str] = []
+    token_usage: int = 0
+    error: Optional[str] = None
+
+
+@router.post("/research", response_model=ResearchResponse)
+async def agent_research(request: ResearchRequest):
+    """Run a deep-research query via the ResearchAgent.
+
+    Similar to the ``/research`` bot command but exposed as a REST endpoint.
+    """
+    config = get_config()
+    if not config.is_agent_available():
+        raise HTTPException(status_code=400, detail="Agent mode is not enabled")
+
+    question = request.question
+    if request.stock_code:
+        question = f"[Stock: {request.stock_code}] {question}"
+
+    try:
+        from src.agent.research import ResearchAgent
+        from src.agent.factory import get_tool_registry
+        from src.agent.llm_adapter import LLMToolAdapter
+
+        registry = get_tool_registry()
+        llm_adapter = LLMToolAdapter(config)
+        budget = getattr(config, "agent_deep_research_budget", 30000)
+
+        agent = ResearchAgent(
+            tool_registry=registry,
+            llm_adapter=llm_adapter,
+            token_budget=budget,
+        )
+
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(None, lambda: agent.research(question))
+
+        return ResearchResponse(
+            success=result.success,
+            content=result.content,
+            sources=getattr(result, "sources", []),
+            token_usage=getattr(result, "token_usage", 0),
+            error=result.error if not result.success else None,
+        )
+    except Exception as e:
+        logger.error("Agent research API failed: %s", e)
+        logger.exception("Agent research error details:")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/chat/stream")
 async def agent_chat_stream(request: ChatRequest):
     """
@@ -201,6 +274,11 @@ async def agent_chat_stream(request: ChatRequest):
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue = asyncio.Queue()
 
+    # Merge skills into context for strategy routing
+    stream_ctx = dict(request.context or {})
+    if request.skills:
+        stream_ctx.setdefault("strategies", request.skills)
+
     def progress_callback(event: dict):
         # Enrich tool events with display names
         if event.get("type") in ("tool_start", "tool_done"):
@@ -215,7 +293,7 @@ async def agent_chat_stream(request: ChatRequest):
                 message=request.message,
                 session_id=session_id,
                 progress_callback=progress_callback,
-                context=request.context,
+                context=stream_ctx,
             )
             asyncio.run_coroutine_threadsafe(
                 queue.put({

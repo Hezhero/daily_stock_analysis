@@ -56,10 +56,10 @@ class ResearchCommand(BotCommand):
 
         config = get_config()
 
-        # Check agent mode
-        if not getattr(config, "agent_mode", False):
+        # Check agent availability (consistent with /chat and API)
+        if not config.is_agent_available():
             return BotResponse.text_response(
-                "⚠️ Agent mode is not enabled. Set AGENT_MODE=true to use /research."
+                "⚠️ Agent mode is not available. Configure LITELLM_MODEL or set AGENT_MODE=true to use /research."
             )
 
         # Parse arguments — first arg may be stock code, rest is the question

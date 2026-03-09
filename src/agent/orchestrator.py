@@ -28,7 +28,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from src.agent.llm_adapter import LLMToolAdapter
 from src.agent.protocols import (
@@ -39,6 +39,9 @@ from src.agent.protocols import (
 )
 from src.agent.runner import parse_dashboard_json
 from src.agent.tools.registry import ToolRegistry
+
+if TYPE_CHECKING:
+    from src.agent.executor import AgentResult
 
 logger = logging.getLogger(__name__)
 
@@ -182,6 +185,10 @@ class AgentOrchestrator:
         agents = self._build_agent_chain(ctx)
 
         for agent in agents:
+            # Aggregate strategy opinions before the decision agent
+            if agent.agent_name == "decision" and getattr(self, "_strategy_agent_names", None):
+                self._aggregate_strategy_opinions(ctx)
+
             if progress_callback:
                 progress_callback({
                     "type": "stage_start",
@@ -285,6 +292,8 @@ class AgentOrchestrator:
             # Insert strategy evaluation agents if applicable
             strategy_agents = self._build_strategy_agents(ctx, common_kwargs)
             chain.extend(strategy_agents)
+            # Mark where to aggregate strategy opinions before decision
+            self._strategy_agent_names = {a.agent_name for a in strategy_agents}
             chain.append(decision)
             return chain
         else:
@@ -315,6 +324,36 @@ class AgentOrchestrator:
         except Exception as exc:
             logger.warning("[Orchestrator] failed to build strategy agents: %s", exc)
             return []
+
+    # -----------------------------------------------------------------
+    # Strategy aggregation
+    # -----------------------------------------------------------------
+
+    def _aggregate_strategy_opinions(self, ctx: AgentContext) -> None:
+        """Run StrategyAggregator to produce a consensus opinion.
+
+        Merges individual ``strategy_*`` opinions into a single weighted
+        consensus and stores it in context so the decision agent can use it.
+        """
+        try:
+            from src.agent.strategies.aggregator import StrategyAggregator
+            aggregator = StrategyAggregator()
+            consensus = aggregator.aggregate(ctx)
+            if consensus:
+                ctx.opinions.append(consensus)
+                ctx.set_data("strategy_consensus", {
+                    "signal": consensus.signal,
+                    "confidence": consensus.confidence,
+                    "reasoning": consensus.reasoning,
+                })
+                logger.info(
+                    "[Orchestrator] strategy consensus: signal=%s confidence=%.2f",
+                    consensus.signal, consensus.confidence,
+                )
+            else:
+                logger.info("[Orchestrator] no strategy opinions to aggregate")
+        except Exception as exc:
+            logger.warning("[Orchestrator] strategy aggregation failed: %s", exc)
 
     # -----------------------------------------------------------------
     # Helpers

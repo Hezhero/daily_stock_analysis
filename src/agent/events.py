@@ -185,12 +185,13 @@ class EventMonitor:
     async def _check_price(self, rule: PriceAlert) -> Optional[TriggeredAlert]:
         """Check price alert against realtime quote."""
         try:
-            from data_provider import get_realtime_quote
-            quote = get_realtime_quote(rule.stock_code)
+            from data_provider import DataFetcherManager
+            fm = DataFetcherManager()
+            quote = fm.get_realtime_quote(rule.stock_code)
             if quote is None:
                 return None
 
-            current_price = float(quote.get("current_price", 0))
+            current_price = float(getattr(quote, "price", 0) or 0)
             if current_price <= 0:
                 return None
 
@@ -214,8 +215,9 @@ class EventMonitor:
     async def _check_volume(self, rule: VolumeAlert) -> Optional[TriggeredAlert]:
         """Check volume spike against recent average."""
         try:
-            from data_provider import get_daily_history
-            df = get_daily_history(rule.stock_code, days=20)
+            from data_provider import DataFetcherManager
+            fm = DataFetcherManager()
+            df, _source = fm.get_daily_data(rule.stock_code, days=20)
             if df is None or df.empty:
                 return None
 
