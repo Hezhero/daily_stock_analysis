@@ -62,7 +62,14 @@ class StrategyRouter:
             logger.info("[StrategyRouter] user-requested strategies: %s", user_requested)
             return user_requested[:max_count]
 
-        # Priority 2: Infer from technical opinion
+        # If routing mode is "manual", only use AGENT_SKILLS (already in user_requested);
+        # since no explicit request was made, fall back to defaults without regime detection.
+        routing_mode = self._get_routing_mode()
+        if routing_mode == "manual":
+            logger.info("[StrategyRouter] manual mode — using default strategies")
+            return _DEFAULT_STRATEGIES[:max_count]
+
+        # Priority 2: Infer from technical opinion (auto mode)
         regime = self._detect_regime(ctx)
         if regime:
             candidates = _REGIME_STRATEGIES.get(regime, _DEFAULT_STRATEGIES)
@@ -102,6 +109,16 @@ class StrategyRouter:
             return "sector_hot"
 
         return None
+
+    @staticmethod
+    def _get_routing_mode() -> str:
+        """Read the strategy routing mode from config (default: 'auto')."""
+        try:
+            from src.config import get_config
+            config = get_config()
+            return getattr(config, "agent_strategy_routing", "auto")
+        except Exception:
+            return "auto"
 
     @staticmethod
     def _get_available_ids() -> set:

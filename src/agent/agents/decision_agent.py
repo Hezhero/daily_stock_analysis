@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 from src.agent.agents.base_agent import BaseAgent
 from src.agent.protocols import AgentContext, AgentOpinion

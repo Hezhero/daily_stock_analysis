@@ -278,9 +278,14 @@ class EventMonitor:
                     multiplier=entry.get("multiplier", 2.0),
                 )
             else:
+                # AlertType is a str enum, so _value2member_map_ maps string→member
+                try:
+                    parsed_type = AlertType(alert_type)
+                except ValueError:
+                    parsed_type = AlertType.CUSTOM
                 rule = AlertRule(
                     stock_code=stock_code,
-                    alert_type=AlertType(alert_type) if alert_type in AlertType.__members__.values() else AlertType.CUSTOM,
+                    alert_type=parsed_type,
                     description=entry.get("description", ""),
                 )
             rule.status = AlertStatus(entry.get("status", "active"))

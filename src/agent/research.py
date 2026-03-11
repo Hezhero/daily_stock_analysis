@@ -19,10 +19,10 @@ import json
 import logging
 import re
 import time
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from src.agent.llm_adapter import LLMToolAdapter
-from src.agent.protocols import AgentContext, StageResult, StageStatus
 from src.agent.runner import RunLoopResult, run_agent_loop
 from src.agent.tools.registry import ToolRegistry
 
@@ -106,7 +106,7 @@ class ResearchAgent:
                 progress_callback({
                     "type": "research_phase",
                     "phase": "search",
-                    "message": f"Researching ({i+1}/{len(questions)}): {question[:60]}...",
+                    "message": f"Researching ({i + 1}/{len(questions)}): {question[:60]}...",
                     "progress": (i + 1) / len(questions),
                 })
 
@@ -272,29 +272,22 @@ Use Markdown formatting.  Be concise but thorough.
         from src.agent.tools.registry import ToolRegistry as TR
         filtered = TR()
         for name in self.tool_names:
-            tool_def = self.tool_registry.get_tool(name)
+            tool_def = self.tool_registry.get(name)
             if tool_def:
                 filtered.register(tool_def)
+            else:
+                logger.warning("[ResearchAgent] requested tool '%s' not found in registry", name)
         return filtered
 
 
+@dataclass
 class ResearchResult:
     """Output from a deep research task."""
 
-    def __init__(
-        self,
-        success: bool = False,
-        report: str = "",
-        sub_questions: Optional[List[str]] = None,
-        findings_count: int = 0,
-        total_tokens: int = 0,
-        duration_s: float = 0.0,
-        error: Optional[str] = None,
-    ):
-        self.success = success
-        self.report = report
-        self.sub_questions = sub_questions or []
-        self.findings_count = findings_count
-        self.total_tokens = total_tokens
-        self.duration_s = duration_s
-        self.error = error
+    success: bool = False
+    report: str = ""
+    sub_questions: List[str] = field(default_factory=list)
+    findings_count: int = 0
+    total_tokens: int = 0
+    duration_s: float = 0.0
+    error: Optional[str] = None

@@ -243,9 +243,9 @@ async def agent_research(request: ResearchRequest):
 
         return ResearchResponse(
             success=result.success,
-            content=result.content,
-            sources=getattr(result, "sources", []),
-            token_usage=getattr(result, "token_usage", 0),
+            content=result.report,
+            sources=[f"Sub-question {i+1}: {q}" for i, q in enumerate(result.sub_questions)],
+            token_usage=result.total_tokens,
             error=result.error if not result.success else None,
         )
     except Exception as e:

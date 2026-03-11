@@ -24,10 +24,10 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Optional
 
 from src.agent.agents.base_agent import BaseAgent
-from src.agent.protocols import AgentContext, AgentOpinion, StageResult
+from src.agent.protocols import AgentContext, AgentOpinion
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +99,7 @@ class PortfolioAgent(BaseAgent):
                     parts.append(
                         f"- **{code}**: signal={opinion.signal}, "
                         f"confidence={opinion.confidence:.0%}, "
-                        f"summary={opinion.text[:200]}"
+                        f"summary={opinion.reasoning[:200]}"
                     )
                 elif isinstance(opinion, dict):
                     parts.append(
@@ -148,7 +148,7 @@ class PortfolioAgent(BaseAgent):
                 agent_name="portfolio",
                 signal=signal,
                 confidence=0.6,
-                text=data.get("summary", raw_response[:300]),
+                reasoning=data.get("summary", raw_response[:300]),
                 raw_data=data,
             )
         except (json.JSONDecodeError, IndexError, KeyError) as exc:
@@ -157,6 +157,6 @@ class PortfolioAgent(BaseAgent):
                 agent_name="portfolio",
                 signal="hold",
                 confidence=0.3,
-                text=raw_response[:500],
+                reasoning=raw_response[:500],
                 raw_data={"raw": raw_response[:1000]},
             )

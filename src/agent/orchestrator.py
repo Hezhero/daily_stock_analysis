@@ -407,8 +407,20 @@ def _extract_stock_code(text: str) -> str:
     m = re.search(r'\b(hk\d{5})\b', text, re.IGNORECASE)
     if m:
         return m.group(1).upper()
-    # US ticker
-    m = re.search(r'\b([A-Z]{1,5})\b', text)
+    # US ticker — require 2+ uppercase letters to avoid matching common words
+    # like "I", "A", "THE", etc.  Also require word boundaries.
+    m = re.search(r'\b([A-Z]{2,5})\b', text)
     if m:
-        return m.group(1)
+        candidate = m.group(1)
+        # Filter out common English words that look like tickers
+        _COMMON_WORDS = {
+            "THE", "AND", "FOR", "ARE", "BUT", "NOT", "YOU", "ALL",
+            "CAN", "HAD", "HER", "WAS", "ONE", "OUR", "OUT", "HAS",
+            "HIS", "HOW", "ITS", "LET", "MAY", "NEW", "NOW", "OLD",
+            "SEE", "WAY", "WHO", "DID", "GET", "HIM", "USE", "SAY",
+            "SHE", "TOO", "ANY", "STOCK", "WITH", "FROM", "THAT",
+            "THIS", "WHAT", "WHEN", "WILL", "JUST", "ALSO", "THAN",
+        }
+        if candidate not in _COMMON_WORDS:
+            return candidate
     return ""

@@ -11,13 +11,12 @@ Responsible for:
 
 from __future__ import annotations
 
-import json
 import logging
-import re
 from typing import Optional
 
 from src.agent.agents.base_agent import BaseAgent
 from src.agent.protocols import AgentContext, AgentOpinion
+from src.agent.runner import try_parse_json
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +75,7 @@ Return **only** a JSON object:
         return "\n".join(parts)
 
     def post_process(self, ctx: AgentContext, raw_text: str) -> Optional[AgentOpinion]:
-        parsed = _try_parse_json(raw_text)
+        parsed = try_parse_json(raw_text)
         if parsed is None:
             logger.warning("[IntelAgent] failed to parse opinion JSON")
             return None
@@ -95,22 +94,4 @@ Return **only** a JSON object:
         )
 
 
-def _try_parse_json(text: str) -> Optional[dict]:
-    cleaned = text.strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r'^```(?:json)?\s*', '', cleaned)
-        cleaned = re.sub(r'\s*```$', '', cleaned)
-    try:
-        obj = json.loads(cleaned)
-        return obj if isinstance(obj, dict) else None
-    except (json.JSONDecodeError, ValueError):
-        pass
-    start = text.find("{")
-    end = text.rfind("}")
-    if start >= 0 and end > start:
-        try:
-            obj = json.loads(text[start:end + 1])
-            return obj if isinstance(obj, dict) else None
-        except (json.JSONDecodeError, ValueError):
-            pass
-    return None
+

@@ -25,6 +25,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from src.agent.llm_adapter import LLMToolAdapter
 from src.agent.tools.registry import ToolRegistry
+from src.storage import persist_llm_usage as _persist_usage
 
 logger = logging.getLogger(__name__)
 
@@ -148,12 +149,48 @@ def parse_dashboard_json(content: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _try_parse_json(text: str) -> Optional[Dict[str, Any]]:
-    try:
-        obj = json.loads(text)
-        return obj if isinstance(obj, dict) else None
-    except (json.JSONDecodeError, ValueError):
+def try_parse_json(text: str) -> Optional[Dict[str, Any]]:
+    """Best-effort JSON dict extraction from LLM text.
+
+    Handles:
+    1. Direct JSON parse
+    2. Markdown code fences (```json ... ```)
+    3. Brace-delimited substring
+
+    This is the shared utility that all agent ``post_process`` methods
+    should use instead of duplicating the same logic.
+    """
+    if not text:
         return None
+
+    # Try direct parse first
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r'^```(?:json)?\s*', '', cleaned)
+        cleaned = re.sub(r'\s*```$', '', cleaned)
+    try:
+        obj = json.loads(cleaned)
+        if isinstance(obj, dict):
+            return obj
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # Try brace-delimited
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        try:
+            obj = json.loads(text[start:end + 1])
+            if isinstance(obj, dict):
+                return obj
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    return None
+
+
+# Keep private alias used internally by parse_dashboard_json
+_try_parse_json = try_parse_json
 
 
 def _try_repair_json(text: str, repair_fn: Callable) -> Optional[Dict[str, Any]]:
@@ -226,6 +263,9 @@ def run_agent_loop(
         m = getattr(response, "model", "") or response.provider
         if m and m != "error":
             models_used.append(m)
+        model_for_usage = m or response.provider
+        if model_for_usage and model_for_usage != "error" and response.usage:
+            _persist_usage(response.usage, model_for_usage, call_type="agent")
 
         if response.tool_calls:
             # ---- tool execution branch ----
