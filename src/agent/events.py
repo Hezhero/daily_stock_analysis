@@ -22,6 +22,7 @@ Usage::
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
@@ -161,10 +162,13 @@ class EventMonitor:
                     triggered.append(result)
                     rule.status = AlertStatus.TRIGGERED
                     rule.triggered_at = time.time()
-                    # Notify callbacks
+                    # Notify callbacks (offload slow/sync ones to thread)
                     for cb in self._callbacks:
                         try:
-                            cb(result)
+                            if asyncio.iscoroutinefunction(cb):
+                                await cb(result)
+                            else:
+                                await asyncio.to_thread(cb, result)
                         except Exception as exc:
                             logger.warning("[EventMonitor] Callback error: %s", exc)
             except Exception as exc:
@@ -185,9 +189,13 @@ class EventMonitor:
     async def _check_price(self, rule: PriceAlert) -> Optional[TriggeredAlert]:
         """Check price alert against realtime quote."""
         try:
-            from data_provider import DataFetcherManager
-            fm = DataFetcherManager()
-            quote = fm.get_realtime_quote(rule.stock_code)
+            def _fetch_quote():
+                from data_provider import DataFetcherManager
+
+                fm = DataFetcherManager()
+                return fm.get_realtime_quote(rule.stock_code)
+
+            quote = await asyncio.to_thread(_fetch_quote)
             if quote is None:
                 return None
 
@@ -215,9 +223,17 @@ class EventMonitor:
     async def _check_volume(self, rule: VolumeAlert) -> Optional[TriggeredAlert]:
         """Check volume spike against recent average."""
         try:
-            from data_provider import DataFetcherManager
-            fm = DataFetcherManager()
-            df, _source = fm.get_daily_data(rule.stock_code, days=20)
+            def _fetch_daily_data():
+                from data_provider import DataFetcherManager
+
+                fm = DataFetcherManager()
+                return fm.get_daily_data(rule.stock_code, days=20)
+
+            result = await asyncio.to_thread(_fetch_daily_data)
+            # get_daily_data returns (df, source) tuple or None
+            if result is None:
+                return None
+            df, _source = result
             if df is None or df.empty:
                 return None
 

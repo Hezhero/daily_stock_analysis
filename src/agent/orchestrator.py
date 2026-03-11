@@ -91,6 +91,46 @@ class AgentOrchestrator:
         self.skill_manager = skill_manager
         self.config = config
 
+    def _get_timeout_seconds(self) -> int:
+        """Return the pipeline timeout in seconds.
+
+        ``0`` means disabled. The timeout is a cooperative budget for the
+        whole pipeline rather than a hard interruption of an in-flight stage.
+        """
+        raw_value = getattr(self.config, "agent_orchestrator_timeout_s", 0)
+        try:
+            return max(0, int(raw_value or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _build_timeout_result(
+        stats: AgentRunStats,
+        all_tool_calls: List[Dict[str, Any]],
+        models_used: List[str],
+        elapsed_s: float,
+        timeout_s: int,
+    ) -> OrchestratorResult:
+        """Build a standard timeout result payload."""
+        stats.total_duration_s = round(elapsed_s, 2)
+        stats.models_used = list(dict.fromkeys(models_used))
+        return OrchestratorResult(
+            success=False,
+            error=f"Pipeline timed out after {elapsed_s:.2f}s (limit: {timeout_s}s)",
+            stats=stats,
+            total_steps=stats.total_stages,
+            total_tokens=stats.total_tokens,
+            tool_calls_log=all_tool_calls,
+            provider=stats.models_used[0] if stats.models_used else "",
+            model=", ".join(stats.models_used),
+        )
+
+    def _prepare_agent(self, agent: Any) -> Any:
+        """Apply orchestrator-level runtime settings to a child agent."""
+        if hasattr(agent, "max_steps"):
+            agent.max_steps = self.max_steps
+        return agent
+
     # -----------------------------------------------------------------
     # Public interface (mirrors AgentExecutor)
     # -----------------------------------------------------------------
@@ -181,10 +221,23 @@ class AgentOrchestrator:
         all_tool_calls: List[Dict[str, Any]] = []
         models_used: List[str] = []
         t0 = time.time()
+        timeout_s = self._get_timeout_seconds()
 
         agents = self._build_agent_chain(ctx)
 
         for agent in agents:
+            elapsed_s = time.time() - t0
+            if timeout_s and elapsed_s >= timeout_s:
+                logger.error("[Orchestrator] pipeline timed out before stage '%s'", agent.agent_name)
+                if progress_callback:
+                    progress_callback({
+                        "type": "pipeline_timeout",
+                        "stage": agent.agent_name,
+                        "elapsed": round(elapsed_s, 2),
+                        "timeout": timeout_s,
+                    })
+                return self._build_timeout_result(stats, all_tool_calls, models_used, elapsed_s, timeout_s)
+
             # Aggregate strategy opinions before the decision agent
             if agent.agent_name == "decision" and getattr(self, "_strategy_agent_names", None):
                 self._aggregate_strategy_opinions(ctx)
@@ -202,6 +255,18 @@ class AgentOrchestrator:
                 tc for tc in (result.meta.get("tool_calls_log") or [])
             )
             models_used.extend(result.meta.get("models_used", []))
+
+            elapsed_s = time.time() - t0
+            if timeout_s and elapsed_s >= timeout_s:
+                logger.error("[Orchestrator] pipeline timed out after stage '%s'", agent.agent_name)
+                if progress_callback:
+                    progress_callback({
+                        "type": "pipeline_timeout",
+                        "stage": agent.agent_name,
+                        "elapsed": round(elapsed_s, 2),
+                        "timeout": timeout_s,
+                    })
+                return self._build_timeout_result(stats, all_tool_calls, models_used, elapsed_s, timeout_s)
 
             if progress_callback:
                 progress_callback({
@@ -270,16 +335,18 @@ class AgentOrchestrator:
         from src.agent.agents.decision_agent import DecisionAgent
         from src.agent.agents.risk_agent import RiskAgent
 
+        self._strategy_agent_names = set()
+
         common_kwargs = dict(
             tool_registry=self.tool_registry,
             llm_adapter=self.llm_adapter,
             skill_instructions=self.skill_instructions,
         )
 
-        technical = TechnicalAgent(**common_kwargs)
-        intel = IntelAgent(**common_kwargs)
-        risk = RiskAgent(**common_kwargs)
-        decision = DecisionAgent(**common_kwargs)
+        technical = self._prepare_agent(TechnicalAgent(**common_kwargs))
+        intel = self._prepare_agent(IntelAgent(**common_kwargs))
+        risk = self._prepare_agent(RiskAgent(**common_kwargs))
+        decision = self._prepare_agent(DecisionAgent(**common_kwargs))
 
         if self.mode == "quick":
             return [technical, decision]
@@ -315,10 +382,10 @@ class AgentOrchestrator:
             from src.agent.strategies.strategy_agent import StrategyAgent
             agents = []
             for strategy_id in selected[:3]:  # cap at 3 concurrent strategies
-                agent = StrategyAgent(
+                agent = self._prepare_agent(StrategyAgent(
                     strategy_id=strategy_id,
                     **common_kwargs,
-                )
+                ))
                 agents.append(agent)
             return agents
         except Exception as exc:
@@ -396,31 +463,49 @@ class AgentOrchestrator:
         return "\n".join(lines)
 
 
+# Common English words (2-5 uppercase letters) that should NOT be treated as
+# US stock tickers.  This set is checked by _extract_stock_code() and should
+# be kept at module level to avoid re-creating it on every call.
+_COMMON_WORDS: set[str] = {
+    # Pronouns / articles / prepositions / conjunctions
+    "THE", "AND", "FOR", "ARE", "BUT", "NOT", "YOU", "ALL",
+    "CAN", "HAD", "HER", "WAS", "ONE", "OUR", "OUT", "HAS",
+    "HIS", "HOW", "ITS", "LET", "MAY", "NEW", "NOW", "OLD",
+    "SEE", "WAY", "WHO", "DID", "GET", "HIM", "USE", "SAY",
+    "SHE", "TOO", "ANY", "WITH", "FROM", "THAT", "THAN",
+    "THIS", "WHAT", "WHEN", "WILL", "JUST", "ALSO",
+    "BEEN", "EACH", "HAVE", "MUCH", "ONLY", "OVER",
+    "SOME", "SUCH", "THEM", "THEN", "THEY", "VERY",
+    "WERE", "YOUR", "ABOUT", "AFTER", "COULD", "EVERY",
+    "OTHER", "THEIR", "THERE", "THESE", "THOSE", "WHICH",
+    "WOULD", "BEING", "STILL", "WHERE",
+    # Finance/analysis jargon that looks like tickers
+    "BUY", "SELL", "HOLD", "LONG", "PUT", "CALL",
+    "ETF", "IPO", "RSI", "EPS", "PEG", "ROE", "ROA",
+    "USA", "USD", "CNY", "HKD", "EUR", "GBP",
+    "STOCK", "TRADE", "PRICE", "INDEX", "FUND",
+    "HIGH", "LOW", "OPEN", "CLOSE", "STOP", "LOSS",
+    "TREND", "BULL", "BEAR", "RISK", "CASH", "BOND",
+    "MACD", "VWAP", "BOLL",
+}
+
+
 def _extract_stock_code(text: str) -> str:
     """Best-effort stock code extraction from free text."""
     import re
-    # A-share 6-digit
-    m = re.search(r'\b([036]\d{5})\b', text)
+    # A-share 6-digit — use lookarounds instead of \b because Python's \b
+    # does not fire at Chinese-character / digit boundaries.
+    m = re.search(r'(?<!\d)([036]\d{5})(?!\d)', text)
     if m:
         return m.group(1)
-    # HK
-    m = re.search(r'\b(hk\d{5})\b', text, re.IGNORECASE)
+    # HK — same lookaround approach
+    m = re.search(r'(?<![a-zA-Z])(hk\d{5})(?!\d)', text, re.IGNORECASE)
     if m:
         return m.group(1).upper()
-    # US ticker — require 2+ uppercase letters to avoid matching common words
-    # like "I", "A", "THE", etc.  Also require word boundaries.
-    m = re.search(r'\b([A-Z]{2,5})\b', text)
+    # US ticker — require 2+ uppercase letters bounded by non-alpha chars.
+    m = re.search(r'(?<![a-zA-Z])([A-Z]{2,5})(?![a-zA-Z])', text)
     if m:
         candidate = m.group(1)
-        # Filter out common English words that look like tickers
-        _COMMON_WORDS = {
-            "THE", "AND", "FOR", "ARE", "BUT", "NOT", "YOU", "ALL",
-            "CAN", "HAD", "HER", "WAS", "ONE", "OUR", "OUT", "HAS",
-            "HIS", "HOW", "ITS", "LET", "MAY", "NEW", "NOW", "OLD",
-            "SEE", "WAY", "WHO", "DID", "GET", "HIM", "USE", "SAY",
-            "SHE", "TOO", "ANY", "STOCK", "WITH", "FROM", "THAT",
-            "THIS", "WHAT", "WHEN", "WILL", "JUST", "ALSO", "THAN",
-        }
         if candidate not in _COMMON_WORDS:
             return candidate
     return ""

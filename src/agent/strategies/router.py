@@ -122,8 +122,16 @@ class StrategyRouter:
 
     @staticmethod
     def _get_available_ids() -> set:
-        """Get the set of strategy IDs available from SkillManager."""
+        """Get the set of strategy IDs available from SkillManager.
+
+        Reads from the cached prototype directly to avoid an unnecessary
+        ``deepcopy`` — we only need the skill names (read-only).
+        """
         try:
+            from src.agent.factory import _SKILL_MANAGER_PROTOTYPE
+            if _SKILL_MANAGER_PROTOTYPE is not None:
+                return {s.name for s in _SKILL_MANAGER_PROTOTYPE.list_skills()}
+            # Prototype not yet initialised — build via get_skill_manager
             from src.agent.factory import get_skill_manager
             sm = get_skill_manager()
             return {s.name for s in sm.list_skills()}

@@ -268,16 +268,13 @@ Use Markdown formatting.  Be concise but thorough.
             return {"content": findings_text, "tokens": 0, "error": str(exc)}
 
     def _filtered_registry(self) -> ToolRegistry:
-        """Return a registry restricted to research-related tools."""
-        from src.agent.tools.registry import ToolRegistry as TR
-        filtered = TR()
-        for name in self.tool_names:
-            tool_def = self.tool_registry.get(name)
-            if tool_def:
-                filtered.register(tool_def)
-            else:
-                logger.warning("[ResearchAgent] requested tool '%s' not found in registry", name)
-        return filtered
+        """Return a registry restricted to research-related tools.
+
+        Reuses the same filtering logic as :meth:`BaseAgent._filtered_registry`.
+        """
+        from src.agent.agents.base_agent import BaseAgent
+        # Borrow the shared implementation; it respects self.tool_names / self.tool_registry.
+        return BaseAgent._filtered_registry(self)
 
 
 @dataclass

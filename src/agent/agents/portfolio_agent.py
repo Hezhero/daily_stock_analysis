@@ -22,12 +22,12 @@ Typical usage::
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Optional
 
 from src.agent.agents.base_agent import BaseAgent
 from src.agent.protocols import AgentContext, AgentOpinion
+from src.agent.runner import try_parse_json
 
 logger = logging.getLogger(__name__)
 
@@ -124,35 +124,9 @@ class PortfolioAgent(BaseAgent):
 
     def post_process(self, ctx: AgentContext, raw_response: str) -> Optional[AgentOpinion]:
         """Extract portfolio assessment and store in context."""
-        try:
-            # Try to extract JSON from response
-            json_str = raw_response
-            if "```json" in raw_response:
-                json_str = raw_response.split("```json")[1].split("```")[0].strip()
-            elif "```" in raw_response:
-                json_str = raw_response.split("```")[1].split("```")[0].strip()
-
-            data = json.loads(json_str)
-
-            # Store portfolio assessment in context
-            ctx.data["portfolio_assessment"] = data
-
-            risk_score = data.get("portfolio_risk_score", 5)
-            signal = "hold"
-            if risk_score <= 3:
-                signal = "buy"
-            elif risk_score >= 7:
-                signal = "sell"
-
-            return AgentOpinion(
-                agent_name="portfolio",
-                signal=signal,
-                confidence=0.6,
-                reasoning=data.get("summary", raw_response[:300]),
-                raw_data=data,
-            )
-        except (json.JSONDecodeError, IndexError, KeyError) as exc:
-            logger.debug("[PortfolioAgent] post_process parse failed: %s", exc)
+        data = try_parse_json(raw_response)
+        if data is None:
+            logger.debug("[PortfolioAgent] post_process: failed to parse JSON")
             return AgentOpinion(
                 agent_name="portfolio",
                 signal="hold",
@@ -160,3 +134,21 @@ class PortfolioAgent(BaseAgent):
                 reasoning=raw_response[:500],
                 raw_data={"raw": raw_response[:1000]},
             )
+
+        # Store portfolio assessment in context
+        ctx.data["portfolio_assessment"] = data
+
+        risk_score = data.get("portfolio_risk_score", 5)
+        signal = "hold"
+        if risk_score <= 3:
+            signal = "buy"
+        elif risk_score >= 7:
+            signal = "sell"
+
+        return AgentOpinion(
+            agent_name="portfolio",
+            signal=signal,
+            confidence=0.6,
+            reasoning=data.get("summary", raw_response[:300]),
+            raw_data=data,
+        )

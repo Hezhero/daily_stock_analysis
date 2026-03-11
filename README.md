@@ -301,6 +301,7 @@ python main.py
   - `standard` — 技术 + 情报 + 决策（默认）
   - `full` — 技术 + 情报 + 风控 + 决策
   - `strategy` — 技术 + 情报 + 风控 + 策略评估 + 决策
+  - `AGENT_MAX_STEPS` 会统一下发到每个子 Agent；`AGENT_ORCHESTRATOR_TIMEOUT_S` 可限制整条多 Agent 流水线的总耗时（`0` 表示关闭）
 
 > **注意**：Agent 模式在 `LITELLM_MODEL` 配置后自动启用，无需手动设置 `AGENT_MODE=true`。如需显式关闭可设置 `AGENT_MODE=false`。每次对话会产生 LLM API 调用费用。
 

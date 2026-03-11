@@ -117,9 +117,9 @@ def get_skill_manager(config=None):
 def build_agent_executor(config=None, skills: Optional[List[str]] = None):
     """Build and return a configured AgentExecutor (or future orchestrator).
 
-    When ``AGENT_ARCH=multi``, this will eventually return an orchestrator
-    that manages multiple specialised agents.  For now the multi path logs a
-    notice and falls back to the single executor until Phase 2 is implemented.
+    When ``AGENT_ARCH=multi``, this returns an orchestrator that manages
+    multiple specialised agents. Otherwise it returns the legacy single-agent
+    executor.
 
     Args:
         config: Application config object.  When *None*, ``get_config()`` is

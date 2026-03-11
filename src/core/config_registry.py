@@ -1476,6 +1476,20 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "validation": {},
         "display_order": 61,
     },
+    "AGENT_ORCHESTRATOR_TIMEOUT_S": {
+        "title": "Orchestrator Timeout",
+        "description": "Cooperative timeout budget in seconds for the whole multi-agent pipeline when AGENT_ARCH=multi. Set to 0 to disable.",
+        "category": "agent",
+        "data_type": "integer",
+        "ui_control": "number",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "120",
+        "options": [],
+        "validation": {"min": 0, "max": 3600},
+        "display_order": 62,
+    },
     "AGENT_RISK_OVERRIDE": {
         "title": "Risk Agent Override",
         "description": "Allow the risk agent to veto buy signals when critical risk flags are detected.",
@@ -1488,7 +1502,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": "true",
         "options": [],
         "validation": {},
-        "display_order": 62,
+        "display_order": 63,
     },
     "AGENT_DEEP_RESEARCH_BUDGET": {
         "title": "Deep Research Token Budget",
@@ -1502,7 +1516,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": "30000",
         "options": [],
         "validation": {"min": 5000, "max": 100000},
-        "display_order": 63,
+        "display_order": 64,
     },
     "AGENT_MEMORY_ENABLED": {
         "title": "Agent Memory",
@@ -1516,7 +1530,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": "false",
         "options": [],
         "validation": {},
-        "display_order": 64,
+        "display_order": 65,
     },
     "AGENT_STRATEGY_AUTOWEIGHT": {
         "title": "Auto-Weight Strategies",
@@ -1530,7 +1544,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": "true",
         "options": [],
         "validation": {},
-        "display_order": 65,
+        "display_order": 66,
     },
     "AGENT_STRATEGY_ROUTING": {
         "title": "Strategy Routing",
@@ -1547,7 +1561,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
             {"label": "Manual (Use AGENT_SKILLS)", "value": "manual"},
         ],
         "validation": {},
-        "display_order": 66,
+        "display_order": 67,
     },
 }
 
