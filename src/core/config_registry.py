@@ -1562,12 +1562,31 @@ def get_registered_field_keys() -> List[str]:
     return list(_FIELD_DEFINITIONS.keys())
 
 
+def _extract_option_values(options: List[Any]) -> List[str]:
+    """Extract canonical option values from string/object style select options."""
+    values: List[str] = []
+    for option in options:
+        if isinstance(option, str):
+            values.append(option)
+            continue
+        if isinstance(option, dict):
+            value = option.get("value")
+            if isinstance(value, str) and value:
+                values.append(value)
+    return values
+
+
 def get_field_definition(key: str, value_hint: Optional[str] = None) -> Dict[str, Any]:
     """Return field definition for key, including inferred fallback metadata."""
     key_upper = key.upper()
     if key_upper in _FIELD_DEFINITIONS:
         field = deepcopy(_FIELD_DEFINITIONS[key_upper])
         field["key"] = key_upper
+        validation = deepcopy(field.get("validation") or {})
+        option_values = _extract_option_values(field.get("options", []))
+        if field.get("ui_control") == "select" and option_values and "enum" not in validation:
+            validation["enum"] = option_values
+        field["validation"] = validation
         return field
 
     category = _infer_category(key_upper)

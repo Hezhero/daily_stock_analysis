@@ -79,6 +79,21 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertFalse(validation["valid"])
         self.assertTrue(any(issue["code"] == "invalid_url" for issue in validation["issues"]))
 
+    def test_get_config_preserves_labeled_select_options_and_enum_validation(self) -> None:
+        payload = self.service.get_config(include_schema=True)
+        items = {item["key"]: item for item in payload["items"]}
+
+        agent_arch_schema = items["AGENT_ARCH"]["schema"]
+        self.assertEqual(agent_arch_schema["options"][0]["value"], "single")
+        self.assertEqual(agent_arch_schema["options"][1]["label"], "Multi Agent (Orchestrator)")
+        self.assertEqual(agent_arch_schema["validation"]["enum"], ["single", "multi"])
+
+    def test_validate_reports_invalid_select_option(self) -> None:
+        validation = self.service.validate(items=[{"key": "AGENT_ARCH", "value": "invalid-mode"}])
+
+        self.assertFalse(validation["valid"])
+        self.assertTrue(any(issue["code"] == "invalid_enum" for issue in validation["issues"]))
+
     @patch("src.search_service.reset_search_service")
     def test_update_with_reload_resets_search_service_singleton(self, mock_reset_search_service) -> None:
         response = self.service.update(
