@@ -28,7 +28,7 @@ def _make_config(**kwargs) -> Config:
         stock_list=["600519"],
         tushare_token=None,
         # Populate llm_model_list as the three-tier signal
-        llm_model_list=[{"model_name": "gemini/gemini-2.0-flash", "litellm_params": {"api_key": "sk-test"}}],
+        llm_model_list=[{"model_name": "gemini/gemini-2.0-flash", "litellm_params": {"model": "gemini/gemini-2.0-flash", "api_key": "sk-test"}}],
         litellm_model="gemini/gemini-2.0-flash",
         gemini_api_keys=[],
         anthropic_api_keys=[],
@@ -209,6 +209,26 @@ class TestValidateStructuredLLM:
         )
         issues = cfg.validate_structured()
         assert not any(i.severity == "error" and "LLM" in i.message for i in issues)
+
+    def test_configured_primary_model_missing_from_channels_is_error(self):
+        cfg = _make_config(
+            llm_model_list=[
+                {"model_name": "openai/gpt-4o-mini", "litellm_params": {"model": "openai/gpt-4o-mini", "api_key": "sk-test"}},
+            ],
+            litellm_model="openai/gpt-4o",
+        )
+        issues = cfg.validate_structured()
+        assert any(i.severity == "error" and i.field == "LITELLM_MODEL" for i in issues)
+
+    def test_configured_vision_model_missing_from_channels_is_warning(self):
+        cfg = _make_config(
+            llm_model_list=[
+                {"model_name": "openai/gpt-4o-mini", "litellm_params": {"model": "openai/gpt-4o-mini", "api_key": "sk-test"}},
+            ],
+            vision_model="openai/gpt-4o",
+        )
+        issues = cfg.validate_structured()
+        assert any(i.severity == "warning" and i.field == "VISION_MODEL" for i in issues)
 
 
 # ---------------------------------------------------------------------------

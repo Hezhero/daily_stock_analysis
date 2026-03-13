@@ -891,7 +891,7 @@ class GeminiAnalyzer:
 
             # 设置生成配置
             generation_config = {
-                "temperature": config.gemini_temperature,
+                "temperature": config.llm_temperature,
                 "max_output_tokens": 8192,
             }
 

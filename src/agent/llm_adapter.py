@@ -273,13 +273,8 @@ class LLMToolAdapter:
         return self._parse_litellm_response(response, model)
 
     def _get_temperature(self, model: str) -> float:
-        """Return temperature from config based on provider prefix."""
-        config = self._config
-        if model.startswith("gemini/") or model.startswith("vertex_ai/"):
-            return config.gemini_temperature
-        if model.startswith("anthropic/"):
-            return config.anthropic_temperature
-        return config.openai_temperature
+        """Return unified temperature from config."""
+        return self._config.llm_temperature
 
     def _convert_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Convert internal message format to OpenAI-compatible format for litellm."""
