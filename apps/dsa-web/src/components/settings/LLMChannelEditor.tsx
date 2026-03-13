@@ -466,17 +466,41 @@ function usesDirectEnvProvider(model: string): boolean {
   return Boolean(provider) && !MANAGED_PROVIDERS.has(provider);
 }
 
+/** Mirror of backend resolve_unified_llm_temperature: prefers provider-specific env for the active model. */
+function resolveTemperatureFromItems(itemMap: Map<string, string>): string {
+  const unified = itemMap.get('LLM_TEMPERATURE');
+  if (unified) return unified;
+
+  const primaryModel = itemMap.get('LITELLM_MODEL') || '';
+  const provider = primaryModel.includes('/') ? primaryModel.split('/')[0] : (primaryModel ? 'openai' : '');
+  const PROVIDER_TEMPERATURE_ENV: Record<string, string> = {
+    gemini: 'GEMINI_TEMPERATURE',
+    vertex_ai: 'GEMINI_TEMPERATURE',
+    anthropic: 'ANTHROPIC_TEMPERATURE',
+    openai: 'OPENAI_TEMPERATURE',
+    deepseek: 'OPENAI_TEMPERATURE',
+  };
+  const preferredEnv = PROVIDER_TEMPERATURE_ENV[provider];
+  if (preferredEnv) {
+    const val = itemMap.get(preferredEnv);
+    if (val) return val;
+  }
+
+  for (const envName of ['GEMINI_TEMPERATURE', 'ANTHROPIC_TEMPERATURE', 'OPENAI_TEMPERATURE']) {
+    const val = itemMap.get(envName);
+    if (val) return val;
+  }
+
+  return '0.7';
+}
+
 function parseRuntimeConfigFromItems(items: Array<{ key: string; value: string }>): RuntimeConfig {
   const itemMap = new Map(items.map((item) => [item.key, item.value]));
   return {
     primaryModel: itemMap.get('LITELLM_MODEL') || '',
     fallbackModels: splitModels(itemMap.get('LITELLM_FALLBACK_MODELS') || ''),
     visionModel: itemMap.get('VISION_MODEL') || '',
-    temperature: itemMap.get('LLM_TEMPERATURE')
-      || itemMap.get('GEMINI_TEMPERATURE')
-      || itemMap.get('ANTHROPIC_TEMPERATURE')
-      || itemMap.get('OPENAI_TEMPERATURE')
-      || '0.7',
+    temperature: resolveTemperatureFromItems(itemMap),
   };
 }
 
@@ -497,7 +521,7 @@ function parseChannelsFromItems(items: Array<{ key: string; value: string }>): C
       name: name.toLowerCase(),
       protocol: inferProtocol(itemMap.get(`LLM_${upperName}_PROTOCOL`) || '', baseUrl, models),
       baseUrl,
-      apiKey: itemMap.get(`LLM_${upperName}_API_KEY`) || itemMap.get(`LLM_${upperName}_API_KEYS`) || '',
+      apiKey: itemMap.get(`LLM_${upperName}_API_KEYS`) || itemMap.get(`LLM_${upperName}_API_KEY`) || '',
       models: rawModels,
       enabled: parseEnabled(itemMap.get(`LLM_${upperName}_ENABLED`)),
     };
