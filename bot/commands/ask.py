@@ -11,6 +11,7 @@ Usage:
 import re
 import logging
 import uuid
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import List, Optional
 
 from bot.commands.base import BotCommand
@@ -19,6 +20,10 @@ from data_provider.base import canonical_stock_code
 from src.config import get_config
 
 logger = logging.getLogger(__name__)
+
+# Default timeout for /ask (seconds).  Kept shorter than /research as
+# this command uses a single strategy and expects a quicker turnaround.
+_DEFAULT_TIMEOUT_SECONDS = 120
 
 # Strategy name to id mapping (CN name -> strategy id)
 STRATEGY_NAME_MAP = {
@@ -129,6 +134,8 @@ class AskCommand(BotCommand):
 
         logger.info(f"[AskCommand] Stock: {code}, Strategy: {strategy_id}, Extra: {strategy_text}")
 
+        timeout = getattr(config, "agent_ask_timeout", _DEFAULT_TIMEOUT_SECONDS)
+
         try:
             from src.agent.factory import build_agent_executor
             executor = build_agent_executor(config, skills=[strategy_id] if strategy_id else None)
@@ -142,7 +149,22 @@ class AskCommand(BotCommand):
             # sessions per request so that different stocks or retry attempts never
             # bleed context into each other.
             session_id = f"ask_{code}_{uuid.uuid4()}"
-            result = executor.chat(message=user_msg, session_id=session_id)
+
+            def _run():
+                return executor.chat(message=user_msg, session_id=session_id)
+
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(_run)
+                try:
+                    result = future.result(timeout=timeout)
+                except FuturesTimeoutError:
+                    logger.warning(
+                        "[AskCommand] Ask timed out after %ds for %s (strategy=%s)",
+                        timeout, code, strategy_id,
+                    )
+                    return BotResponse.text_response(
+                        f"⏱️ 问股超时（>{timeout}s），请稍后重试。"
+                    )
 
             if result.success:
                 # Prepend strategy tag
