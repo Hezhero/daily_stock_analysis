@@ -144,6 +144,18 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertFalse(validation["valid"])
         self.assertTrue(any(issue["code"] == "invalid_enum" for issue in validation["issues"]))
 
+    def test_validate_reports_invalid_json(self) -> None:
+        validation = self.service.validate(items=[{"key": "AGENT_EVENT_ALERT_RULES_JSON", "value": "[invalid"}])
+
+        self.assertFalse(validation["valid"])
+        self.assertTrue(any(issue["code"] == "invalid_json" for issue in validation["issues"]))
+
+    def test_validate_accepts_blank_optional_json(self) -> None:
+        validation = self.service.validate(items=[{"key": "AGENT_EVENT_ALERT_RULES_JSON", "value": ""}])
+
+        self.assertTrue(validation["valid"])
+        self.assertEqual(validation["issues"], [])
+
     @patch.object(
         Config,
         "_parse_litellm_yaml",
@@ -227,6 +239,24 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertTrue(payload["success"])
         self.assertEqual(payload["resolved_protocol"], "openai")
         self.assertEqual(payload["resolved_model"], "openai/deepseek-chat")
+
+    def test_validate_reports_invalid_event_rule_semantics(self) -> None:
+        validation = self.service.validate(items=[{
+            "key": "AGENT_EVENT_ALERT_RULES_JSON",
+            "value": '[{"stock_code":"600519","alert_type":"price_cross","status":"bad","direction":"above","price":1800}]',
+        }])
+
+        self.assertFalse(validation["valid"])
+        self.assertTrue(any(issue["code"] == "invalid_event_rule" for issue in validation["issues"]))
+
+    def test_validate_rejects_unsupported_event_rule_type(self) -> None:
+        validation = self.service.validate(items=[{
+            "key": "AGENT_EVENT_ALERT_RULES_JSON",
+            "value": '[{"stock_code":"600519","alert_type":"sentiment_shift"}]',
+        }])
+
+        self.assertFalse(validation["valid"])
+        self.assertTrue(any(issue["code"] == "invalid_event_rule" for issue in validation["issues"]))
 
     @patch("src.search_service.reset_search_service")
     def test_update_with_reload_resets_search_service_singleton(self, mock_reset_search_service) -> None:

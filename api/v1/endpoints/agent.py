@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import uuid
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -219,6 +220,87 @@ def _build_executor(config, skills: Optional[List[str]] = None):
     """Build and return a configured AgentExecutor (sync helper)."""
     from src.agent.factory import build_agent_executor
     return build_agent_executor(config, skills=skills)
+
+
+# ============================================================
+# Deep research endpoint
+# ============================================================
+
+class ResearchRequest(BaseModel):
+    question: str
+    stock_code: Optional[str] = None
+
+class ResearchResponse(BaseModel):
+    success: bool
+    content: str
+    sources: List[str] = []
+    token_usage: int = 0
+    error: Optional[str] = None
+
+
+@router.post("/research", response_model=ResearchResponse)
+async def agent_research(request: ResearchRequest):
+    """Run a deep-research query via the ResearchAgent.
+
+    Similar to the ``/research`` bot command but exposed as a REST endpoint.
+    """
+    config = get_config()
+    if not config.is_agent_available():
+        raise HTTPException(status_code=400, detail="Agent mode is not enabled")
+
+    question = request.question
+    if request.stock_code:
+        question = f"[Stock: {request.stock_code}] {question}"
+
+    try:
+        from src.agent.research import ResearchAgent
+        from src.agent.factory import get_tool_registry
+        from src.agent.llm_adapter import LLMToolAdapter
+
+        registry = get_tool_registry()
+        llm_adapter = LLMToolAdapter(config)
+        budget = getattr(config, "agent_deep_research_budget", 30000)
+
+        agent = ResearchAgent(
+            tool_registry=registry,
+            llm_adapter=llm_adapter,
+            token_budget=budget,
+        )
+
+        research_timeout = getattr(config, "agent_deep_research_timeout", 180)
+        loop = asyncio.get_running_loop()
+
+        def _run_with_timeout():
+            pool = ThreadPoolExecutor(max_workers=1)
+            future: Future = pool.submit(agent.research, question)
+            try:
+                return future.result(timeout=research_timeout)
+            finally:
+                pool.shutdown(wait=False, cancel_futures=True)
+
+        try:
+            result = await loop.run_in_executor(None, _run_with_timeout)
+        except FuturesTimeoutError:
+            logger.warning("Agent research API timed out after %ss", research_timeout)
+            return ResearchResponse(
+                success=False,
+                content="",
+                sources=[],
+                token_usage=0,
+                error=f"Deep research timed out after {research_timeout}s",
+            )
+
+        return ResearchResponse(
+            success=result.success,
+            content=result.report,
+            sources=[f"Sub-question {i+1}: {q}" for i, q in enumerate(result.sub_questions)],
+            token_usage=result.total_tokens,
+            error=result.error if not result.success else None,
+        )
+    except Exception as e:
+        logger.error("Agent research API failed: %s", e)
+        logger.exception("Agent research error details:")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/chat/stream")
