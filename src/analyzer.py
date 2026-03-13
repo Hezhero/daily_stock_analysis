@@ -22,7 +22,7 @@ from json_repair import repair_json
 from litellm import Router
 
 from src.agent.llm_adapter import get_thinking_extra_body
-from src.config import Config, get_config, get_api_keys_for_model, extra_litellm_params
+from src.config import Config, get_config, get_api_keys_for_model, extra_litellm_params, get_configured_llm_models
 from src.storage import persist_llm_usage
 from src.data.stock_mapping import STOCK_NAME_MAP
 from src.schemas.report_schema import AnalysisReportSchema
