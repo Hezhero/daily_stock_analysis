@@ -104,7 +104,7 @@ async def agent_chat(request: ChatRequest):
     """
     config = get_config()
     
-    if not config.agent_mode:
+    if not config.is_agent_available():
         raise HTTPException(status_code=400, detail="Agent mode is not enabled")
         
     session_id = request.session_id or str(uuid.uuid4())
@@ -112,12 +112,17 @@ async def agent_chat(request: ChatRequest):
     try:
         executor = _build_executor(config, request.skills)
 
+        # Merge skills into context so the orchestrator can route strategies
+        ctx = dict(request.context or {})
+        if request.skills:
+            ctx.setdefault("strategies", request.skills)
+
         # Offload the blocking call to a thread to avoid blocking the event loop.
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             None,
             lambda: executor.chat(message=request.message, session_id=session_id,
-                                  context=request.context),
+                                  context=ctx),
         )
 
         return ChatResponse(
@@ -149,10 +154,17 @@ class SessionMessagesResponse(BaseModel):
 
 
 @router.get("/chat/sessions", response_model=SessionsResponse)
-async def list_chat_sessions(limit: int = 50):
-    """获取聊天会话列表"""
+async def list_chat_sessions(limit: int = 50, user_id: Optional[str] = None):
+    """获取聊天会话列表
+
+    Args:
+        limit: Maximum number of sessions to return.
+        user_id: Optional user identifier for session isolation.
+            When provided, only sessions whose session_id starts with
+            this prefix are returned (e.g. ``telegram_12345``).
+    """
     from src.storage import get_db
-    sessions = get_db().get_chat_sessions(limit=limit)
+    sessions = get_db().get_chat_sessions(limit=limit, session_prefix=user_id)
     return SessionsResponse(sessions=sessions)
 
 
@@ -220,12 +232,17 @@ async def agent_chat_stream(request: ChatRequest):
       - error: error occurred, contains 'message'
     """
     config = get_config()
-    if not config.agent_mode:
+    if not config.is_agent_available():
         raise HTTPException(status_code=400, detail="Agent mode is not enabled")
 
     session_id = request.session_id or str(uuid.uuid4())
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue = asyncio.Queue()
+
+    # Merge skills into context for strategy routing
+    stream_ctx = dict(request.context or {})
+    if request.skills:
+        stream_ctx.setdefault("strategies", request.skills)
 
     def progress_callback(event: dict):
         # Enrich tool events with display names
@@ -241,7 +258,7 @@ async def agent_chat_stream(request: ChatRequest):
                 message=request.message,
                 session_id=session_id,
                 progress_callback=progress_callback,
-                context=request.context,
+                context=stream_ctx,
             )
             asyncio.run_coroutine_threadsafe(
                 queue.put({

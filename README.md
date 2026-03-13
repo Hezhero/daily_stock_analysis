@@ -332,10 +332,12 @@ LITELLM_MODEL=openai/deepseek-chat
 - **多轮对话**：支持追问上下文，会话历史持久化保存
 - **导出与发送**：可将会话导出为 .md 文件，或发送到已配置的通知渠道
 - **后台执行**：切换页面不中断分析，完成时 Dock 问股图标显示角标
-- **Bot 支持**：`/ask <code> [strategy]` 命令触发策略分析
+- **Bot 命令**：`/ask` 策略分析（支持多股对比）、`/chat` 自由对话、`/research` 深度研究、`/strategies` 查看策略、`/history` 对话历史
+- **自然语言路由**：开启 `AGENT_NL_ROUTING=true` 后，私聊或 @机器人时可直接说「帮我分析茅台」
 - **自定义策略**：在 `strategies/` 目录下新建 YAML 文件即可添加策略，无需写代码
+- **多 Agent 架构**（实验性）：设置 `AGENT_ARCH=multi` 启用 Technical → Intel → Risk → Strategy → Decision 多 Agent 级联编排，通过 `AGENT_ORCHESTRATOR_MODE` 控制深度（quick/standard/full/strategy）。详见 [完整配置指南](docs/full-guide.md)
 
-> **注意**：Agent 模式依赖外部 LLM（Gemini/OpenAI 等），每次对话会产生 API 调用费用。不影响非 Agent 模式（`AGENT_MODE=false` 或未设置）的正常运行。
+> **注意**：Agent 模式在 `LITELLM_MODEL` 配置后自动启用，无需手动设置 `AGENT_MODE=true`。如需显式关闭可设置 `AGENT_MODE=false`。每次对话会产生 LLM API 调用费用。
 
 ### 启动方式
 

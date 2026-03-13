@@ -221,7 +221,7 @@ class StockAnalysisPipeline:
                 logger.warning(f"{stock_name}({code}) 获取筹码分布失败: {e}")
 
             # If agent mode is enabled, or specific agent skills are configured, use the Agent analysis pipeline
-            use_agent = getattr(self.config, 'agent_mode', False)
+            use_agent = self.config.is_agent_available()
             if not use_agent:
                 # Auto-enable agent mode when specific skills are configured (e.g., scheduled task with strategy)
                 configured_skills = getattr(self.config, 'agent_skills', [])
@@ -675,7 +675,11 @@ class StockAnalysisPipeline:
             result.sentiment_score = self._safe_int(dash.get("sentiment_score"), 50)
             result.trend_prediction = dash.get("trend_prediction", "未知")
             result.operation_advice = dash.get("operation_advice", "观望")
-            result.decision_type = dash.get("decision_type", "hold")
+            from src.agent.protocols import normalize_decision_signal
+
+            result.decision_type = normalize_decision_signal(
+                dash.get("decision_type", "hold")
+            )
             result.analysis_summary = dash.get("analysis_summary", "")
             # The AI returns a top-level dict that contains a nested 'dashboard' sub-key
             # with core_conclusion / battle_plan / intelligence.  AnalysisResult's helper
