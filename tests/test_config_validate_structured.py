@@ -146,6 +146,7 @@ class TestValidateStructuredLLM:
         ]
         cfg = _make_config(
             llm_model_list=channel_model_list,
+            litellm_model="openai/gpt-4o-mini",
             gemini_api_keys=[],
             anthropic_api_keys=[],
             openai_api_keys=[],
@@ -161,6 +162,7 @@ class TestValidateStructuredLLM:
         ]
         cfg = _make_config(
             llm_model_list=yaml_model_list,
+            litellm_model="gemini/gemini-2.5-flash",
             litellm_config_path="/tmp/litellm.yaml",
             gemini_api_keys=[],
             anthropic_api_keys=[],
@@ -336,6 +338,10 @@ class TestVisionKeyValidation:
     def test_primary_provider_key_sufficient_even_if_not_in_priority(self):
         """Primary model's provider key is checked even when absent from VISION_PROVIDER_PRIORITY."""
         cfg = _make_config(
+            llm_model_list=[
+                {"model_name": "openai/gpt-4o", "litellm_params": {"model": "openai/gpt-4o", "api_key": "sk-test"}},
+            ],
+            litellm_model="openai/gpt-4o",
             vision_model="openai/gpt-4o",
             vision_provider_priority="gemini,anthropic",  # openai excluded from priority
             openai_api_keys=["sk-openai-validkey-xyz"],

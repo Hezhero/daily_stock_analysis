@@ -1376,7 +1376,11 @@ class Config:
         available_router_models = get_configured_llm_models(self.llm_model_list)
         available_router_model_set = set(available_router_models)
         if available_router_model_set:
-            if self.litellm_model and self.litellm_model not in available_router_model_set:
+            if (
+                self.litellm_model
+                and not _uses_direct_env_provider(self.litellm_model)
+                and self.litellm_model not in available_router_model_set
+            ):
                 issues.append(ConfigIssue(
                     severity="error",
                     message=(
@@ -1389,6 +1393,7 @@ class Config:
             invalid_fallbacks = [
                 model for model in (self.litellm_fallback_models or [])
                 if model and model not in available_router_model_set
+                and not _uses_direct_env_provider(model)
             ]
             if invalid_fallbacks:
                 issues.append(ConfigIssue(

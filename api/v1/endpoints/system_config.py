@@ -167,6 +167,14 @@ def test_llm_channel(
             timeout_seconds=request.timeout_seconds,
         )
         return TestLLMChannelResponse.model_validate(payload)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "validation_error",
+                "message": str(exc),
+            },
+        )
     except Exception as exc:
         logger.error("Failed to test LLM channel: %s", exc, exc_info=True)
         raise HTTPException(

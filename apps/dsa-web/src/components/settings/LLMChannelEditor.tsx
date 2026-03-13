@@ -203,7 +203,7 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
       <div
         className="flex items-center gap-2 px-3 py-2 cursor-pointer select-none hover:bg-white/[0.03] transition-colors"
         onClick={() => onToggleExpand(index)}
-        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onToggleExpand(index); }}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggleExpand(index); } }}
         role="button"
         tabIndex={0}
       >
@@ -411,6 +411,15 @@ function splitModels(models: string): string[] {
     .filter(Boolean);
 }
 
+const PROTOCOL_ALIASES: Record<string, string> = {
+  vertexai: 'vertex_ai',
+  vertex: 'vertex_ai',
+  claude: 'anthropic',
+  google: 'gemini',
+  openai_compatible: 'openai',
+  openai_compat: 'openai',
+};
+
 function normalizeModelForRuntime(model: string, protocol: ChannelProtocol): string {
   const trimmedModel = model.trim();
   if (!trimmedModel) {
@@ -418,8 +427,14 @@ function normalizeModelForRuntime(model: string, protocol: ChannelProtocol): str
   }
 
   if (trimmedModel.includes('/')) {
-    const prefix = trimmedModel.split('/', 1)[0].trim().toLowerCase();
-    if (KNOWN_MODEL_PREFIXES.has(prefix)) {
+    const rawPrefix = trimmedModel.split('/', 1)[0].trim();
+    const lowerPrefix = rawPrefix.toLowerCase();
+    const canonicalPrefix = PROTOCOL_ALIASES[lowerPrefix] || lowerPrefix;
+    if (KNOWN_MODEL_PREFIXES.has(lowerPrefix) || KNOWN_MODEL_PREFIXES.has(canonicalPrefix)) {
+      // Known provider — canonicalize the prefix if it's an alias
+      if (canonicalPrefix !== lowerPrefix && KNOWN_MODEL_PREFIXES.has(canonicalPrefix)) {
+        return `${canonicalPrefix}/${trimmedModel.split('/').slice(1).join('/')}`;
+      }
       return trimmedModel;
     }
     return `${protocol}/${trimmedModel}`;
