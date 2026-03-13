@@ -442,6 +442,37 @@ class SystemConfigService:
         return parsed.scheme in allowed_schemes and bool(parsed.netloc)
 
     @staticmethod
+    def _is_safe_base_url(value: str) -> bool:
+        """Block link-local and cloud metadata addresses to prevent SSRF.
+
+        Allows localhost / private-LAN addresses (e.g. Ollama on 192.168.x.x)
+        but blocks 169.254.x.x (AWS/Azure/GCP/Alibaba instance-metadata service)
+        and other known metadata hostnames.
+        """
+        import ipaddress
+
+        parsed = urlparse(value)
+        host = (parsed.hostname or "").lower()
+        if not host:
+            return True
+        # Known cloud metadata hostnames
+        _BLOCKED_HOSTS = frozenset({
+            "169.254.169.254",
+            "metadata.google.internal",
+            "100.100.100.200",
+        })
+        if host in _BLOCKED_HOSTS:
+            return False
+        # Numeric IPs: block link-local range (169.254.0.0/16)
+        try:
+            addr = ipaddress.ip_address(host)
+            if addr.is_link_local:
+                return False
+        except ValueError:
+            pass  # hostname, not an IP — already checked against blocklist above
+        return True
+
+    @staticmethod
     def _validate_cross_field(effective_map: Dict[str, str], updated_keys: Set[str]) -> List[Dict[str, Any]]:
         """Validate dependencies across multiple keys."""
         issues: List[Dict[str, Any]] = []
@@ -813,9 +844,23 @@ class SystemConfigService:
                     "actual": base_url_value,
                 }
             )
+        elif base_url_value and not SystemConfigService._is_safe_base_url(base_url_value):
+            issues.append(
+                {
+                    "key": base_url_key,
+                    "code": "ssrf_blocked",
+                    "message": "LLM channel base URL points to a restricted address (cloud metadata services are not allowed)",
+                    "severity": "error",
+                    "expected": "publicly reachable or local LLM endpoint",
+                    "actual": base_url_value,
+                }
+            )
 
         resolved_protocol = resolve_llm_channel_protocol(protocol_value, base_url=base_url_value, models=list(model_values), channel_name=channel_name)
-        if not api_key_value and not channel_allows_empty_api_key(resolved_protocol, base_url_value):
+        # Validate parsed key segments so that inputs like "," or " , " are
+        # treated as empty (they produce zero usable keys after split+strip).
+        _parsed_api_keys = [seg.strip() for seg in api_key_value.split(",") if seg.strip()]
+        if not _parsed_api_keys and not channel_allows_empty_api_key(resolved_protocol, base_url_value):
             issues.append(
                 {
                     "key": api_key_key,

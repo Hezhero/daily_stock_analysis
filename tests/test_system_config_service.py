@@ -234,5 +234,60 @@ class SystemConfigServiceTestCase(unittest.TestCase):
             )
 
 
+    def test_validate_rejects_comma_only_api_key(self) -> None:
+        """Whitespace/comma-only api_key must fail validation (P2: parsed-segment check)."""
+        for bad_key in (",", " , ", "  ,  ,  "):
+            with self.subTest(api_key=bad_key):
+                validation = self.service.validate(
+                    items=[
+                        {"key": "LLM_CHANNELS", "value": "primary"},
+                        {"key": "LLM_PRIMARY_PROTOCOL", "value": "openai"},
+                        {"key": "LLM_PRIMARY_MODELS", "value": "gpt-4o-mini"},
+                        {"key": "LLM_PRIMARY_API_KEY", "value": bad_key},
+                    ]
+                )
+                self.assertFalse(validation["valid"])
+                self.assertTrue(
+                    any(issue["code"] == "missing_api_key" for issue in validation["issues"]),
+                    f"Expected missing_api_key for api_key={bad_key!r}, got: {validation['issues']}",
+                )
+
+    def test_validate_rejects_ssrf_metadata_base_url(self) -> None:
+        """base_url pointing to cloud metadata service must be blocked (P1: SSRF guard)."""
+        for bad_url in (
+            "http://169.254.169.254/latest/meta-data/",
+            "http://metadata.google.internal/computeMetadata/v1/",
+            "http://100.100.100.200/latest/meta-data/",
+        ):
+            with self.subTest(base_url=bad_url):
+                validation = self.service.validate(
+                    items=[
+                        {"key": "LLM_CHANNELS", "value": "primary"},
+                        {"key": "LLM_PRIMARY_PROTOCOL", "value": "openai"},
+                        {"key": "LLM_PRIMARY_MODELS", "value": "gpt-4o-mini"},
+                        {"key": "LLM_PRIMARY_API_KEY", "value": "sk-test"},
+                        {"key": "LLM_PRIMARY_BASE_URL", "value": bad_url},
+                    ]
+                )
+                self.assertFalse(validation["valid"])
+                self.assertTrue(
+                    any(issue["code"] == "ssrf_blocked" for issue in validation["issues"]),
+                    f"Expected ssrf_blocked for base_url={bad_url!r}, got: {validation['issues']}",
+                )
+
+    def test_validate_allows_localhost_base_url(self) -> None:
+        """localhost/LAN base_url must not be blocked (legitimate Ollama endpoints)."""
+        validation = self.service.validate(
+            items=[
+                {"key": "LLM_CHANNELS", "value": "local"},
+                {"key": "LLM_LOCAL_PROTOCOL", "value": "ollama"},
+                {"key": "LLM_LOCAL_MODELS", "value": "llama3"},
+                {"key": "LLM_LOCAL_API_KEY", "value": ""},
+                {"key": "LLM_LOCAL_BASE_URL", "value": "http://localhost:11434"},
+            ]
+        )
+        self.assertFalse(any(issue["code"] == "ssrf_blocked" for issue in validation["issues"]))
+
+
 if __name__ == "__main__":
     unittest.main()
