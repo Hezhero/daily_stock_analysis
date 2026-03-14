@@ -69,7 +69,7 @@ class ResearchCommand(BotCommand):
         # Try to detect a stock code in the first argument
         first = query_parts[0].upper().replace("，", ",")
         import re
-        if re.match(r"^\d{6}$", first) or re.match(r"^HK\d{5}$", first) or re.match(r"^[A-Z]{1,5}(\.[A-Z]{1,2})?$", first):
+        if re.match(r"^\d{6}$", first) or re.match(r"^HK\d{5}$", first) or re.match(r"^[A-Z]{1,4}(\.[A-Z]{1,2})?$", first):
             stock_code = first
             query_parts = query_parts[1:]
 

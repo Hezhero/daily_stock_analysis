@@ -310,7 +310,7 @@ class EventMonitor:
                 if alert_type == AlertType.PRICE_CROSS.value:
                     rule = PriceAlert(
                         stock_code=stock_code,
-                        direction=entry.get("direction", "above"),
+                        direction=entry.get("direction", "above").lower(),
                         price=float(entry.get("price", 0.0)),
                     )
                 elif alert_type == AlertType.VOLUME_SPIKE.value:
