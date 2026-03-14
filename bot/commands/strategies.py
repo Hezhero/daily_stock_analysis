@@ -44,27 +44,23 @@ class StrategiesCommand(BotCommand):
         show_active_only = bool(args and args[0].lower() in ("active", "激活", "已激活"))
 
         try:
-            from src.agent.factory import get_skill_manager
+            from src.agent.factory import DEFAULT_AGENT_SKILLS, get_skill_manager
             from src.config import get_config
 
             config = get_config()
             sm = get_skill_manager(config)
 
-            # Activate configured skills to reflect real status
-            configured_skills = config.agent_skills or []
-            if configured_skills:
-                sm.activate(configured_skills)
-            else:
-                # If no explicit skills configured, activate defaults
-                from src.agent.factory import DEFAULT_AGENT_SKILLS
-                sm.activate(DEFAULT_AGENT_SKILLS)
+            # Determine which skill names are configured as active from config —
+            # read-only: do NOT call sm.activate() to avoid mutating global state.
+            configured_active: set[str] = set(config.agent_skills or DEFAULT_AGENT_SKILLS)
 
-            skills = sm.list_skills()
-            if not skills:
+            all_skills = sm.list_skills()
+            if not all_skills:
                 return BotResponse.text_response("📋 暂无可用策略。请检查 strategies/ 目录。")
 
+            skills = all_skills
             if show_active_only:
-                skills = [s for s in skills if s.enabled]
+                skills = [s for s in all_skills if s.name in configured_active]
                 if not skills:
                     return BotResponse.text_response("📋 当前没有激活的策略。")
 
@@ -85,7 +81,7 @@ class StrategiesCommand(BotCommand):
                 cat_label = categories.get(cat_key, f"📌 {cat_key}")
                 lines.append(f"**{cat_label}**")
                 for s in cat_skills:
-                    status = "✅" if s.enabled else "⬜"
+                    status = "✅" if s.name in configured_active else "⬜"
                     source_tag = ""
                     if s.source and s.source != "builtin":
                         source_tag = " (自定义)"
@@ -93,8 +89,8 @@ class StrategiesCommand(BotCommand):
                     lines.append(f"      {s.description}")
                 lines.append("")
 
-            active_count = sum(1 for s in sm.list_skills() if s.enabled)
-            total_count = len(sm.list_skills())
+            active_count = len(configured_active & {s.name for s in all_skills})
+            total_count = len(all_skills)
             lines.append(f"共 {total_count} 个策略，已激活 {active_count} 个")
             lines.append(f"\n💡 使用 `/ask <股票代码> <策略名>` 指定策略分析")
 
