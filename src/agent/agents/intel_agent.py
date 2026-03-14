@@ -80,6 +80,10 @@ Return **only** a JSON object:
             logger.warning("[IntelAgent] failed to parse opinion JSON")
             return None
 
+        # Cache parsed intel so downstream agents (especially RiskAgent) can
+        # reuse it instead of re-searching the same evidence.
+        ctx.set_data("intel_opinion", parsed)
+
         # Propagate risk alerts to context
         for alert in parsed.get("risk_alerts", []):
             if isinstance(alert, str) and alert:
@@ -92,6 +96,5 @@ Return **only** a JSON object:
             reasoning=parsed.get("reasoning", ""),
             raw_data=parsed,
         )
-
 
 

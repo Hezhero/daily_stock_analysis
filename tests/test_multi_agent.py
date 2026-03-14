@@ -419,6 +419,32 @@ class TestDecisionAgentPostProcess(unittest.TestCase):
         self.assertEqual(ctx.get_data("final_dashboard")["decision_type"], "buy")
 
 
+class TestIntelAgentPostProcess(unittest.TestCase):
+    """Test IntelAgent JSON parsing and context caching behaviour."""
+
+    def test_repairs_json_and_caches_intel_context(self):
+        from src.agent.agents.intel_agent import IntelAgent
+
+        agent = IntelAgent(tool_registry=MagicMock(), llm_adapter=MagicMock())
+        ctx = AgentContext(query="test", stock_code="600519")
+        raw = """```json
+        {
+          "signal": "hold",
+          "confidence": 0.72,
+          "reasoning": "情绪中性偏谨慎",
+          "risk_alerts": ["股东减持"],
+          "positive_catalysts": ["行业复苏"],
+        }
+        ```"""
+
+        opinion = agent.post_process(ctx, raw)
+
+        self.assertIsNotNone(opinion)
+        self.assertEqual(opinion.signal, "hold")
+        self.assertEqual(ctx.get_data("intel_opinion")["positive_catalysts"], ["行业复苏"])
+        self.assertEqual(ctx.risk_flags[0]["description"], "股东减持")
+
+
 # ============================================================
 # AgentOrchestrator (with mocked sub-agents)
 # ============================================================
@@ -553,6 +579,90 @@ class TestOrchestratorExecution(unittest.TestCase):
 
         self.assertFalse(result.success)
         self.assertIn("timed out", result.error)
+
+    def test_execute_pipeline_timeout_after_decision_preserves_dashboard(self):
+        orch = self._make_orchestrator(config=SimpleNamespace(agent_orchestrator_timeout_s=1, agent_risk_override=True))
+        ctx = AgentContext(query="test", stock_code="600519", stock_name="贵州茅台")
+        decision = MagicMock(agent_name="decision")
+
+        def _run_decision(run_ctx, progress_callback=None):
+            dashboard = {
+                "stock_name": "贵州茅台",
+                "decision_type": "strong_buy",
+                "sentiment_score": 88,
+                "operation_advice": {
+                    "no_position": "分批布局",
+                    "has_position": "继续持有",
+                },
+                "analysis_summary": "趋势仍强，回踩可观察。",
+                "dashboard": {
+                    "key_levels": {
+                        "support": 1800,
+                        "stop_loss": 1760,
+                        "resistance": 1900,
+                    }
+                },
+            }
+            run_ctx.set_data("final_dashboard", dashboard)
+            run_ctx.add_opinion(AgentOpinion(
+                agent_name="decision",
+                signal="buy",
+                confidence=0.88,
+                reasoning="趋势仍强，回踩可观察。",
+                raw_data=dashboard,
+            ))
+            return self._stage_result("decision")
+
+        decision.run.side_effect = _run_decision
+
+        with patch.object(orch, "_build_agent_chain", return_value=[decision]):
+            with patch("src.agent.orchestrator.time.time", side_effect=[0.0, 0.1, 1.2, 1.2, 1.2]):
+                result = orch._execute_pipeline(ctx, parse_dashboard=True)
+
+        self.assertTrue(result.success)
+        self.assertIn("timed out", result.error)
+        self.assertEqual(result.dashboard["decision_type"], "buy")
+        self.assertEqual(result.dashboard["operation_advice"], "买入")
+        self.assertEqual(
+            result.dashboard["dashboard"]["battle_plan"]["sniper_points"]["stop_loss"],
+            1760.0,
+        )
+
+    def test_execute_pipeline_timeout_after_intel_synthesizes_dashboard(self):
+        orch = self._make_orchestrator(config=SimpleNamespace(agent_orchestrator_timeout_s=1, agent_risk_override=True))
+        ctx = AgentContext(query="test", stock_code="301308", stock_name="江波龙")
+        ctx.set_data("realtime_quote", {"price": 326.17, "volume_ratio": 1.0, "turnover_rate": 6.77})
+        ctx.set_data("chip_distribution", {"profit_ratio": 68.8, "avg_cost": 307.67, "concentration_90": 15.28})
+
+        technical = MagicMock(agent_name="technical")
+        intel = MagicMock(agent_name="intel")
+
+        def _run_technical(run_ctx, progress_callback=None):
+            run_ctx.add_opinion(AgentOpinion(
+                agent_name="technical",
+                signal="buy",
+                confidence=0.75,
+                reasoning="强势多头排列，价格回踩 MA5。",
+                key_levels={"support": 301.61, "resistance": 340.44, "stop_loss": 295.0},
+                raw_data={"ma_alignment": "bullish", "trend_score": 73, "volume_status": "normal"},
+            ))
+            return self._stage_result("technical")
+
+        technical.run.side_effect = _run_technical
+        intel.run.return_value = self._stage_result("intel")
+
+        with patch.object(orch, "_build_agent_chain", return_value=[technical, intel]):
+            with patch("src.agent.orchestrator.time.time", side_effect=[0.0, 0.1, 0.2, 0.3, 1.2, 1.2, 1.2]):
+                result = orch._execute_pipeline(ctx, parse_dashboard=True)
+
+        self.assertTrue(result.success)
+        self.assertIn("timed out", result.error)
+        self.assertEqual(result.dashboard["decision_type"], "buy")
+        self.assertIn("降级结果", result.dashboard["analysis_summary"])
+        self.assertEqual(
+            result.dashboard["dashboard"]["battle_plan"]["sniper_points"]["stop_loss"],
+            295.0,
+        )
 
     def test_run_wraps_orchestrator_result(self):
         from src.agent.orchestrator import OrchestratorResult

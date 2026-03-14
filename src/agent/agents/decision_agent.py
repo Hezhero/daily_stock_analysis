@@ -175,10 +175,15 @@ new decision_type values.
                 dashboard.get("decision_type", "hold")
             )
             ctx.set_data("final_dashboard", dashboard)
+            try:
+                _raw_score = dashboard.get("sentiment_score", 50) or 50
+                _score = float(_raw_score)
+            except (TypeError, ValueError):
+                _score = 50.0
             return AgentOpinion(
                 agent_name=self.agent_name,
                 signal=dashboard.get("decision_type", "hold"),
-                confidence=min(1.0, (dashboard.get("sentiment_score", 50) or 50) / 100.0),
+                confidence=min(1.0, _score / 100.0),
                 reasoning=dashboard.get("analysis_summary", ""),
                 raw_data=dashboard,
             )

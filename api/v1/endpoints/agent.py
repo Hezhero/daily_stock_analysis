@@ -40,8 +40,14 @@ router = APIRouter()
 class ChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = None
-    skills: Optional[List[str]] = None
+    skills: Optional[List[str]] = None  # Deprecated, use strategies
+    strategies: Optional[List[str]] = None  # Trading strategy ids to activate
     context: Optional[Dict[str, Any]] = None  # Previous analysis context for data reuse
+
+    @property
+    def effective_strategies(self) -> Optional[List[str]]:
+        """Return strategies, falling back to legacy skills field."""
+        return self.strategies or self.skills
 
 class ChatResponse(BaseModel):
     success: bool
@@ -110,12 +116,15 @@ async def agent_chat(request: ChatRequest):
     session_id = request.session_id or str(uuid.uuid4())
     
     try:
-        executor = _build_executor(config, request.skills)
+        strategies = request.effective_strategies
+        executor = _build_executor(config, strategies)
 
-        # Merge skills into context so the orchestrator can route strategies
+        # Pass explicit strategies into context for the orchestrator.
+        # Direct assignment so caller-provided strategies always take precedence
+        # over any stale value carried in the context dict.
         ctx = dict(request.context or {})
-        if request.skills:
-            ctx.setdefault("strategies", request.skills)
+        if strategies:
+            ctx["strategies"] = strategies
 
         # Offload the blocking call to a thread to avoid blocking the event loop.
         loop = asyncio.get_running_loop()
@@ -166,7 +175,11 @@ async def list_chat_sessions(limit: int = 50, user_id: Optional[str] = None):
             ``feishu_ou_abc``.
     """
     from src.storage import get_db
-    sessions = get_db().get_chat_sessions(limit=limit, session_prefix=user_id)
+    sessions = get_db().get_chat_sessions(
+        limit=limit,
+        session_prefix=user_id,
+        extra_session_ids=[user_id] if user_id else None,
+    )
     return SessionsResponse(sessions=sessions)
 
 
@@ -215,10 +228,10 @@ async def send_chat_to_notification(request: SendChatRequest):
     return {"success": True}
 
 
-def _build_executor(config, skills: Optional[List[str]] = None):
+def _build_executor(config, strategies: Optional[List[str]] = None):
     """Build and return a configured AgentExecutor (sync helper)."""
     from src.agent.factory import build_agent_executor
-    return build_agent_executor(config, skills=skills)
+    return build_agent_executor(config, skills=strategies)
 
 
 # ============================================================
@@ -318,10 +331,12 @@ async def agent_chat_stream(request: ChatRequest):
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue = asyncio.Queue()
 
-    # Merge skills into context for strategy routing
+    # Pass explicit strategies into context for the orchestrator.
+    # Direct assignment so caller-provided strategies always take precedence.
+    strategies = request.effective_strategies
     stream_ctx = dict(request.context or {})
-    if request.skills:
-        stream_ctx.setdefault("strategies", request.skills)
+    if strategies:
+        stream_ctx["strategies"] = strategies
 
     def progress_callback(event: dict):
         # Enrich tool events with display names
@@ -332,7 +347,7 @@ async def agent_chat_stream(request: ChatRequest):
 
     def run_sync():
         try:
-            executor = _build_executor(config, request.skills)
+            executor = _build_executor(config, strategies)
             result = executor.chat(
                 message=request.message,
                 session_id=session_id,
