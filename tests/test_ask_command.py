@@ -78,6 +78,23 @@ class TestAskCommandMultiStock(unittest.TestCase):
         self.assertIn("| 600519 | buy | 72% |", response.text)
         self.assertIn("### 000858", response.text)
 
+    def test_merge_code_args_keeps_strategy_token_outside_stock_list(self):
+        command = AskCommand()
+
+        raw_code_str, remaining_args = command._merge_code_args(["AAPL", "trend"])
+
+        self.assertEqual(raw_code_str, "AAPL")
+        self.assertEqual(remaining_args, ["trend"])
+        self.assertEqual(command._parse_stock_codes(raw_code_str), ["AAPL"])
+
+    def test_merge_code_args_keeps_comma_split_multi_stock_support(self):
+        command = AskCommand()
+
+        raw_code_str, remaining_args = command._merge_code_args(["600519,", "000858", "波浪理论"])
+
+        self.assertEqual(raw_code_str, "600519,000858")
+        self.assertEqual(remaining_args, ["波浪理论"])
+
     def test_build_portfolio_section_reads_assessment(self):
         command = AskCommand()
         results = {

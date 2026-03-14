@@ -24,6 +24,7 @@ https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/server-side-sdk/python--sd
 import json
 import logging
 import threading
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Optional, Callable
@@ -263,10 +264,6 @@ class FeishuStreamHandler:
     并调用命令分发器处理。
     """
 
-    # Shared pool limits concurrent message processing to avoid unbounded
-    # thread creation under message bursts.
-    _executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="feishu-msg")
-
     def __init__(
             self,
             on_message: Callable[[BotMessage], BotResponse],
@@ -280,6 +277,59 @@ class FeishuStreamHandler:
         self._on_message = on_message
         self._reply_client = reply_client
         self._logger = logger
+        # Different conversations can run in parallel, but one conversation
+        # must stay FIFO so multi-turn chat and replies do not get reordered.
+        self._executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="feishu-msg")
+        self._pending_messages: dict[str, deque[BotMessage]] = {}
+        self._active_conversations: set[str] = set()
+        self._queue_lock = threading.Lock()
+        self._shutdown = False
+
+    def _conversation_key(self, bot_message: BotMessage) -> str:
+        """Return the ordering key used for per-conversation FIFO processing."""
+        if bot_message.chat_type == ChatType.PRIVATE:
+            return bot_message.chat_id or bot_message.user_id or bot_message.message_id
+
+        chat_id = bot_message.chat_id or "unknown-chat"
+        user_id = bot_message.user_id or "unknown-user"
+        return f"{chat_id}:{user_id}"
+
+    def _enqueue_message(self, bot_message: BotMessage) -> None:
+        """Queue a message and start a worker when its conversation is idle."""
+        if self._shutdown:
+            self._logger.debug("[Feishu Stream] Handler already stopped, dropping message")
+            return
+
+        conversation_key = self._conversation_key(bot_message)
+        should_start_worker = False
+
+        with self._queue_lock:
+            self._pending_messages.setdefault(conversation_key, deque()).append(bot_message)
+            if conversation_key not in self._active_conversations:
+                self._active_conversations.add(conversation_key)
+                should_start_worker = True
+
+        if should_start_worker:
+            try:
+                self._executor.submit(self._drain_conversation, conversation_key)
+            except RuntimeError as exc:
+                with self._queue_lock:
+                    self._active_conversations.discard(conversation_key)
+                    self._pending_messages.pop(conversation_key, None)
+                self._logger.error("[Feishu Stream] 无法启动消息处理线程: %s", exc)
+
+    def _drain_conversation(self, conversation_key: str) -> None:
+        """Drain one conversation queue in FIFO order."""
+        while True:
+            with self._queue_lock:
+                queue = self._pending_messages.get(conversation_key)
+                if not queue:
+                    self._pending_messages.pop(conversation_key, None)
+                    self._active_conversations.discard(conversation_key)
+                    return
+                bot_message = queue.popleft()
+
+            self._process_message(bot_message)
 
     def _process_message(self, bot_message: BotMessage) -> None:
         """Execute command handling off the SDK callback thread."""
@@ -335,7 +385,7 @@ class FeishuStreamHandler:
 
             self._log_incoming_message(bot_message)
 
-            self._executor.submit(self._process_message, bot_message)
+            self._enqueue_message(bot_message)
 
         except Exception as e:
             self._logger.error(f"[Feishu Stream] 处理消息失败: {e}")
@@ -462,6 +512,14 @@ class FeishuStreamHandler:
         # 清理多余空格
         return ' '.join(text.split())
 
+    def shutdown(self, wait: bool = False) -> None:
+        """Stop accepting new messages and tear down worker threads."""
+        self._shutdown = True
+        with self._queue_lock:
+            self._pending_messages.clear()
+            self._active_conversations.clear()
+        self._executor.shutdown(wait=wait)
+
 
 class FeishuStreamClient:
     """
@@ -506,6 +564,7 @@ class FeishuStreamClient:
 
         self._ws_client: Optional[ws.Client] = None
         self._reply_client: Optional[FeishuReplyClient] = None
+        self._message_handler: Optional[FeishuStreamHandler] = None
         self._background_thread: Optional[threading.Thread] = None
         self._running = False
 
@@ -529,6 +588,7 @@ class FeishuStreamClient:
             self._create_message_handler(),
             self._reply_client
         )
+        self._message_handler = handler
 
         # 创建并注册事件处理器
         # 注意：encrypt_key 和 verification_token 在长连接模式下不是必需的
@@ -610,7 +670,8 @@ class FeishuStreamClient:
     def stop(self) -> None:
         """停止客户端"""
         self._running = False
-        FeishuStreamHandler._executor.shutdown(wait=False)
+        if self._message_handler is not None:
+            self._message_handler.shutdown(wait=False)
         logger.info("[Feishu Stream] 客户端已停止")
 
     @property

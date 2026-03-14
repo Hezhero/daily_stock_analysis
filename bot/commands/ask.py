@@ -77,27 +77,48 @@ class AskCommand(BotCommand):
     def usage(self) -> str:
         return "/ask <股票代码[,代码2,...]> [策略名称]"
 
-    def _merge_code_args(self, args: List[str]) -> tuple:
-        """Merge stock code arguments that may be separated by 'vs', commas, or spaces.
+    def _merge_code_args(self, args: List[str]) -> tuple[str, List[str]]:
+        """Merge stock code arguments separated by commas or explicit ``vs`` markers.
 
-        Returns (raw_code_str, remaining_args) where remaining_args are strategy tokens.
-        Handles inputs like: ``600519, 000858``, ``600519 vs 000858``, ``600519,000858``.
+        Returns ``(raw_code_str, remaining_args)`` where ``remaining_args`` are
+        preserved for strategy parsing. This intentionally does not treat a
+        plain space-separated token as another stock code; otherwise words like
+        ``trend`` would be swallowed as fake US tickers.
         """
-        _CODE_LIKE = re.compile(r"^,?(\d{6}|hk\d{5}|[A-Za-z]{1,5}(\.[A-Za-z]{1,2})?),?$", re.IGNORECASE)
+        if not args:
+            return "", []
+
+        code_like = re.compile(
+            r"^,?(\d{6}|hk\d{5}|[A-Za-z]{1,5}(\.[A-Za-z]{1,2})?),?$",
+            re.IGNORECASE,
+        )
         raw_codes_parts = [args[0]]
         rest_args = list(args[1:])
+
         while rest_args:
             token = rest_args[0]
-            if token.lower() == "vs" and len(rest_args) > 1:
+            prev = raw_codes_parts[-1].rstrip()
+
+            if token.lower() == "vs" and len(rest_args) > 1 and code_like.match(rest_args[1]):
                 raw_codes_parts.append(rest_args[1])
                 rest_args = rest_args[2:]
-            elif _CODE_LIKE.match(token):
-                # Adjacent code-like token (e.g. from "600519, 000858" split)
+                continue
+
+            has_comma_separator = (
+                prev.endswith(",")
+                or prev.endswith("，")
+                or token.lstrip().startswith(",")
+                or token.lstrip().startswith("，")
+            )
+            if code_like.match(token) and has_comma_separator:
                 raw_codes_parts.append(token)
                 rest_args = rest_args[1:]
-            else:
-                break
-        raw_code_str = ",".join(raw_codes_parts)
+                continue
+
+            break
+
+        normalized_parts = [part.strip(",，") for part in raw_codes_parts]
+        raw_code_str = ",".join(normalized_parts)
         return raw_code_str, rest_args
 
     def _parse_stock_codes(self, raw: str) -> List[str]:
