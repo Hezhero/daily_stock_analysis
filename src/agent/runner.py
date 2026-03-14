@@ -156,6 +156,7 @@ def try_parse_json(text: str) -> Optional[Dict[str, Any]]:
     1. Direct JSON parse
     2. Markdown code fences (```json ... ```)
     3. Brace-delimited substring
+    4. ``json_repair`` fallback for slightly malformed JSON
 
     This is the shared utility that all agent ``post_process`` methods
     should use instead of duplicating the same logic.
@@ -163,28 +164,55 @@ def try_parse_json(text: str) -> Optional[Dict[str, Any]]:
     if not text:
         return None
 
-    # Try direct parse first
+    candidates: List[str] = []
     cleaned = text.strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r'^```(?:json)?\s*', '', cleaned)
-        cleaned = re.sub(r'\s*```$', '', cleaned)
-    try:
-        obj = json.loads(cleaned)
-        if isinstance(obj, dict):
-            return obj
-    except (json.JSONDecodeError, ValueError):
-        pass
+    if cleaned:
+        candidates.append(cleaned)
 
-    # Try brace-delimited
+    if cleaned.startswith("```"):
+        unfenced = re.sub(r'^```(?:json)?\s*', '', cleaned)
+        unfenced = re.sub(r'\s*```$', '', unfenced)
+        if unfenced:
+            candidates.append(unfenced.strip())
+
+    fenced_blocks = re.findall(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
+    for block in fenced_blocks:
+        block = block.strip()
+        if block:
+            candidates.append(block)
+
     start = text.find("{")
     end = text.rfind("}")
     if start >= 0 and end > start:
+        snippet = text[start:end + 1].strip()
+        if snippet:
+            candidates.append(snippet)
+
+    seen: set[str] = set()
+    unique_candidates: List[str] = []
+    for candidate in candidates:
+        if candidate not in seen:
+            seen.add(candidate)
+            unique_candidates.append(candidate)
+
+    for candidate in unique_candidates:
         try:
-            obj = json.loads(text[start:end + 1])
+            obj = json.loads(candidate)
             if isinstance(obj, dict):
                 return obj
         except (json.JSONDecodeError, ValueError):
-            pass
+            continue
+
+    try:
+        from json_repair import repair_json
+    except Exception:
+        repair_json = None
+
+    if repair_json is not None:
+        for candidate in unique_candidates:
+            repaired = _try_repair_json(candidate, repair_json)
+            if repaired is not None:
+                return repaired
 
     return None
 
