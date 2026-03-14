@@ -1199,7 +1199,7 @@ class TestResearchCommandTimeout(unittest.TestCase):
         )
 
         def _slow_research(query, context=None):
-            _time.sleep(3)
+            _time.sleep(0.05)
             return slow_result
 
         msg = MagicMock(spec=BotMessage)
@@ -1208,7 +1208,7 @@ class TestResearchCommandTimeout(unittest.TestCase):
 
         config = SimpleNamespace(
             agent_deep_research_budget=30000,
-            agent_deep_research_timeout=1,  # 1 second — will trigger timeout
+            agent_deep_research_timeout=0.01,  # 10ms — will trigger timeout
             litellm_model="test-model",
             agent_mode=True,
         )

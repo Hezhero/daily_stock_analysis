@@ -7,7 +7,6 @@ import asyncio
 import json
 import logging
 import uuid
-from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -233,7 +232,7 @@ class ResearchRequest(BaseModel):
 class ResearchResponse(BaseModel):
     success: bool
     content: str
-    sources: List[str] = []
+    sources: List[str] = Field(default_factory=list)
     token_usage: int = 0
     error: Optional[str] = None
 
@@ -249,8 +248,10 @@ async def agent_research(request: ResearchRequest):
         raise HTTPException(status_code=400, detail="Agent mode is not enabled")
 
     question = request.question
+    context: Optional[Dict[str, Any]] = None
     if request.stock_code:
         question = f"[Stock: {request.stock_code}] {question}"
+        context = {"stock_code": request.stock_code}
 
     try:
         from src.agent.research import ResearchAgent
@@ -270,17 +271,11 @@ async def agent_research(request: ResearchRequest):
         research_timeout = getattr(config, "agent_deep_research_timeout", 180)
         loop = asyncio.get_running_loop()
 
-        def _run_with_timeout():
-            pool = ThreadPoolExecutor(max_workers=1)
-            future: Future = pool.submit(agent.research, question)
-            try:
-                return future.result(timeout=research_timeout)
-            finally:
-                pool.shutdown(wait=False, cancel_futures=True)
+        task = loop.run_in_executor(None, agent.research, question, context)
 
         try:
-            result = await loop.run_in_executor(None, _run_with_timeout)
-        except FuturesTimeoutError:
+            result = await asyncio.wait_for(task, timeout=research_timeout)
+        except asyncio.TimeoutError:
             logger.warning("Agent research API timed out after %ss", research_timeout)
             return ResearchResponse(
                 success=False,

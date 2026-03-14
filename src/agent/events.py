@@ -278,7 +278,7 @@ class EventMonitor:
     # -----------------------------------------------------------------
 
     def to_dict_list(self) -> List[Dict[str, Any]]:
-        """Serialize all active rules for persistence."""
+        """Serialize all rules for persistence."""
         results = []
         for rule in self.rules:
             entry: Dict[str, Any] = {
@@ -321,7 +321,11 @@ class EventMonitor:
                 else:
                     raise ValueError(f"unsupported alert_type: {alert_type}")
                 rule.status = AlertStatus(entry.get("status", "active"))
-                rule.created_at = entry.get("created_at", time.time())
+                raw_created = entry.get("created_at")
+                try:
+                    rule.created_at = float(raw_created) if raw_created is not None else time.time()
+                except (TypeError, ValueError):
+                    rule.created_at = time.time()
                 rule.ttl_hours = float(entry.get("ttl_hours", 24.0))
                 monitor.add_alert(rule)
             except Exception as exc:
@@ -347,7 +351,14 @@ def parse_event_alert_rules(raw_rules: Any) -> List[Dict[str, Any]]:
     if not isinstance(parsed, list):
         raise ValueError("Event alert rules must be a JSON array")
 
-    return [entry for entry in parsed if isinstance(entry, dict)]
+    invalid_indices = [idx for idx, entry in enumerate(parsed) if not isinstance(entry, dict)]
+    if invalid_indices:
+        raise ValueError(
+            "Event alert rules list must contain only objects; "
+            f"invalid entries at positions: {invalid_indices}"
+        )
+
+    return parsed
 
 
 def validate_event_alert_rule(rule: Dict[str, Any]) -> None:

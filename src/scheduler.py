@@ -125,10 +125,21 @@ class Scheduler:
         run_immediately: bool = False,
         name: Optional[str] = None,
     ) -> None:
-        """Register a periodic background task executed inside the scheduler loop."""
+        """Register a periodic background task executed inside the scheduler loop.
+
+        Note: The scheduler loop polls every 30 seconds, so *interval_seconds*
+        below 30 will be clamped to 30 to avoid promising unreachable precision.
+        """
+        clamped_interval = max(30, int(interval_seconds))
+        if int(interval_seconds) < 30:
+            logger.warning(
+                "后台任务 %s 请求间隔 %ds，但调度循环每 30s 轮询一次，已自动调整为 30s",
+                name or getattr(task, "__name__", "background_task"),
+                interval_seconds,
+            )
         entry = {
             "task": task,
-            "interval_seconds": max(1, int(interval_seconds)),
+            "interval_seconds": clamped_interval,
             "last_run": 0.0,
             "name": name or getattr(task, "__name__", "background_task"),
             "thread": None,

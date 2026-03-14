@@ -10,7 +10,6 @@ Usage:
 
 import logging
 import time
-import uuid
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import List, Optional
 
