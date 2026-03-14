@@ -39,10 +39,10 @@ def check_content_integrity(result: "AnalysisResult") -> Tuple[bool, List[str]]:
     if result.sentiment_score is None:
         missing.append("sentiment_score")
     advice = result.operation_advice
-    if not advice or (isinstance(advice, str) and not advice.strip()):
+    if not advice or not isinstance(advice, str) or not advice.strip():
         missing.append("operation_advice")
     summary = result.analysis_summary
-    if not summary or (isinstance(summary, str) and not summary.strip()):
+    if not summary or not isinstance(summary, str) or not summary.strip():
         missing.append("analysis_summary")
     dash = result.dashboard if isinstance(result.dashboard, dict) else {}
     core = dash.get("core_conclusion")

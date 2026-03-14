@@ -42,7 +42,14 @@ from tenacity import (
 
 # Timeout (seconds) for efinance library calls that go through eastmoney APIs
 # with no built-in timeout.  Prevents indefinite hangs when hosts are unreachable.
-_EF_CALL_TIMEOUT = int(os.environ.get("EFINANCE_CALL_TIMEOUT", "30"))
+try:
+    _EF_CALL_TIMEOUT = int(os.environ.get("EFINANCE_CALL_TIMEOUT", "30"))
+except (ValueError, TypeError):
+    import logging as _logging
+    _logging.getLogger(__name__).warning(
+        "EFINANCE_CALL_TIMEOUT is not a valid integer, using default 30s"
+    )
+    _EF_CALL_TIMEOUT = 30
 
 from patch.eastmoney_patch import eastmoney_patch
 from src.config import get_config
@@ -163,13 +170,22 @@ def _ef_call_with_timeout(func, *args, timeout=None, **kwargs):
 
     efinance internally uses requests/urllib3 with no timeout, so when
     eastmoney hosts are unreachable the call can hang for many minutes.
-    This helper caps the wait time.
+    This helper caps the *calling thread's* wait time.  Note: Python threads
+    cannot be forcibly killed, so the worker thread may continue running in
+    the background until the OS-level TCP timeout fires or the process exits.
+    This is acceptable — the calling thread returns promptly on timeout.
     """
     if timeout is None:
         timeout = _EF_CALL_TIMEOUT
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(func, *args, **kwargs)
+    # Do NOT use 'with ThreadPoolExecutor(...)' here: the context manager calls
+    # shutdown(wait=True) on __exit__, which would re-block on the hung thread.
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        future = executor.submit(func, *args, **kwargs)
         return future.result(timeout=timeout)
+    finally:
+        # wait=False: calling thread returns immediately; worker cleans up later
+        executor.shutdown(wait=False)
 
 
 def _classify_eastmoney_error(exc: Exception) -> Tuple[str, str]:

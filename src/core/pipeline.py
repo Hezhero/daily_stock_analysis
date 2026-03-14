@@ -698,9 +698,10 @@ class StockAnalysisPipeline:
                     "buy": "买入", "sell": "卖出", "hold": "持有",
                     "strong_buy": "强烈买入", "strong_sell": "强烈卖出",
                 }
-                result.operation_advice = _signal_to_advice.get(
-                    dash.get("decision_type", "hold"), "观望"
-                )
+                # Normalize decision_type (strip/lower) before lookup so
+                # variants like "BUY" or " Buy " map correctly.
+                raw_dt = str(dash.get("decision_type") or "hold").strip().lower()
+                result.operation_advice = _signal_to_advice.get(raw_dt, "观望")
             else:
                 result.operation_advice = str(raw_advice) if raw_advice else "观望"
             from src.agent.protocols import normalize_decision_signal
