@@ -354,7 +354,11 @@ const HomePage: React.FC = () => {
       }
 
       // Task submitted, SSE will push updates
-      console.log('Task submitted:', response.taskId);
+      if ('taskId' in response) {
+        console.log('Task submitted:', response.taskId);
+      } else {
+        console.log('Batch tasks submitted:', response.accepted.map((task) => task.taskId));
+      }
     } catch (err) {
       console.error('Analysis failed:', err);
       if (currentRequestId === analysisRequestIdRef.current) {
