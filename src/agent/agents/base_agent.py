@@ -118,6 +118,7 @@ class BaseAgent(ABC):
             result.tool_calls_count = len(loop_result.tool_calls_log)
             result.meta["raw_text"] = loop_result.content
             result.meta["models_used"] = loop_result.models_used
+            result.meta["tool_calls_log"] = loop_result.tool_calls_log
 
             if not loop_result.success:
                 result.status = StageStatus.FAILED

@@ -1544,7 +1544,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": "false",
         "options": [],
         "validation": {},
-        "display_order": 65,
+        "display_order": 66,
     },
     "AGENT_STRATEGY_AUTOWEIGHT": {
         "title": "Auto-Weight Strategies",
@@ -1558,7 +1558,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": "true",
         "options": [],
         "validation": {},
-        "display_order": 66,
+        "display_order": 67,
     },
     "AGENT_STRATEGY_ROUTING": {
         "title": "Strategy Routing",
@@ -1575,7 +1575,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
             {"label": "Manual (Use AGENT_SKILLS)", "value": "manual"},
         ],
         "validation": {},
-        "display_order": 67,
+        "display_order": 68,
     },
     "AGENT_EVENT_MONITOR_ENABLED": {
         "title": "Event Monitor",
@@ -1589,7 +1589,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": "false",
         "options": [],
         "validation": {},
-        "display_order": 68,
+        "display_order": 69,
     },
     "AGENT_EVENT_MONITOR_INTERVAL_MINUTES": {
         "title": "Event Monitor Interval",
@@ -1603,7 +1603,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": "5",
         "options": [],
         "validation": {"min": 1, "max": 1440},
-        "display_order": 69,
+        "display_order": 70,
     },
     "AGENT_EVENT_ALERT_RULES_JSON": {
         "title": "Event Alert Rules",
@@ -1617,7 +1617,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": "",
         "options": [],
         "validation": {},
-        "display_order": 70,
+        "display_order": 71,
     },
 }
 

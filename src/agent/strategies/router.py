@@ -93,7 +93,10 @@ class StrategyRouter:
             raw = op.raw_data or {}
 
             ma_alignment = raw.get("ma_alignment", "").lower()
-            trend_score = raw.get("trend_score", 50)
+            try:
+                trend_score = float(raw.get("trend_score", 50))
+            except (TypeError, ValueError):
+                trend_score = 50.0
             volume_status = raw.get("volume_status", "").lower()
 
             if ma_alignment == "bullish" and trend_score >= 70:

@@ -126,6 +126,8 @@ class SystemConfigServiceTestCase(unittest.TestCase):
                 {"key": "LITELLM_MODEL", "value": "gemini/gemini-2.5-flash"},
             ]
         )
+        self.assertTrue(validation["valid"])
+        self.assertEqual(validation["issues"], [])
 
     def test_get_config_preserves_labeled_select_options_and_enum_validation(self) -> None:
         payload = self.service.get_config(include_schema=True)

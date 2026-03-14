@@ -159,9 +159,11 @@ async def list_chat_sessions(limit: int = 50, user_id: Optional[str] = None):
 
     Args:
         limit: Maximum number of sessions to return.
-        user_id: Optional user identifier for session isolation.
-            When provided, only sessions whose session_id starts with
-            this prefix are returned (e.g. ``telegram_12345``).
+        user_id: Optional platform-prefixed user identifier for session
+            isolation.  When provided, only sessions whose session_id
+            starts with this prefix are returned.  The value must
+            include the platform prefix, e.g. ``telegram_12345``,
+            ``feishu_ou_abc``.
     """
     from src.storage import get_db
     sessions = get_db().get_chat_sessions(limit=limit, session_prefix=user_id)
