@@ -10,7 +10,7 @@ Responsible for:
 
 Risk flags use a two-level severity system:
 - **soft**: downgrades the signal and adds a visible warning
-- **hard**: vetoes buy signals entirely (when risk override is enabled)
+- **hard**: vetoes buy signals entirely when risk override is enabled
 """
 
 from __future__ import annotations
