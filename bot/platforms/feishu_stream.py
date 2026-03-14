@@ -610,6 +610,7 @@ class FeishuStreamClient:
     def stop(self) -> None:
         """停止客户端"""
         self._running = False
+        FeishuStreamHandler._executor.shutdown(wait=False)
         logger.info("[Feishu Stream] 客户端已停止")
 
     @property

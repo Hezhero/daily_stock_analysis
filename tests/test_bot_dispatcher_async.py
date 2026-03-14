@@ -11,7 +11,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 try:
     import litellm  # noqa: F401
 except ModuleNotFoundError:
-    sys.modules["litellm"] = MagicMock()
+    from tests.litellm_stub import ensure_litellm_stub
+    ensure_litellm_stub()
 
 from bot.commands.base import BotCommand
 from bot.dispatcher import CommandDispatcher

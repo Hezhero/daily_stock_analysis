@@ -12,7 +12,8 @@ from unittest.mock import MagicMock, patch
 try:
     import litellm  # noqa: F401
 except ModuleNotFoundError:
-    sys.modules["litellm"] = MagicMock()
+    from tests.litellm_stub import ensure_litellm_stub
+    ensure_litellm_stub()
 
 from bot.commands.ask import AskCommand
 from bot.models import BotMessage, ChatType

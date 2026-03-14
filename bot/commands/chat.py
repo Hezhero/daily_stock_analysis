@@ -58,7 +58,7 @@ class ChatCommand(BotCommand):
     def validate_args(self, args: List[str]) -> Optional[str]:
         """Require at least one argument (the question)."""
         if not args:
-            return "请提供要询问的问题。\n用法: `/chat <问题>`\n示例: `/chat 帮我分析一下茅台最近的走势`"
+            return "请提供要询问的问题。"
         return None
 
     def execute(self, message: BotMessage, args: list[str]) -> BotResponse:

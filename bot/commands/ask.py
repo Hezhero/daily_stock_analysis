@@ -77,6 +77,29 @@ class AskCommand(BotCommand):
     def usage(self) -> str:
         return "/ask <股票代码[,代码2,...]> [策略名称]"
 
+    def _merge_code_args(self, args: List[str]) -> tuple:
+        """Merge stock code arguments that may be separated by 'vs', commas, or spaces.
+
+        Returns (raw_code_str, remaining_args) where remaining_args are strategy tokens.
+        Handles inputs like: ``600519, 000858``, ``600519 vs 000858``, ``600519,000858``.
+        """
+        _CODE_LIKE = re.compile(r"^,?(\d{6}|hk\d{5}|[A-Za-z]{1,5}(\.[A-Za-z]{1,2})?),?$", re.IGNORECASE)
+        raw_codes_parts = [args[0]]
+        rest_args = list(args[1:])
+        while rest_args:
+            token = rest_args[0]
+            if token.lower() == "vs" and len(rest_args) > 1:
+                raw_codes_parts.append(rest_args[1])
+                rest_args = rest_args[2:]
+            elif _CODE_LIKE.match(token):
+                # Adjacent code-like token (e.g. from "600519, 000858" split)
+                raw_codes_parts.append(token)
+                rest_args = rest_args[1:]
+            else:
+                break
+        raw_code_str = ",".join(raw_codes_parts)
+        return raw_code_str, rest_args
+
     def _parse_stock_codes(self, raw: str) -> List[str]:
         """Parse one or more stock codes from the first argument.
 
@@ -105,15 +128,10 @@ class AskCommand(BotCommand):
     def validate_args(self, args: List[str]) -> Optional[str]:
         """Validate arguments."""
         if not args:
-            return "请输入股票代码。用法: /ask <股票代码> [策略名称]\n示例: /ask 600519 用缠论分析"
+            return "请输入股票代码"
 
-        # Handle "600519 vs 000858" — merge into comma form
-        raw_codes_parts = [args[0]]
-        rest_args = list(args[1:])
-        while rest_args and rest_args[0].lower() == "vs" and len(rest_args) > 1:
-            raw_codes_parts.append(rest_args[1])
-            rest_args = rest_args[2:]
-        raw_code_str = ",".join(raw_codes_parts)
+        # Handle "600519 vs 000858", "600519, 000858", "600519,000858"
+        raw_code_str, _ = self._merge_code_args(args)
 
         codes = self._parse_stock_codes(raw_code_str)
         if not codes:
@@ -177,16 +195,11 @@ class AskCommand(BotCommand):
                 "⚠️ Agent 模式不可用，无法使用问股功能。\n请配置 `LITELLM_MODEL` 或设置 `AGENT_MODE=true`。"
             )
 
-        # Parse stock codes — handle "600519,000858" and "600519 vs 000858"
-        raw_codes_parts = [args[0]]
-        rest_args = list(args[1:])
-        while rest_args and rest_args[0].lower() == "vs" and len(rest_args) > 1:
-            raw_codes_parts.append(rest_args[1])
-            rest_args = rest_args[2:]
-        raw_code_str = ",".join(raw_codes_parts)
+        # Parse stock codes — handle "600519,000858", "600519 vs 000858", "600519, 000858"
+        raw_code_str, remaining_args = self._merge_code_args(args)
         codes = self._parse_stock_codes(raw_code_str)
 
-        strategy_args = self._get_strategy_args(args)
+        strategy_args = remaining_args
         strategy_id = self._parse_strategy(["placeholder"] + strategy_args) if strategy_args else self._parse_strategy(args)
         strategy_text = " ".join(strategy_args).strip()
 
