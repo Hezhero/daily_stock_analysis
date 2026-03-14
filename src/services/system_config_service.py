@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import re
 import time
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
@@ -382,6 +383,40 @@ class SystemConfigService:
                         "actual": value,
                     }
                 )
+
+        elif data_type == "json":
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                issues.append(
+                    {
+                        "key": key,
+                        "code": "invalid_json",
+                        "message": "Value must be valid JSON",
+                        "severity": "error",
+                        "expected": "valid JSON",
+                        "actual": value[:120],
+                    }
+                )
+            else:
+                if key == "AGENT_EVENT_ALERT_RULES_JSON":
+                    try:
+                        from src.agent.events import parse_event_alert_rules, validate_event_alert_rule
+
+                        rule_index = 0
+                        for rule_index, rule in enumerate(parse_event_alert_rules(parsed), start=1):
+                            validate_event_alert_rule(rule)
+                    except ValueError as exc:
+                        issues.append(
+                            {
+                                "key": key,
+                                "code": "invalid_event_rule",
+                                "message": f"Rule validation failed: {exc}",
+                                "severity": "error",
+                                "expected": "supported EventMonitor rule fields and enum values",
+                                "actual": f"rule #{rule_index or 1}",
+                            }
+                        )
 
         if "enum" in validation and value and value not in validation["enum"]:
             issues.append(
