@@ -36,7 +36,10 @@ if os.getenv("GITHUB_ACTIONS") != "true" and os.getenv("USE_PROXY", "false").low
     os.environ["https_proxy"] = proxy_url
 
 import argparse
+import json
 import logging
+import os
+import subprocess
 import sys
 import time
 import uuid
@@ -52,6 +55,72 @@ from src.logging_config import setup_logging
 
 
 logger = logging.getLogger(__name__)
+
+
+def _build_candidate_payload(stock_codes: List[str], trade_date: str | None = None) -> dict:
+    """Build enhancer payload from stock list and built-in strategy YAML files.
+
+    Current integration strategy:
+    - Use the scheduled/input stock list as the base candidate pool
+    - Expose built-in strategy ids so candidate_enhancer can apply its weighted fusion logic
+    - Keep payload format compatible with scripts/candidate_enhancer.py
+    """
+    strategies_dir = os.path.join(os.path.dirname(__file__), 'strategies')
+    strategy_payload = {}
+    try:
+        for filename in sorted(os.listdir(strategies_dir)):
+            if not filename.endswith(('.yaml', '.yml')):
+                continue
+            strategy_id = os.path.splitext(filename)[0]
+            strategy_payload[strategy_id] = [
+                {'code': code, 'source': 'scheduled_stock_list'} for code in stock_codes
+            ]
+    except Exception as exc:
+        logger.warning(f"构建候选增强策略映射失败，将降级为空策略映射: {exc}")
+        strategy_payload = {}
+
+    return {
+        'trade_date': trade_date or datetime.now().strftime('%Y-%m-%d'),
+        'codes': stock_codes,
+        'strategies': strategy_payload,
+    }
+
+
+def _run_candidate_enhancer(config: Config, stock_codes: List[str]) -> Tuple[List[str], Optional[str], Optional[str]]:
+    """Run candidate enhancer and return TopN codes + output artifact paths."""
+    output_dir = os.path.abspath(getattr(config, 'candidate_enhancer_output_dir', './reports/candidate_enhancer'))
+    os.makedirs(output_dir, exist_ok=True)
+    date_tag = datetime.now().strftime('%Y%m%d_%H%M%S')
+    input_path = os.path.join(output_dir, f'candidate_input_{date_tag}.json')
+    output_json = os.path.join(output_dir, f'candidate_enhanced_{date_tag}.json')
+    output_csv = os.path.join(output_dir, f'candidate_enhanced_{date_tag}.csv')
+
+    payload = _build_candidate_payload(stock_codes)
+    with open(input_path, 'w', encoding='utf-8') as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    enhancer_script = os.path.join(os.path.dirname(__file__), 'scripts', 'candidate_enhancer.py')
+    conda_bin = '/root/anaconda3/bin/conda'
+    top_n = max(1, int(getattr(config, 'candidate_enhancer_top_n', 10) or 10))
+
+    cmd = [
+        conda_bin, 'run', '-n', 'daily_stock_analysis', 'python', enhancer_script,
+        '--input', input_path,
+        '--output', output_json,
+        '--output_csv', output_csv,
+        '--top_n', str(top_n),
+    ]
+    logger.info('开始执行候选股增强流程: %s', ' '.join(cmd))
+    completed = subprocess.run(cmd, check=True, capture_output=True, text=True)
+    if completed.stdout:
+        logger.info('候选增强输出: %s', completed.stdout.strip())
+    if completed.stderr:
+        logger.warning('候选增强日志: %s', completed.stderr.strip())
+
+    with open(output_json, 'r', encoding='utf-8') as f:
+        result = json.load(f)
+    top_codes = [item.get('code') for item in result.get('top_candidates', []) if item.get('code')]
+    return top_codes, output_json, output_csv
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -285,6 +354,19 @@ def run_full_analysis(
             logger.info("今日休市股票已跳过: %s", skipped)
         stock_codes = filtered_codes
 
+        enhancer_json = None
+        enhancer_csv = None
+        if getattr(config, 'candidate_enhancer_enabled', False) and stock_codes:
+            try:
+                enhanced_codes, enhancer_json, enhancer_csv = _run_candidate_enhancer(config, stock_codes)
+                if enhanced_codes:
+                    logger.info('候选增强完成：%d -> %d，只分析 TopN 股票: %s', len(stock_codes), len(enhanced_codes), enhanced_codes)
+                    stock_codes = enhanced_codes
+                else:
+                    logger.warning('候选增强未返回有效 TopN 股票，回退到原始股票列表')
+            except Exception as exc:
+                logger.exception(f'候选增强执行失败，回退到原始股票列表: {exc}')
+
         # 命令行参数 --single-notify 覆盖配置（#55）
         if getattr(args, 'single_notify', False):
             config.single_stock_notify = True
@@ -376,6 +458,9 @@ def run_full_analysis(
                     f"{emoji} {r.name}({r.code}): {r.operation_advice} | "
                     f"评分 {r.sentiment_score} | {r.trend_prediction}"
                 )
+
+        if enhancer_json or enhancer_csv:
+            logger.info('候选增强结果文件: json=%s csv=%s', enhancer_json, enhancer_csv)
 
         logger.info("\n任务执行完成")
 
