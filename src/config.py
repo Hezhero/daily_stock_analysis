@@ -531,6 +531,11 @@ class Config:
     agent_event_monitor_interval_minutes: int = 5  # Polling interval for event monitor background checks
     agent_event_alert_rules_json: str = ""  # JSON array of serialized EventMonitor rules
 
+    # === 候选股增强配置 ===
+    candidate_enhancer_enabled: bool = False  # 是否启用“候选股 -> 增强排序 -> TopN正式分析”流程
+    candidate_enhancer_top_n: int = 10  # 增强后进入正式分析的TopN股票数
+    candidate_enhancer_output_dir: str = './reports/candidate_enhancer'  # 增强结果落盘目录
+
     # === 通知配置（可同时配置多个，全部推送）===
     
     # 企业微信 Webhook
@@ -1168,6 +1173,9 @@ class Config:
                 minimum=1,
             ),
             agent_event_alert_rules_json=os.getenv('AGENT_EVENT_ALERT_RULES_JSON', ''),
+            candidate_enhancer_enabled=os.getenv('CANDIDATE_ENHANCER_ENABLED', 'false').lower() == 'true',
+            candidate_enhancer_top_n=max(1, int(os.getenv('CANDIDATE_ENHANCER_TOP_N', '10'))),
+            candidate_enhancer_output_dir=os.getenv('CANDIDATE_ENHANCER_OUTPUT_DIR', './reports/candidate_enhancer'),
             wechat_webhook_url=os.getenv('WECHAT_WEBHOOK_URL'),
             feishu_webhook_url=os.getenv('FEISHU_WEBHOOK_URL'),
             telegram_bot_token=os.getenv('TELEGRAM_BOT_TOKEN'),
