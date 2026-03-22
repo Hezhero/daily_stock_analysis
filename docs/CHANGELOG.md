@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - 🧾 **Web 报告透明度区复制按钮层级修复**（#749）— `ReportDetails` 中“原始分析结果 / 分析快照”的复制按钮补齐可点击层级，避免被下方 JSON 内容覆盖后出现按钮可见但无法点击的问题。
 - 🧾 **Web 报告详情复制提示按面板独立** — `ReportDetails` 中“原始分析结果”和“分析快照”的复制提示不再共享同一个 `copied` 状态；当两个面板同时展开时，复制其中一个只会更新对应按钮文案，避免两个按钮同时显示“已复制”的误导反馈。
 - 📊 **Agent backtest tool semantics** — `get_skill_backtest_summary` 现在要求显式传入 `skill_id`，缺失时会返回明确的校验提示；当仓库尚未持久化真实 skill 级汇总时会返回明确的 unsupported/info 响应，而不再复用 overall 指标。成功返回路径会同时保留 normalized 指标和 `*_pct` 兼容字段，相关工具错误返回也改为稳定通用文案，避免向 agent 或用户暴露底层异常细节。
+- 📋 **首页完整报告支持双模式复制** — 历史报告详情头部新增“复制 Markdown 源码”和“复制纯文本”工具按钮；前者保留原始 Markdown 结构，后者去除常见 Markdown 格式符号，方便分享、归档和跨报告比对。复制按钮文案会跟随 `REPORT_LANGUAGE` 保持中英文一致，避免英文报告页出现中文固定文案。
 
 ## [3.9.0] - 2026-03-20
 
