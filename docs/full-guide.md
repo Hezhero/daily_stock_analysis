@@ -493,6 +493,8 @@ python main.py --schedule
 python main.py --schedule --no-run-immediately
 ```
 
+> 说明：定时模式每次触发前都会重新读取当前保存的 `STOCK_LIST`。如果同时传入 `--stocks`，该参数不会锁定后续计划执行的股票列表；需要临时只跑指定股票时，请使用非定时的单次运行命令。
+
 #### 环境变量方式
 
 你也可以通过环境变量配置定时行为（适用于 Docker 或 .env）：

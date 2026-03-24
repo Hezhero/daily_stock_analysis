@@ -439,6 +439,8 @@ crontab -e
 # Add: 0 18 * * 1-5 cd /path/to/project && python main.py
 ```
 
+> Note: Scheduled mode reloads the saved `STOCK_LIST` before each run. If you also pass `--stocks`, it will not pin future scheduled executions to the startup snapshot; use a normal one-off run when you want to analyze a temporary stock list.
+
 ---
 
 ## Notification Channel Configuration
