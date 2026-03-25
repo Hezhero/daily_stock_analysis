@@ -72,6 +72,44 @@ def _is_us_code(stock_code: str) -> bool:
     return bool(re.match(r'^[A-Z]{1,5}(\.[A-Z])?$', code))
 
 
+class _TushareHttpClient:
+    """Lightweight Tushare Pro client that does not require the tushare SDK."""
+
+    def __init__(self, token: str, timeout: int = 30, api_url: str = "http://api.tushare.pro") -> None:
+        self._token = token
+        self._timeout = timeout
+        self._api_url = api_url
+
+    def query(self, api_name: str, fields: str = "", **kwargs) -> pd.DataFrame:
+        req_params = {
+            "api_name": api_name,
+            "token": self._token,
+            "params": kwargs,
+            "fields": fields,
+        }
+        res = requests.post(self._api_url, json=req_params, timeout=self._timeout)
+        if res.status_code != 200:
+            raise Exception(f"Tushare API HTTP {res.status_code}")
+
+        result = _json.loads(res.text)
+        if result.get("code") != 0:
+            raise Exception(result.get("msg") or f"Tushare API error code {result.get('code')}")
+
+        data = result.get("data") or {}
+        columns = data.get("fields") or []
+        items = data.get("items") or []
+        return pd.DataFrame(items, columns=columns)
+
+    def __getattr__(self, api_name: str):
+        if api_name.startswith("_"):
+            raise AttributeError(api_name)
+
+        def caller(**kwargs) -> pd.DataFrame:
+            return self.query(api_name, **kwargs)
+
+        return caller
+
+
 class TushareFetcher(BaseFetcher):
     """
     Tushare Pro 数据源实现
@@ -115,70 +153,34 @@ class TushareFetcher(BaseFetcher):
     def _init_api(self) -> None:
         """
         初始化 Tushare API
-        
-        如果 Token 未配置，此数据源将不可用
+
+        如果 Token 未配置，此数据源将不可用。
+        这里直接使用内置 HTTP client，避免运行时强依赖 tushare SDK，
+        从而减少 Docker / PyInstaller / 多虚拟环境场景下因缺包导致的初始化失败。
         """
         config = get_config()
-        
+
         if not config.tushare_token:
             logger.warning("Tushare Token 未配置，此数据源不可用")
             return
-        
-        try:
-            import tushare as ts
-            
-            # Set Token
-            ts.set_token(config.tushare_token)
-            
-            # Get API instance
-            self._api = ts.pro_api()
-            
-            # Fix: tushare SDK 1.4.x hardcodes api.waditu.com/dataapi which may
-            # be unavailable (503). Monkey-patch the query method to use the
-            # official api.tushare.pro endpoint which posts to root URL.
-            self._patch_api_endpoint(config.tushare_token)
 
+        try:
+            self._api = self._build_api_client(config.tushare_token)
             logger.info("Tushare API 初始化成功")
-            
         except Exception as e:
             logger.error(f"Tushare API 初始化失败: {e}")
             self._api = None
 
-    def _patch_api_endpoint(self, token: str) -> None:
+    def _build_api_client(self, token: str) -> _TushareHttpClient:
         """
-        Patch tushare SDK to use the official api.tushare.pro endpoint.
+        Build a lightweight Tushare Pro client over direct HTTP requests.
 
-        The SDK (v1.4.x) hardcodes http://api.waditu.com/dataapi and appends
-        /{api_name} to the URL. That endpoint may return 503, causing silent
-        empty-DataFrame failures. This method replaces the query method to
-        POST directly to http://api.tushare.pro (root URL, no path suffix).
+        The project already normalizes all Pro calls through the same request
+        contract, so we do not need the official tushare SDK during runtime.
         """
-        import types
-
-        TUSHARE_API_URL = "http://api.tushare.pro"
-        _token = token
-        _timeout = getattr(self._api, '_DataApi__timeout', 30)
-
-        def patched_query(self_api, api_name, fields='', **kwargs):
-            req_params = {
-                'api_name': api_name,
-                'token': _token,
-                'params': kwargs,
-                'fields': fields,
-            }
-            res = requests.post(TUSHARE_API_URL, json=req_params, timeout=_timeout)
-            if res.status_code != 200:
-                raise Exception(f"Tushare API HTTP {res.status_code}")
-            result = _json.loads(res.text)
-            if result['code'] != 0:
-                raise Exception(result['msg'])
-            data = result['data']
-            columns = data['fields']
-            items = data['items']
-            return pd.DataFrame(items, columns=columns)
-
-        self._api.query = types.MethodType(patched_query, self._api)
-        logger.debug(f"Tushare API endpoint patched to {TUSHARE_API_URL}")
+        client = _TushareHttpClient(token=token)
+        logger.debug("Tushare API client configured for direct HTTP calls")
+        return client
 
     def _determine_priority(self) -> int:
         """
