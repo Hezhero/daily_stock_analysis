@@ -308,6 +308,36 @@ class TushareFetcher(BaseFetcher):
         if use_today or len(trade_dates) == 1:
             return trade_dates[0]
         return trade_dates[1]
+
+    @staticmethod
+    def _detect_exchange_hint(stock_code: str) -> Optional[str]:
+        """Return SH/SZ/BJ when the raw user input carries an explicit exchange hint."""
+        upper = (stock_code or "").strip().upper()
+        if upper.startswith(("SH", "SS")) or upper.endswith((".SH", ".SS")):
+            return "SH"
+        if upper.startswith("SZ") or upper.endswith(".SZ"):
+            return "SZ"
+        if upper.startswith("BJ") or upper.endswith(".BJ"):
+            return "BJ"
+        return None
+
+    @classmethod
+    def _get_legacy_realtime_symbol(cls, stock_code: str) -> str:
+        """Build the legacy tushare symbol while preserving explicit SH/SZ hints."""
+        code = normalize_stock_code(stock_code)
+        exchange_hint = cls._detect_exchange_hint(stock_code)
+
+        if code == '000001' and exchange_hint == 'SH':
+            return 'sh000001'
+        if code == '399001':
+            return 'sz399001'
+        if code == '399006':
+            return 'sz399006'
+        if code == '000300':
+            return 'sh000300'
+        if is_bse_code(code):
+            return f"bj{code}"
+        return code
     
     def _convert_stock_code(self, stock_code: str) -> str:
         """
@@ -325,15 +355,31 @@ class TushareFetcher(BaseFetcher):
         Returns:
             Tushare 格式代码，如 '600519.SH', '000001.SZ', '563230.SH'
         """
-        code = stock_code.strip()
+        raw_code = stock_code.strip()
         
         # Already has suffix
-        if '.' in code:
-            return code.upper()
+        if '.' in raw_code:
+            ts_code = raw_code.upper()
+            if ts_code.endswith('.SS'):
+                return f"{ts_code[:-3]}.SH"
+            return ts_code
+
+        if _is_us_code(raw_code):
+            raise DataFetchError(f"TushareFetcher 不支持美股 {raw_code}，请使用 AkshareFetcher 或 YfinanceFetcher")
 
         # HK stocks are not supported by Tushare
-        if _is_hk_market(code):
-            raise DataFetchError(f"TushareFetcher 不支持港股 {code}，请使用 AkshareFetcher")
+        if _is_hk_market(raw_code):
+            raise DataFetchError(f"TushareFetcher 不支持港股 {raw_code}，请使用 AkshareFetcher")
+
+        code = normalize_stock_code(raw_code)
+        exchange_hint = self._detect_exchange_hint(raw_code)
+
+        if exchange_hint == "SH":
+            return f"{code}.SH"
+        if exchange_hint == "SZ":
+            return f"{code}.SZ"
+        if exchange_hint == "BJ":
+            return f"{code}.BJ"
 
         # ETF: determine exchange by prefix
         if code.startswith(_ETF_SH_PREFIXES) and len(code) == 6:
@@ -595,6 +641,8 @@ class TushareFetcher(BaseFetcher):
             logger.debug(f"TushareFetcher 跳过港股实时行情 {stock_code}")
             return None
 
+        normalized_code = normalize_stock_code(stock_code)
+
         from .realtime_types import (
             RealtimeSource,
             safe_float, safe_int
@@ -614,7 +662,7 @@ class TushareFetcher(BaseFetcher):
                 logger.debug(f"Tushare Pro 实时行情获取成功: {stock_code}")
 
                 return UnifiedRealtimeQuote(
-                    code=stock_code,
+                    code=normalized_code,
                     name=str(row.get('name', '')),
                     source=RealtimeSource.TUSHARE,
                     price=safe_float(row.get('price')),
@@ -639,23 +687,7 @@ class TushareFetcher(BaseFetcher):
         try:
             import tushare as ts
 
-            # Tushare 旧版接口使用 6 位代码
-            code_6 = stock_code.split('.')[0] if '.' in stock_code else stock_code
-
-            # 特殊处理指数代码：旧版接口需要前缀 (sh000001, sz399001)
-            # 简单的指数判断逻辑
-            if code_6 == '000001':  # 上证指数
-                symbol = 'sh000001'
-            elif code_6 == '399001':  # 深证成指
-                symbol = 'sz399001'
-            elif code_6 == '399006':  # 创业板指
-                symbol = 'sz399006'
-            elif code_6 == '000300':  # 沪深300
-                symbol = 'sh000300'
-            elif is_bse_code(code_6):  # 北交所
-                symbol = f"bj{code_6}"
-            else:
-                symbol = code_6
+            symbol = self._get_legacy_realtime_symbol(stock_code)
 
             # 调用旧版实时接口 (ts.get_realtime_quotes)
             df = ts.get_realtime_quotes(symbol)
@@ -677,7 +709,7 @@ class TushareFetcher(BaseFetcher):
 
             # 构建统一对象
             return UnifiedRealtimeQuote(
-                code=stock_code,
+                code=normalized_code,
                 name=str(row['name']),
                 source=RealtimeSource.TUSHARE,
                 price=price,
