@@ -1,0 +1,10 @@
+2026-03-25 00:05:05,886 - INFO - 表结构和索引创建成功
+2026-03-25 00:05:05,954 - INFO - 列注释添加成功
+2026-03-25 00:05:05,957 - INFO - 数据库表初始化完成
+2026-03-25 00:05:11,367 - ERROR - 获取股票列表失败: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+2026-03-25 00:05:11,367 - ERROR - 没有获取到股票列表，程序退出
+2026-03-26 00:05:05,932 - INFO - 表结构和索引创建成功
+2026-03-26 00:05:05,979 - INFO - 列注释添加成功
+2026-03-26 00:05:05,981 - INFO - 数据库表初始化完成
+2026-03-26 00:05:13,846 - ERROR - 获取股票列表失败: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+2026-03-26 00:05:13,846 - ERROR - 没有获取到股票列表，程序退出

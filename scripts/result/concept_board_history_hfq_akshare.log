@@ -1,0 +1,10 @@
+2026-03-25 03:30:16,388 - INFO - 表结构和索引创建成功
+2026-03-25 03:30:16,420 - INFO - 列注释添加成功
+2026-03-25 03:30:16,425 - INFO - 数据库表结构初始化完成
+2026-03-25 03:30:21,808 - ERROR - 获取概念板块列表时出错：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+2026-03-25 03:30:21,808 - ERROR - 无法获取概念板块列表，程序终止
+2026-03-26 03:30:04,968 - INFO - 表结构和索引创建成功
+2026-03-26 03:30:05,085 - INFO - 列注释添加成功
+2026-03-26 03:30:05,086 - INFO - 数据库表结构初始化完成
+2026-03-26 03:30:11,548 - ERROR - 获取概念板块列表时出错：('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+2026-03-26 03:30:11,549 - ERROR - 无法获取概念板块列表，程序终止

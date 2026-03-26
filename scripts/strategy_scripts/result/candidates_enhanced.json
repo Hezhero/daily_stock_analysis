@@ -1,0 +1,3169 @@
+{
+  "trade_date": "2026-03-25",
+  "generated_at": "2026-03-26 08:51:40",
+  "strategy_weights": {
+    "bull_trend": 1.0,
+    "ma_golden_cross": 1.0,
+    "shrink_pullback": 1.0,
+    "volume_breakout": 1.0,
+    "bottom_volume": 1.0,
+    "box_oscillation": 1.0,
+    "dragon_head": 1.0,
+    "emotion_cycle": 1.0,
+    "one_yang_three_yin": 1.0,
+    "wave_theory": 1.0,
+    "chan_theory": 1.0
+  },
+  "candidate_count": 27,
+  "scored_count": 23,
+  "top_n": 10,
+  "top_candidates": [
+    {
+      "status": "ok",
+      "code": "sz.002038",
+      "name": "sz.002038",
+      "price": 6.25,
+      "change_pct": 10.0352,
+      "turnover_rate": 0.0,
+      "volume_ratio": 2.09,
+      "trend_status": "空头排列",
+      "buy_signal": "观望",
+      "signal_score": 37,
+      "matched_source_strategies": [
+        "低位涨停换手率策略"
+      ],
+      "score_breakdown": {
+        "trend": 15.0,
+        "position": 0,
+        "chip": 3.0,
+        "volume_pattern": 15.0,
+        "risk_penalty": 8.0,
+        "stock_backtest": 3.0,
+        "strategy_total": 17.0
+      },
+      "strategy_hits": {
+        "bull_trend": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "ma_golden_cross": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "shrink_pullback": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "volume_breakout": {
+          "raw_score": 4,
+          "weighted_score": 4.0,
+          "reason": "量能开始放大"
+        },
+        "bottom_volume": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "box_oscillation": {
+          "raw_score": 7,
+          "weighted_score": 7.0,
+          "reason": "接近箱体底部"
+        },
+        "dragon_head": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "emotion_cycle": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "one_yang_three_yin": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "wave_theory": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "chan_theory": {
+          "raw_score": 6,
+          "weighted_score": 6.0,
+          "reason": "疑似二买/三买区"
+        }
+      },
+      "risk_flags": [
+        "偏离MA5过大，疑似追高"
+      ],
+      "volume_flags": [
+        "量比活跃",
+        "放量上涨",
+        "近端放量突破迹象"
+      ],
+      "final_score": 45.0,
+      "profit_probability": 0.45,
+      "action": "观察",
+      "avg_cost": null,
+      "chip_profit_ratio": null,
+      "stock_backtest": null,
+      "summary": "观察，总分45.0，空头排列，来源于低位涨停换手率策略，偏离MA5过大，疑似追高",
+      "data_source": "BaostockFetcher"
+    },
+    {
+      "status": "ok",
+      "code": "sh.601018",
+      "name": "sh.601018",
+      "price": 4.14,
+      "change_pct": 1.9704,
+      "turnover_rate": 0.0,
+      "volume_ratio": 0.92,
+      "trend_status": "空头排列",
+      "buy_signal": "持有",
+      "signal_score": 50,
+      "matched_source_strategies": [
+        "神奇九转策略"
+      ],
+      "score_breakdown": {
+        "trend": 8.0,
+        "position": 14.0,
+        "chip": 3.0,
+        "volume_pattern": 0,
+        "risk_penalty": 6.0,
+        "stock_backtest": 3.0,
+        "strategy_total": 13.0
+      },
+      "strategy_hits": {
+        "bull_trend": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "ma_golden_cross": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "shrink_pullback": {
+          "raw_score": 4,
+          "weighted_score": 4.0,
+          "reason": "接近MA10支撑"
+        },
+        "volume_breakout": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "bottom_volume": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "box_oscillation": {
+          "raw_score": 2,
+          "weighted_score": 2.0,
+          "reason": "接近箱体顶部"
+        },
+        "dragon_head": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "emotion_cycle": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "one_yang_three_yin": {
+          "raw_score": 6,
+          "weighted_score": 6.0,
+          "reason": "近5日类似一阳夹三阴"
+        },
+        "wave_theory": {
+          "raw_score": 1,
+          "weighted_score": 1.0,
+          "reason": "疑似调整浪中"
+        },
+        "chan_theory": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        }
+      },
+      "risk_flags": [
+        "跌破MA20"
+      ],
+      "volume_flags": [],
+      "final_score": 35.0,
+      "profit_probability": 0.35,
+      "action": "观察",
+      "avg_cost": null,
+      "chip_profit_ratio": null,
+      "stock_backtest": null,
+      "summary": "观察，总分35.0，空头排列，来源于神奇九转策略，跌破MA20",
+      "data_source": "BaostockFetcher"
+    },
+    {
+      "status": "ok",
+      "code": "sz.000958",
+      "name": "sz.000958",
+      "price": 6.63,
+      "change_pct": 1.8433,
+      "turnover_rate": 0.0,
+      "volume_ratio": 1.12,
+      "trend_status": "空头排列",
+      "buy_signal": "持有",
+      "signal_score": 50,
+      "matched_source_strategies": [
+        "神奇九转策略"
+      ],
+      "score_breakdown": {
+        "trend": 8.0,
+        "position": 14.0,
+        "chip": 3.0,
+        "volume_pattern": 0,
+        "risk_penalty": 6.0,
+        "stock_backtest": 3.0,
+        "strategy_total": 12.0
+      },
+      "strategy_hits": {
+        "bull_trend": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "ma_golden_cross": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "shrink_pullback": {
+          "raw_score": 4,
+          "weighted_score": 4.0,
+          "reason": "接近MA10支撑"
+        },
+        "volume_breakout": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "bottom_volume": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "box_oscillation": {
+          "raw_score": 7,
+          "weighted_score": 7.0,
+          "reason": "接近箱体底部"
+        },
+        "dragon_head": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "emotion_cycle": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "one_yang_three_yin": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "wave_theory": {
+          "raw_score": 1,
+          "weighted_score": 1.0,
+          "reason": "疑似调整浪中"
+        },
+        "chan_theory": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        }
+      },
+      "risk_flags": [
+        "跌破MA20"
+      ],
+      "volume_flags": [],
+      "final_score": 34.0,
+      "profit_probability": 0.34,
+      "action": "观察",
+      "avg_cost": null,
+      "chip_profit_ratio": null,
+      "stock_backtest": null,
+      "summary": "观察，总分34.0，空头排列，来源于神奇九转策略，跌破MA20",
+      "data_source": "BaostockFetcher"
+    },
+    {
+      "status": "ok",
+      "code": "sz.300510",
+      "name": "sz.300510",
+      "price": 4.72,
+      "change_pct": 1.0707,
+      "turnover_rate": 0.0,
+      "volume_ratio": 0.73,
+      "trend_status": "空头排列",
+      "buy_signal": "持有",
+      "signal_score": 48,
+      "matched_source_strategies": [
+        "神奇九转策略"
+      ],
+      "score_breakdown": {
+        "trend": 4.0,
+        "position": 14.0,
+        "chip": 3.0,
+        "volume_pattern": 4.0,
+        "risk_penalty": 6.0,
+        "stock_backtest": 3.0,
+        "strategy_total": 11.0
+      },
+      "strategy_hits": {
+        "bull_trend": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "ma_golden_cross": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "shrink_pullback": {
+          "raw_score": 4,
+          "weighted_score": 4.0,
+          "reason": "接近MA10支撑"
+        },
+        "volume_breakout": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "bottom_volume": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "box_oscillation": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "dragon_head": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "emotion_cycle": {
+          "raw_score": 6,
+          "weighted_score": 6.0,
+          "reason": "情绪冷淡，可能处于低位"
+        },
+        "one_yang_three_yin": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "wave_theory": {
+          "raw_score": 1,
+          "weighted_score": 1.0,
+          "reason": "疑似调整浪中"
+        },
+        "chan_theory": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        }
+      },
+      "risk_flags": [
+        "跌破MA20"
+      ],
+      "volume_flags": [
+        "缩量回踩迹象"
+      ],
+      "final_score": 33.0,
+      "profit_probability": 0.33,
+      "action": "观察",
+      "avg_cost": null,
+      "chip_profit_ratio": null,
+      "stock_backtest": null,
+      "summary": "观察，总分33.0，空头排列，来源于神奇九转策略，跌破MA20",
+      "data_source": "BaostockFetcher"
+    },
+    {
+      "status": "ok",
+      "code": "sh.600131",
+      "name": "sh.600131",
+      "price": 20.55,
+      "change_pct": 1.4314,
+      "turnover_rate": 0.0,
+      "volume_ratio": 0.72,
+      "trend_status": "弱势空头",
+      "buy_signal": "持有",
+      "signal_score": 49,
+      "matched_source_strategies": [
+        "神奇九转策略"
+      ],
+      "score_breakdown": {
+        "trend": 4.0,
+        "position": 10.0,
+        "chip": 3.0,
+        "volume_pattern": 0,
+        "risk_penalty": 6.0,
+        "stock_backtest": 3.0,
+        "strategy_total": 17.0
+      },
+      "strategy_hits": {
+        "bull_trend": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "ma_golden_cross": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "shrink_pullback": {
+          "raw_score": 4,
+          "weighted_score": 4.0,
+          "reason": "接近MA10支撑"
+        },
+        "volume_breakout": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "bottom_volume": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "box_oscillation": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "dragon_head": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "emotion_cycle": {
+          "raw_score": 6,
+          "weighted_score": 6.0,
+          "reason": "情绪冷淡，可能处于低位"
+        },
+        "one_yang_three_yin": {
+          "raw_score": 6,
+          "weighted_score": 6.0,
+          "reason": "近5日类似一阳夹三阴"
+        },
+        "wave_theory": {
+          "raw_score": 1,
+          "weighted_score": 1.0,
+          "reason": "疑似调整浪中"
+        },
+        "chan_theory": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        }
+      },
+      "risk_flags": [
+        "跌破MA20"
+      ],
+      "volume_flags": [],
+      "final_score": 31.0,
+      "profit_probability": 0.31,
+      "action": "观察",
+      "avg_cost": null,
+      "chip_profit_ratio": null,
+      "stock_backtest": null,
+      "summary": "观察，总分31.0，弱势空头，来源于神奇九转策略，跌破MA20",
+      "data_source": "BaostockFetcher"
+    },
+    {
+      "status": "ok",
+      "code": "sh.600525",
+      "name": "sh.600525",
+      "price": 5.41,
+      "change_pct": 2.0755,
+      "turnover_rate": 0.0,
+      "volume_ratio": 0.69,
+      "trend_status": "弱势空头",
+      "buy_signal": "持有",
+      "signal_score": 48,
+      "matched_source_strategies": [
+        "神奇九转策略"
+      ],
+      "score_breakdown": {
+        "trend": 4.0,
+        "position": 14.0,
+        "chip": 3.0,
+        "volume_pattern": 0,
+        "risk_penalty": 6.0,
+        "stock_backtest": 3.0,
+        "strategy_total": 11.0
+      },
+      "strategy_hits": {
+        "bull_trend": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "ma_golden_cross": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "shrink_pullback": {
+          "raw_score": 4,
+          "weighted_score": 4.0,
+          "reason": "接近MA10支撑"
+        },
+        "volume_breakout": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "bottom_volume": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "box_oscillation": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "dragon_head": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "emotion_cycle": {
+          "raw_score": 6,
+          "weighted_score": 6.0,
+          "reason": "情绪冷淡，可能处于低位"
+        },
+        "one_yang_three_yin": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "wave_theory": {
+          "raw_score": 1,
+          "weighted_score": 1.0,
+          "reason": "疑似调整浪中"
+        },
+        "chan_theory": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        }
+      },
+      "risk_flags": [
+        "跌破MA20"
+      ],
+      "volume_flags": [],
+      "final_score": 29.0,
+      "profit_probability": 0.29,
+      "action": "观察",
+      "avg_cost": null,
+      "chip_profit_ratio": null,
+      "stock_backtest": null,
+      "summary": "观察，总分29.0，弱势空头，来源于神奇九转策略，跌破MA20",
+      "data_source": "BaostockFetcher"
+    },
+    {
+      "status": "ok",
+      "code": "sz.301075",
+      "name": "sz.301075",
+      "price": 80.55,
+      "change_pct": 3.256,
+      "turnover_rate": 0.0,
+      "volume_ratio": 1.51,
+      "trend_status": "弱势空头",
+      "buy_signal": "持有",
+      "signal_score": 45,
+      "matched_source_strategies": [
+        "神奇九转策略"
+      ],
+      "score_breakdown": {
+        "trend": 4.0,
+        "position": 6.0,
+        "chip": 3.0,
+        "volume_pattern": 9.0,
+        "risk_penalty": 6.0,
+        "stock_backtest": 3.0,
+        "strategy_total": 9.0
+      },
+      "strategy_hits": {
+        "bull_trend": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "ma_golden_cross": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "shrink_pullback": {
+          "raw_score": 4,
+          "weighted_score": 4.0,
+          "reason": "接近MA10支撑"
+        },
+        "volume_breakout": {
+          "raw_score": 4,
+          "weighted_score": 4.0,
+          "reason": "量能开始放大"
+        },
+        "bottom_volume": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "box_oscillation": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "dragon_head": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "emotion_cycle": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "one_yang_three_yin": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "wave_theory": {
+          "raw_score": 1,
+          "weighted_score": 1.0,
+          "reason": "疑似调整浪中"
+        },
+        "chan_theory": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        }
+      },
+      "risk_flags": [
+        "跌破MA20"
+      ],
+      "volume_flags": [
+        "量比活跃",
+        "放量上涨"
+      ],
+      "final_score": 28.0,
+      "profit_probability": 0.28,
+      "action": "观察",
+      "avg_cost": null,
+      "chip_profit_ratio": null,
+      "stock_backtest": null,
+      "summary": "观察，总分28.0，弱势空头，来源于神奇九转策略，跌破MA20",
+      "data_source": "BaostockFetcher"
+    },
+    {
+      "status": "ok",
+      "code": "sh.603933",
+      "name": "sh.603933",
+      "price": 22.3,
+      "change_pct": 10.0148,
+      "turnover_rate": 0.0,
+      "volume_ratio": 1.72,
+      "trend_status": "空头排列",
+      "buy_signal": "强烈卖出",
+      "signal_score": 27,
+      "matched_source_strategies": [
+        "低位涨停换手率策略"
+      ],
+      "score_breakdown": {
+        "trend": 5.0,
+        "position": 0,
+        "chip": 3.0,
+        "volume_pattern": 15.0,
+        "risk_penalty": 12.0,
+        "stock_backtest": 3.0,
+        "strategy_total": 12.0
+      },
+      "strategy_hits": {
+        "bull_trend": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "ma_golden_cross": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "shrink_pullback": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "volume_breakout": {
+          "raw_score": 4,
+          "weighted_score": 4.0,
+          "reason": "量能开始放大"
+        },
+        "bottom_volume": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "box_oscillation": {
+          "raw_score": 7,
+          "weighted_score": 7.0,
+          "reason": "接近箱体底部"
+        },
+        "dragon_head": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "emotion_cycle": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "one_yang_three_yin": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "wave_theory": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "chan_theory": {
+          "raw_score": 1,
+          "weighted_score": 1.0,
+          "reason": "缠论视角偏弱"
+        }
+      },
+      "risk_flags": [
+        "偏离MA5过大，疑似追高",
+        "MACD偏空"
+      ],
+      "volume_flags": [
+        "量比活跃",
+        "放量上涨",
+        "近端放量突破迹象"
+      ],
+      "final_score": 26.0,
+      "profit_probability": 0.26,
+      "action": "观察",
+      "avg_cost": null,
+      "chip_profit_ratio": null,
+      "stock_backtest": null,
+      "summary": "观察，总分26.0，空头排列，来源于低位涨停换手率策略，偏离MA5过大，疑似追高；MACD偏空",
+      "data_source": "BaostockFetcher"
+    },
+    {
+      "status": "ok",
+      "code": "sh.688517",
+      "name": "sh.688517",
+      "price": 18.54,
+      "change_pct": 2.3744,
+      "turnover_rate": 0.0,
+      "volume_ratio": 0.83,
+      "trend_status": "空头排列",
+      "buy_signal": "持有",
+      "signal_score": 46,
+      "matched_source_strategies": [
+        "神奇九转策略"
+      ],
+      "score_breakdown": {
+        "trend": 8.0,
+        "position": 10.0,
+        "chip": 3.0,
+        "volume_pattern": 0,
+        "risk_penalty": 6.0,
+        "stock_backtest": 3.0,
+        "strategy_total": 7.0
+      },
+      "strategy_hits": {
+        "bull_trend": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "ma_golden_cross": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "shrink_pullback": {
+          "raw_score": 4,
+          "weighted_score": 4.0,
+          "reason": "接近MA10支撑"
+        },
+        "volume_breakout": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "bottom_volume": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "box_oscillation": {
+          "raw_score": 2,
+          "weighted_score": 2.0,
+          "reason": "接近箱体顶部"
+        },
+        "dragon_head": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "emotion_cycle": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "one_yang_three_yin": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "wave_theory": {
+          "raw_score": 1,
+          "weighted_score": 1.0,
+          "reason": "疑似调整浪中"
+        },
+        "chan_theory": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        }
+      },
+      "risk_flags": [
+        "跌破MA20"
+      ],
+      "volume_flags": [],
+      "final_score": 25.0,
+      "profit_probability": 0.25,
+      "action": "观察",
+      "avg_cost": null,
+      "chip_profit_ratio": null,
+      "stock_backtest": null,
+      "summary": "观察，总分25.0，空头排列，来源于神奇九转策略，跌破MA20",
+      "data_source": "BaostockFetcher"
+    },
+    {
+      "status": "ok",
+      "code": "sh.601567",
+      "name": "sh.601567",
+      "price": 28.09,
+      "change_pct": 0.6089,
+      "turnover_rate": 0.0,
+      "volume_ratio": 1.0,
+      "trend_status": "弱势空头",
+      "buy_signal": "持有",
+      "signal_score": 59,
+      "matched_source_strategies": [
+        "神奇九转策略"
+      ],
+      "score_breakdown": {
+        "trend": 5.0,
+        "position": 14.0,
+        "chip": 3.0,
+        "volume_pattern": 0,
+        "risk_penalty": 6.0,
+        "stock_backtest": 3.0,
+        "strategy_total": 1.0
+      },
+      "strategy_hits": {
+        "bull_trend": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "ma_golden_cross": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "shrink_pullback": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "volume_breakout": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "bottom_volume": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "box_oscillation": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "dragon_head": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "emotion_cycle": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "one_yang_three_yin": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "wave_theory": {
+          "raw_score": 1,
+          "weighted_score": 1.0,
+          "reason": "疑似调整浪中"
+        },
+        "chan_theory": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        }
+      },
+      "risk_flags": [
+        "跌破MA20"
+      ],
+      "volume_flags": [],
+      "final_score": 20.0,
+      "profit_probability": 0.2,
+      "action": "观察",
+      "avg_cost": null,
+      "chip_profit_ratio": null,
+      "stock_backtest": null,
+      "summary": "观察，总分20.0，弱势空头，来源于神奇九转策略，跌破MA20",
+      "data_source": "BaostockFetcher"
+    }
+  ],
+  "all_candidates": [
+    {
+      "status": "ok",
+      "code": "sz.002038",
+      "name": "sz.002038",
+      "price": 6.25,
+      "change_pct": 10.0352,
+      "turnover_rate": 0.0,
+      "volume_ratio": 2.09,
+      "trend_status": "空头排列",
+      "buy_signal": "观望",
+      "signal_score": 37,
+      "matched_source_strategies": [
+        "低位涨停换手率策略"
+      ],
+      "score_breakdown": {
+        "trend": 15.0,
+        "position": 0,
+        "chip": 3.0,
+        "volume_pattern": 15.0,
+        "risk_penalty": 8.0,
+        "stock_backtest": 3.0,
+        "strategy_total": 17.0
+      },
+      "strategy_hits": {
+        "bull_trend": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "ma_golden_cross": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "shrink_pullback": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "volume_breakout": {
+          "raw_score": 4,
+          "weighted_score": 4.0,
+          "reason": "量能开始放大"
+        },
+        "bottom_volume": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "box_oscillation": {
+          "raw_score": 7,
+          "weighted_score": 7.0,
+          "reason": "接近箱体底部"
+        },
+        "dragon_head": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "emotion_cycle": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "one_yang_three_yin": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "wave_theory": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "chan_theory": {
+          "raw_score": 6,
+          "weighted_score": 6.0,
+          "reason": "疑似二买/三买区"
+        }
+      },
+      "risk_flags": [
+        "偏离MA5过大，疑似追高"
+      ],
+      "volume_flags": [
+        "量比活跃",
+        "放量上涨",
+        "近端放量突破迹象"
+      ],
+      "final_score": 45.0,
+      "profit_probability": 0.45,
+      "action": "观察",
+      "avg_cost": null,
+      "chip_profit_ratio": null,
+      "stock_backtest": null,
+      "summary": "观察，总分45.0，空头排列，来源于低位涨停换手率策略，偏离MA5过大，疑似追高",
+      "data_source": "BaostockFetcher"
+    },
+    {
+      "status": "ok",
+      "code": "sh.601018",
+      "name": "sh.601018",
+      "price": 4.14,
+      "change_pct": 1.9704,
+      "turnover_rate": 0.0,
+      "volume_ratio": 0.92,
+      "trend_status": "空头排列",
+      "buy_signal": "持有",
+      "signal_score": 50,
+      "matched_source_strategies": [
+        "神奇九转策略"
+      ],
+      "score_breakdown": {
+        "trend": 8.0,
+        "position": 14.0,
+        "chip": 3.0,
+        "volume_pattern": 0,
+        "risk_penalty": 6.0,
+        "stock_backtest": 3.0,
+        "strategy_total": 13.0
+      },
+      "strategy_hits": {
+        "bull_trend": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "ma_golden_cross": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "shrink_pullback": {
+          "raw_score": 4,
+          "weighted_score": 4.0,
+          "reason": "接近MA10支撑"
+        },
+        "volume_breakout": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "bottom_volume": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "box_oscillation": {
+          "raw_score": 2,
+          "weighted_score": 2.0,
+          "reason": "接近箱体顶部"
+        },
+        "dragon_head": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "emotion_cycle": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "one_yang_three_yin": {
+          "raw_score": 6,
+          "weighted_score": 6.0,
+          "reason": "近5日类似一阳夹三阴"
+        },
+        "wave_theory": {
+          "raw_score": 1,
+          "weighted_score": 1.0,
+          "reason": "疑似调整浪中"
+        },
+        "chan_theory": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        }
+      },
+      "risk_flags": [
+        "跌破MA20"
+      ],
+      "volume_flags": [],
+      "final_score": 35.0,
+      "profit_probability": 0.35,
+      "action": "观察",
+      "avg_cost": null,
+      "chip_profit_ratio": null,
+      "stock_backtest": null,
+      "summary": "观察，总分35.0，空头排列，来源于神奇九转策略，跌破MA20",
+      "data_source": "BaostockFetcher"
+    },
+    {
+      "status": "ok",
+      "code": "sz.000958",
+      "name": "sz.000958",
+      "price": 6.63,
+      "change_pct": 1.8433,
+      "turnover_rate": 0.0,
+      "volume_ratio": 1.12,
+      "trend_status": "空头排列",
+      "buy_signal": "持有",
+      "signal_score": 50,
+      "matched_source_strategies": [
+        "神奇九转策略"
+      ],
+      "score_breakdown": {
+        "trend": 8.0,
+        "position": 14.0,
+        "chip": 3.0,
+        "volume_pattern": 0,
+        "risk_penalty": 6.0,
+        "stock_backtest": 3.0,
+        "strategy_total": 12.0
+      },
+      "strategy_hits": {
+        "bull_trend": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "ma_golden_cross": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "shrink_pullback": {
+          "raw_score": 4,
+          "weighted_score": 4.0,
+          "reason": "接近MA10支撑"
+        },
+        "volume_breakout": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "bottom_volume": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "box_oscillation": {
+          "raw_score": 7,
+          "weighted_score": 7.0,
+          "reason": "接近箱体底部"
+        },
+        "dragon_head": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "emotion_cycle": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "one_yang_three_yin": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "wave_theory": {
+          "raw_score": 1,
+          "weighted_score": 1.0,
+          "reason": "疑似调整浪中"
+        },
+        "chan_theory": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        }
+      },
+      "risk_flags": [
+        "跌破MA20"
+      ],
+      "volume_flags": [],
+      "final_score": 34.0,
+      "profit_probability": 0.34,
+      "action": "观察",
+      "avg_cost": null,
+      "chip_profit_ratio": null,
+      "stock_backtest": null,
+      "summary": "观察，总分34.0，空头排列，来源于神奇九转策略，跌破MA20",
+      "data_source": "BaostockFetcher"
+    },
+    {
+      "status": "ok",
+      "code": "sz.300510",
+      "name": "sz.300510",
+      "price": 4.72,
+      "change_pct": 1.0707,
+      "turnover_rate": 0.0,
+      "volume_ratio": 0.73,
+      "trend_status": "空头排列",
+      "buy_signal": "持有",
+      "signal_score": 48,
+      "matched_source_strategies": [
+        "神奇九转策略"
+      ],
+      "score_breakdown": {
+        "trend": 4.0,
+        "position": 14.0,
+        "chip": 3.0,
+        "volume_pattern": 4.0,
+        "risk_penalty": 6.0,
+        "stock_backtest": 3.0,
+        "strategy_total": 11.0
+      },
+      "strategy_hits": {
+        "bull_trend": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "ma_golden_cross": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "shrink_pullback": {
+          "raw_score": 4,
+          "weighted_score": 4.0,
+          "reason": "接近MA10支撑"
+        },
+        "volume_breakout": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "bottom_volume": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "box_oscillation": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "dragon_head": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "emotion_cycle": {
+          "raw_score": 6,
+          "weighted_score": 6.0,
+          "reason": "情绪冷淡，可能处于低位"
+        },
+        "one_yang_three_yin": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "wave_theory": {
+          "raw_score": 1,
+          "weighted_score": 1.0,
+          "reason": "疑似调整浪中"
+        },
+        "chan_theory": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        }
+      },
+      "risk_flags": [
+        "跌破MA20"
+      ],
+      "volume_flags": [
+        "缩量回踩迹象"
+      ],
+      "final_score": 33.0,
+      "profit_probability": 0.33,
+      "action": "观察",
+      "avg_cost": null,
+      "chip_profit_ratio": null,
+      "stock_backtest": null,
+      "summary": "观察，总分33.0，空头排列，来源于神奇九转策略，跌破MA20",
+      "data_source": "BaostockFetcher"
+    },
+    {
+      "status": "ok",
+      "code": "sh.600131",
+      "name": "sh.600131",
+      "price": 20.55,
+      "change_pct": 1.4314,
+      "turnover_rate": 0.0,
+      "volume_ratio": 0.72,
+      "trend_status": "弱势空头",
+      "buy_signal": "持有",
+      "signal_score": 49,
+      "matched_source_strategies": [
+        "神奇九转策略"
+      ],
+      "score_breakdown": {
+        "trend": 4.0,
+        "position": 10.0,
+        "chip": 3.0,
+        "volume_pattern": 0,
+        "risk_penalty": 6.0,
+        "stock_backtest": 3.0,
+        "strategy_total": 17.0
+      },
+      "strategy_hits": {
+        "bull_trend": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "ma_golden_cross": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "shrink_pullback": {
+          "raw_score": 4,
+          "weighted_score": 4.0,
+          "reason": "接近MA10支撑"
+        },
+        "volume_breakout": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "bottom_volume": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "box_oscillation": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "dragon_head": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "emotion_cycle": {
+          "raw_score": 6,
+          "weighted_score": 6.0,
+          "reason": "情绪冷淡，可能处于低位"
+        },
+        "one_yang_three_yin": {
+          "raw_score": 6,
+          "weighted_score": 6.0,
+          "reason": "近5日类似一阳夹三阴"
+        },
+        "wave_theory": {
+          "raw_score": 1,
+          "weighted_score": 1.0,
+          "reason": "疑似调整浪中"
+        },
+        "chan_theory": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        }
+      },
+      "risk_flags": [
+        "跌破MA20"
+      ],
+      "volume_flags": [],
+      "final_score": 31.0,
+      "profit_probability": 0.31,
+      "action": "观察",
+      "avg_cost": null,
+      "chip_profit_ratio": null,
+      "stock_backtest": null,
+      "summary": "观察，总分31.0，弱势空头，来源于神奇九转策略，跌破MA20",
+      "data_source": "BaostockFetcher"
+    },
+    {
+      "status": "ok",
+      "code": "sh.600525",
+      "name": "sh.600525",
+      "price": 5.41,
+      "change_pct": 2.0755,
+      "turnover_rate": 0.0,
+      "volume_ratio": 0.69,
+      "trend_status": "弱势空头",
+      "buy_signal": "持有",
+      "signal_score": 48,
+      "matched_source_strategies": [
+        "神奇九转策略"
+      ],
+      "score_breakdown": {
+        "trend": 4.0,
+        "position": 14.0,
+        "chip": 3.0,
+        "volume_pattern": 0,
+        "risk_penalty": 6.0,
+        "stock_backtest": 3.0,
+        "strategy_total": 11.0
+      },
+      "strategy_hits": {
+        "bull_trend": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "ma_golden_cross": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "shrink_pullback": {
+          "raw_score": 4,
+          "weighted_score": 4.0,
+          "reason": "接近MA10支撑"
+        },
+        "volume_breakout": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "bottom_volume": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "box_oscillation": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "dragon_head": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "emotion_cycle": {
+          "raw_score": 6,
+          "weighted_score": 6.0,
+          "reason": "情绪冷淡，可能处于低位"
+        },
+        "one_yang_three_yin": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "wave_theory": {
+          "raw_score": 1,
+          "weighted_score": 1.0,
+          "reason": "疑似调整浪中"
+        },
+        "chan_theory": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        }
+      },
+      "risk_flags": [
+        "跌破MA20"
+      ],
+      "volume_flags": [],
+      "final_score": 29.0,
+      "profit_probability": 0.29,
+      "action": "观察",
+      "avg_cost": null,
+      "chip_profit_ratio": null,
+      "stock_backtest": null,
+      "summary": "观察，总分29.0，弱势空头，来源于神奇九转策略，跌破MA20",
+      "data_source": "BaostockFetcher"
+    },
+    {
+      "status": "ok",
+      "code": "sz.301075",
+      "name": "sz.301075",
+      "price": 80.55,
+      "change_pct": 3.256,
+      "turnover_rate": 0.0,
+      "volume_ratio": 1.51,
+      "trend_status": "弱势空头",
+      "buy_signal": "持有",
+      "signal_score": 45,
+      "matched_source_strategies": [
+        "神奇九转策略"
+      ],
+      "score_breakdown": {
+        "trend": 4.0,
+        "position": 6.0,
+        "chip": 3.0,
+        "volume_pattern": 9.0,
+        "risk_penalty": 6.0,
+        "stock_backtest": 3.0,
+        "strategy_total": 9.0
+      },
+      "strategy_hits": {
+        "bull_trend": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "ma_golden_cross": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "shrink_pullback": {
+          "raw_score": 4,
+          "weighted_score": 4.0,
+          "reason": "接近MA10支撑"
+        },
+        "volume_breakout": {
+          "raw_score": 4,
+          "weighted_score": 4.0,
+          "reason": "量能开始放大"
+        },
+        "bottom_volume": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "box_oscillation": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "dragon_head": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "emotion_cycle": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "one_yang_three_yin": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "wave_theory": {
+          "raw_score": 1,
+          "weighted_score": 1.0,
+          "reason": "疑似调整浪中"
+        },
+        "chan_theory": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        }
+      },
+      "risk_flags": [
+        "跌破MA20"
+      ],
+      "volume_flags": [
+        "量比活跃",
+        "放量上涨"
+      ],
+      "final_score": 28.0,
+      "profit_probability": 0.28,
+      "action": "观察",
+      "avg_cost": null,
+      "chip_profit_ratio": null,
+      "stock_backtest": null,
+      "summary": "观察，总分28.0，弱势空头，来源于神奇九转策略，跌破MA20",
+      "data_source": "BaostockFetcher"
+    },
+    {
+      "status": "ok",
+      "code": "sh.603933",
+      "name": "sh.603933",
+      "price": 22.3,
+      "change_pct": 10.0148,
+      "turnover_rate": 0.0,
+      "volume_ratio": 1.72,
+      "trend_status": "空头排列",
+      "buy_signal": "强烈卖出",
+      "signal_score": 27,
+      "matched_source_strategies": [
+        "低位涨停换手率策略"
+      ],
+      "score_breakdown": {
+        "trend": 5.0,
+        "position": 0,
+        "chip": 3.0,
+        "volume_pattern": 15.0,
+        "risk_penalty": 12.0,
+        "stock_backtest": 3.0,
+        "strategy_total": 12.0
+      },
+      "strategy_hits": {
+        "bull_trend": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "ma_golden_cross": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "shrink_pullback": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "volume_breakout": {
+          "raw_score": 4,
+          "weighted_score": 4.0,
+          "reason": "量能开始放大"
+        },
+        "bottom_volume": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "box_oscillation": {
+          "raw_score": 7,
+          "weighted_score": 7.0,
+          "reason": "接近箱体底部"
+        },
+        "dragon_head": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "emotion_cycle": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "one_yang_three_yin": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "wave_theory": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "chan_theory": {
+          "raw_score": 1,
+          "weighted_score": 1.0,
+          "reason": "缠论视角偏弱"
+        }
+      },
+      "risk_flags": [
+        "偏离MA5过大，疑似追高",
+        "MACD偏空"
+      ],
+      "volume_flags": [
+        "量比活跃",
+        "放量上涨",
+        "近端放量突破迹象"
+      ],
+      "final_score": 26.0,
+      "profit_probability": 0.26,
+      "action": "观察",
+      "avg_cost": null,
+      "chip_profit_ratio": null,
+      "stock_backtest": null,
+      "summary": "观察，总分26.0，空头排列，来源于低位涨停换手率策略，偏离MA5过大，疑似追高；MACD偏空",
+      "data_source": "BaostockFetcher"
+    },
+    {
+      "status": "ok",
+      "code": "sh.688517",
+      "name": "sh.688517",
+      "price": 18.54,
+      "change_pct": 2.3744,
+      "turnover_rate": 0.0,
+      "volume_ratio": 0.83,
+      "trend_status": "空头排列",
+      "buy_signal": "持有",
+      "signal_score": 46,
+      "matched_source_strategies": [
+        "神奇九转策略"
+      ],
+      "score_breakdown": {
+        "trend": 8.0,
+        "position": 10.0,
+        "chip": 3.0,
+        "volume_pattern": 0,
+        "risk_penalty": 6.0,
+        "stock_backtest": 3.0,
+        "strategy_total": 7.0
+      },
+      "strategy_hits": {
+        "bull_trend": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "ma_golden_cross": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "shrink_pullback": {
+          "raw_score": 4,
+          "weighted_score": 4.0,
+          "reason": "接近MA10支撑"
+        },
+        "volume_breakout": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "bottom_volume": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "box_oscillation": {
+          "raw_score": 2,
+          "weighted_score": 2.0,
+          "reason": "接近箱体顶部"
+        },
+        "dragon_head": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "emotion_cycle": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "one_yang_three_yin": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "wave_theory": {
+          "raw_score": 1,
+          "weighted_score": 1.0,
+          "reason": "疑似调整浪中"
+        },
+        "chan_theory": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        }
+      },
+      "risk_flags": [
+        "跌破MA20"
+      ],
+      "volume_flags": [],
+      "final_score": 25.0,
+      "profit_probability": 0.25,
+      "action": "观察",
+      "avg_cost": null,
+      "chip_profit_ratio": null,
+      "stock_backtest": null,
+      "summary": "观察，总分25.0，空头排列，来源于神奇九转策略，跌破MA20",
+      "data_source": "BaostockFetcher"
+    },
+    {
+      "status": "ok",
+      "code": "sh.601567",
+      "name": "sh.601567",
+      "price": 28.09,
+      "change_pct": 0.6089,
+      "turnover_rate": 0.0,
+      "volume_ratio": 1.0,
+      "trend_status": "弱势空头",
+      "buy_signal": "持有",
+      "signal_score": 59,
+      "matched_source_strategies": [
+        "神奇九转策略"
+      ],
+      "score_breakdown": {
+        "trend": 5.0,
+        "position": 14.0,
+        "chip": 3.0,
+        "volume_pattern": 0,
+        "risk_penalty": 6.0,
+        "stock_backtest": 3.0,
+        "strategy_total": 1.0
+      },
+      "strategy_hits": {
+        "bull_trend": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "ma_golden_cross": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "shrink_pullback": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "volume_breakout": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "bottom_volume": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "box_oscillation": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "dragon_head": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "emotion_cycle": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "one_yang_three_yin": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "wave_theory": {
+          "raw_score": 1,
+          "weighted_score": 1.0,
+          "reason": "疑似调整浪中"
+        },
+        "chan_theory": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        }
+      },
+      "risk_flags": [
+        "跌破MA20"
+      ],
+      "volume_flags": [],
+      "final_score": 20.0,
+      "profit_probability": 0.2,
+      "action": "观察",
+      "avg_cost": null,
+      "chip_profit_ratio": null,
+      "stock_backtest": null,
+      "summary": "观察，总分20.0，弱势空头，来源于神奇九转策略，跌破MA20",
+      "data_source": "BaostockFetcher"
+    },
+    {
+      "status": "ok",
+      "code": "sh.601689",
+      "name": "sh.601689",
+      "price": 57.8,
+      "change_pct": 1.2791,
+      "turnover_rate": 0.0,
+      "volume_ratio": 1.32,
+      "trend_status": "强势空头",
+      "buy_signal": "观望",
+      "signal_score": 44,
+      "matched_source_strategies": [
+        "神奇九转策略"
+      ],
+      "score_breakdown": {
+        "trend": 0,
+        "position": 10.0,
+        "chip": 3.0,
+        "volume_pattern": 5.0,
+        "risk_penalty": 10.0,
+        "stock_backtest": 3.0,
+        "strategy_total": 9.0
+      },
+      "strategy_hits": {
+        "bull_trend": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "ma_golden_cross": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "shrink_pullback": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "volume_breakout": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "bottom_volume": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "box_oscillation": {
+          "raw_score": 7,
+          "weighted_score": 7.0,
+          "reason": "接近箱体底部"
+        },
+        "dragon_head": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "emotion_cycle": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "one_yang_three_yin": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "wave_theory": {
+          "raw_score": 1,
+          "weighted_score": 1.0,
+          "reason": "疑似调整浪中"
+        },
+        "chan_theory": {
+          "raw_score": 1,
+          "weighted_score": 1.0,
+          "reason": "缠论视角偏弱"
+        }
+      },
+      "risk_flags": [
+        "跌破MA20",
+        "MACD偏空"
+      ],
+      "volume_flags": [
+        "放量上涨"
+      ],
+      "final_score": 20.0,
+      "profit_probability": 0.2,
+      "action": "观察",
+      "avg_cost": null,
+      "chip_profit_ratio": null,
+      "stock_backtest": null,
+      "summary": "观察，总分20.0，强势空头，来源于神奇九转策略，跌破MA20；MACD偏空",
+      "data_source": "BaostockFetcher"
+    },
+    {
+      "status": "ok",
+      "code": "sh.688229",
+      "name": "sh.688229",
+      "price": 93.2,
+      "change_pct": 9.9316,
+      "turnover_rate": 0.0,
+      "volume_ratio": 1.25,
+      "trend_status": "弱势空头",
+      "buy_signal": "持有",
+      "signal_score": 45,
+      "matched_source_strategies": [
+        "神奇九转策略"
+      ],
+      "score_breakdown": {
+        "trend": 8.0,
+        "position": 1.0,
+        "chip": 3.0,
+        "volume_pattern": 0,
+        "risk_penalty": 6.0,
+        "stock_backtest": 3.0,
+        "strategy_total": 11.0
+      },
+      "strategy_hits": {
+        "bull_trend": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "ma_golden_cross": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "shrink_pullback": {
+          "raw_score": 4,
+          "weighted_score": 4.0,
+          "reason": "接近MA10支撑"
+        },
+        "volume_breakout": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "bottom_volume": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "box_oscillation": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "dragon_head": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "emotion_cycle": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "one_yang_three_yin": {
+          "raw_score": 6,
+          "weighted_score": 6.0,
+          "reason": "近5日类似一阳夹三阴"
+        },
+        "wave_theory": {
+          "raw_score": 1,
+          "weighted_score": 1.0,
+          "reason": "疑似调整浪中"
+        },
+        "chan_theory": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        }
+      },
+      "risk_flags": [
+        "跌破MA20"
+      ],
+      "volume_flags": [],
+      "final_score": 20.0,
+      "profit_probability": 0.2,
+      "action": "观察",
+      "avg_cost": null,
+      "chip_profit_ratio": null,
+      "stock_backtest": null,
+      "summary": "观察，总分20.0，弱势空头，来源于神奇九转策略，跌破MA20",
+      "data_source": "BaostockFetcher"
+    },
+    {
+      "status": "ok",
+      "code": "sz.002986",
+      "name": "sz.002986",
+      "price": 14.89,
+      "change_pct": 0.1345,
+      "turnover_rate": 0.0,
+      "volume_ratio": 0.85,
+      "trend_status": "空头排列",
+      "buy_signal": "持有",
+      "signal_score": 55,
+      "matched_source_strategies": [
+        "神奇九转策略"
+      ],
+      "score_breakdown": {
+        "trend": 5.0,
+        "position": 14.0,
+        "chip": 3.0,
+        "volume_pattern": 0,
+        "risk_penalty": 6.0,
+        "stock_backtest": 3.0,
+        "strategy_total": 1.0
+      },
+      "strategy_hits": {
+        "bull_trend": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "ma_golden_cross": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "shrink_pullback": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "volume_breakout": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "bottom_volume": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "box_oscillation": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "dragon_head": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "emotion_cycle": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "one_yang_three_yin": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "wave_theory": {
+          "raw_score": 1,
+          "weighted_score": 1.0,
+          "reason": "疑似调整浪中"
+        },
+        "chan_theory": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        }
+      },
+      "risk_flags": [
+        "跌破MA20"
+      ],
+      "volume_flags": [],
+      "final_score": 20.0,
+      "profit_probability": 0.2,
+      "action": "观察",
+      "avg_cost": null,
+      "chip_profit_ratio": null,
+      "stock_backtest": null,
+      "summary": "观察，总分20.0，空头排列，来源于神奇九转策略，跌破MA20",
+      "data_source": "BaostockFetcher"
+    },
+    {
+      "status": "ok",
+      "code": "sh.688330",
+      "name": "sh.688330",
+      "price": 49.16,
+      "change_pct": 1.5912,
+      "turnover_rate": 0.0,
+      "volume_ratio": 1.03,
+      "trend_status": "弱势空头",
+      "buy_signal": "持有",
+      "signal_score": 52,
+      "matched_source_strategies": [
+        "神奇九转策略"
+      ],
+      "score_breakdown": {
+        "trend": 4.0,
+        "position": 14.0,
+        "chip": 3.0,
+        "volume_pattern": 0,
+        "risk_penalty": 6.0,
+        "stock_backtest": 3.0,
+        "strategy_total": 1.0
+      },
+      "strategy_hits": {
+        "bull_trend": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "ma_golden_cross": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "shrink_pullback": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "volume_breakout": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "bottom_volume": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "box_oscillation": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "dragon_head": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "emotion_cycle": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "one_yang_three_yin": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "wave_theory": {
+          "raw_score": 1,
+          "weighted_score": 1.0,
+          "reason": "疑似调整浪中"
+        },
+        "chan_theory": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        }
+      },
+      "risk_flags": [
+        "跌破MA20"
+      ],
+      "volume_flags": [],
+      "final_score": 19.0,
+      "profit_probability": 0.2,
+      "action": "观察",
+      "avg_cost": null,
+      "chip_profit_ratio": null,
+      "stock_backtest": null,
+      "summary": "观察，总分19.0，弱势空头，来源于神奇九转策略，跌破MA20",
+      "data_source": "BaostockFetcher"
+    },
+    {
+      "status": "ok",
+      "code": "sz.301275",
+      "name": "sz.301275",
+      "price": 40.4,
+      "change_pct": 0.0,
+      "turnover_rate": 0.0,
+      "volume_ratio": 1.0,
+      "trend_status": "强势空头",
+      "buy_signal": "持有",
+      "signal_score": 45,
+      "matched_source_strategies": [
+        "神奇九转策略"
+      ],
+      "score_breakdown": {
+        "trend": 0,
+        "position": 14.0,
+        "chip": 3.0,
+        "volume_pattern": 0,
+        "risk_penalty": 10.0,
+        "stock_backtest": 3.0,
+        "strategy_total": 9.0
+      },
+      "strategy_hits": {
+        "bull_trend": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "ma_golden_cross": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "shrink_pullback": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "volume_breakout": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "bottom_volume": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "box_oscillation": {
+          "raw_score": 7,
+          "weighted_score": 7.0,
+          "reason": "接近箱体底部"
+        },
+        "dragon_head": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "emotion_cycle": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "one_yang_three_yin": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "wave_theory": {
+          "raw_score": 1,
+          "weighted_score": 1.0,
+          "reason": "疑似调整浪中"
+        },
+        "chan_theory": {
+          "raw_score": 1,
+          "weighted_score": 1.0,
+          "reason": "缠论视角偏弱"
+        }
+      },
+      "risk_flags": [
+        "跌破MA20",
+        "MACD偏空"
+      ],
+      "volume_flags": [],
+      "final_score": 19.0,
+      "profit_probability": 0.2,
+      "action": "观察",
+      "avg_cost": null,
+      "chip_profit_ratio": null,
+      "stock_backtest": null,
+      "summary": "观察，总分19.0，强势空头，来源于神奇九转策略，跌破MA20；MACD偏空",
+      "data_source": "BaostockFetcher"
+    },
+    {
+      "status": "ok",
+      "code": "sh.688186",
+      "name": "sh.688186",
+      "price": 23.91,
+      "change_pct": 1.4856,
+      "turnover_rate": 0.0,
+      "volume_ratio": 0.95,
+      "trend_status": "强势空头",
+      "buy_signal": "持有",
+      "signal_score": 48,
+      "matched_source_strategies": [
+        "神奇九转策略"
+      ],
+      "score_breakdown": {
+        "trend": 5.0,
+        "position": 10.0,
+        "chip": 3.0,
+        "volume_pattern": 0,
+        "risk_penalty": 6.0,
+        "stock_backtest": 3.0,
+        "strategy_total": 1.0
+      },
+      "strategy_hits": {
+        "bull_trend": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "ma_golden_cross": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "shrink_pullback": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "volume_breakout": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "bottom_volume": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "box_oscillation": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "dragon_head": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "emotion_cycle": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "one_yang_three_yin": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "wave_theory": {
+          "raw_score": 1,
+          "weighted_score": 1.0,
+          "reason": "疑似调整浪中"
+        },
+        "chan_theory": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        }
+      },
+      "risk_flags": [
+        "跌破MA20"
+      ],
+      "volume_flags": [],
+      "final_score": 16.0,
+      "profit_probability": 0.2,
+      "action": "观察",
+      "avg_cost": null,
+      "chip_profit_ratio": null,
+      "stock_backtest": null,
+      "summary": "观察，总分16.0，强势空头，来源于神奇九转策略，跌破MA20",
+      "data_source": "BaostockFetcher"
+    },
+    {
+      "status": "ok",
+      "code": "sz.002380",
+      "name": "sz.002380",
+      "price": 32.5,
+      "change_pct": 3.0111,
+      "turnover_rate": 0.0,
+      "volume_ratio": 1.03,
+      "trend_status": "强势空头",
+      "buy_signal": "持有",
+      "signal_score": 48,
+      "matched_source_strategies": [
+        "神奇九转策略"
+      ],
+      "score_breakdown": {
+        "trend": 5.0,
+        "position": 10.0,
+        "chip": 3.0,
+        "volume_pattern": 0,
+        "risk_penalty": 6.0,
+        "stock_backtest": 3.0,
+        "strategy_total": 1.0
+      },
+      "strategy_hits": {
+        "bull_trend": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "ma_golden_cross": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "shrink_pullback": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "volume_breakout": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "bottom_volume": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "box_oscillation": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "dragon_head": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "emotion_cycle": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "one_yang_three_yin": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "wave_theory": {
+          "raw_score": 1,
+          "weighted_score": 1.0,
+          "reason": "疑似调整浪中"
+        },
+        "chan_theory": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        }
+      },
+      "risk_flags": [
+        "跌破MA20"
+      ],
+      "volume_flags": [],
+      "final_score": 16.0,
+      "profit_probability": 0.2,
+      "action": "观察",
+      "avg_cost": null,
+      "chip_profit_ratio": null,
+      "stock_backtest": null,
+      "summary": "观察，总分16.0，强势空头，来源于神奇九转策略，跌破MA20",
+      "data_source": "BaostockFetcher"
+    },
+    {
+      "status": "ok",
+      "code": "sz.399613",
+      "name": "sz.399613",
+      "price": 4035.937,
+      "change_pct": -0.414992,
+      "turnover_rate": 0.0,
+      "volume_ratio": 0.95,
+      "trend_status": "空头排列",
+      "buy_signal": "持有",
+      "signal_score": 52,
+      "matched_source_strategies": [
+        "神奇九转策略"
+      ],
+      "score_breakdown": {
+        "trend": 5.0,
+        "position": 10.0,
+        "chip": 3.0,
+        "volume_pattern": 0,
+        "risk_penalty": 6.0,
+        "stock_backtest": 3.0,
+        "strategy_total": 1.0
+      },
+      "strategy_hits": {
+        "bull_trend": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "ma_golden_cross": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "shrink_pullback": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "volume_breakout": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "bottom_volume": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "box_oscillation": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "dragon_head": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "emotion_cycle": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "one_yang_three_yin": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "wave_theory": {
+          "raw_score": 1,
+          "weighted_score": 1.0,
+          "reason": "疑似调整浪中"
+        },
+        "chan_theory": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        }
+      },
+      "risk_flags": [
+        "跌破MA20"
+      ],
+      "volume_flags": [],
+      "final_score": 16.0,
+      "profit_probability": 0.2,
+      "action": "观察",
+      "avg_cost": null,
+      "chip_profit_ratio": null,
+      "stock_backtest": null,
+      "summary": "观察，总分16.0，空头排列，来源于神奇九转策略，跌破MA20",
+      "data_source": "BaostockFetcher"
+    },
+    {
+      "status": "ok",
+      "code": "sz.301550",
+      "name": "sz.301550",
+      "price": 146.36,
+      "change_pct": 10.5772,
+      "turnover_rate": 0.0,
+      "volume_ratio": 1.63,
+      "trend_status": "空头排列",
+      "buy_signal": "强烈卖出",
+      "signal_score": 27,
+      "matched_source_strategies": [
+        "低位涨停换手率策略"
+      ],
+      "score_breakdown": {
+        "trend": 0,
+        "position": 0,
+        "chip": 3.0,
+        "volume_pattern": 15.0,
+        "risk_penalty": 18.0,
+        "stock_backtest": 3.0,
+        "strategy_total": 6.0
+      },
+      "strategy_hits": {
+        "bull_trend": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "ma_golden_cross": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "shrink_pullback": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "volume_breakout": {
+          "raw_score": 4,
+          "weighted_score": 4.0,
+          "reason": "量能开始放大"
+        },
+        "bottom_volume": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "box_oscillation": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "dragon_head": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "emotion_cycle": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "one_yang_three_yin": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "wave_theory": {
+          "raw_score": 1,
+          "weighted_score": 1.0,
+          "reason": "疑似调整浪中"
+        },
+        "chan_theory": {
+          "raw_score": 1,
+          "weighted_score": 1.0,
+          "reason": "缠论视角偏弱"
+        }
+      },
+      "risk_flags": [
+        "偏离MA5过大，疑似追高",
+        "跌破MA20",
+        "MACD偏空"
+      ],
+      "volume_flags": [
+        "量比活跃",
+        "放量上涨",
+        "近端放量突破迹象"
+      ],
+      "final_score": 9.0,
+      "profit_probability": 0.2,
+      "action": "观察",
+      "avg_cost": null,
+      "chip_profit_ratio": null,
+      "stock_backtest": null,
+      "summary": "观察，总分9.0，空头排列，来源于低位涨停换手率策略，偏离MA5过大，疑似追高；跌破MA20",
+      "data_source": "BaostockFetcher"
+    },
+    {
+      "status": "ok",
+      "code": "sh.605168",
+      "name": "sh.605168",
+      "price": 34.82,
+      "change_pct": 10.0158,
+      "turnover_rate": 0.0,
+      "volume_ratio": 1.24,
+      "trend_status": "强势空头",
+      "buy_signal": "观望",
+      "signal_score": 36,
+      "matched_source_strategies": [
+        "低位涨停换手率策略"
+      ],
+      "score_breakdown": {
+        "trend": 0,
+        "position": 5.0,
+        "chip": 3.0,
+        "volume_pattern": 0,
+        "risk_penalty": 10.0,
+        "stock_backtest": 3.0,
+        "strategy_total": 6.0
+      },
+      "strategy_hits": {
+        "bull_trend": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "ma_golden_cross": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "shrink_pullback": {
+          "raw_score": 4,
+          "weighted_score": 4.0,
+          "reason": "接近MA10支撑"
+        },
+        "volume_breakout": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "bottom_volume": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "box_oscillation": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "dragon_head": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "emotion_cycle": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "one_yang_three_yin": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "wave_theory": {
+          "raw_score": 1,
+          "weighted_score": 1.0,
+          "reason": "疑似调整浪中"
+        },
+        "chan_theory": {
+          "raw_score": 1,
+          "weighted_score": 1.0,
+          "reason": "缠论视角偏弱"
+        }
+      },
+      "risk_flags": [
+        "跌破MA20",
+        "MACD偏空"
+      ],
+      "volume_flags": [],
+      "final_score": 7.0,
+      "profit_probability": 0.2,
+      "action": "观察",
+      "avg_cost": null,
+      "chip_profit_ratio": null,
+      "stock_backtest": null,
+      "summary": "观察，总分7.0，强势空头，来源于低位涨停换手率策略，跌破MA20；MACD偏空",
+      "data_source": "BaostockFetcher"
+    },
+    {
+      "status": "ok",
+      "code": "sh.688084",
+      "name": "sh.688084",
+      "price": 72.0,
+      "change_pct": 10.8374,
+      "turnover_rate": 0.0,
+      "volume_ratio": 1.43,
+      "trend_status": "强势空头",
+      "buy_signal": "强烈卖出",
+      "signal_score": 28,
+      "matched_source_strategies": [
+        "低位涨停换手率策略"
+      ],
+      "score_breakdown": {
+        "trend": 0,
+        "position": 0,
+        "chip": 3.0,
+        "volume_pattern": 5.0,
+        "risk_penalty": 18.0,
+        "stock_backtest": 3.0,
+        "strategy_total": 13.0
+      },
+      "strategy_hits": {
+        "bull_trend": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "ma_golden_cross": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "shrink_pullback": {
+          "raw_score": 4,
+          "weighted_score": 4.0,
+          "reason": "接近MA10支撑"
+        },
+        "volume_breakout": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "bottom_volume": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "box_oscillation": {
+          "raw_score": 7,
+          "weighted_score": 7.0,
+          "reason": "接近箱体底部"
+        },
+        "dragon_head": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "emotion_cycle": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "one_yang_three_yin": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "wave_theory": {
+          "raw_score": 1,
+          "weighted_score": 1.0,
+          "reason": "疑似调整浪中"
+        },
+        "chan_theory": {
+          "raw_score": 1,
+          "weighted_score": 1.0,
+          "reason": "缠论视角偏弱"
+        }
+      },
+      "risk_flags": [
+        "偏离MA5过大，疑似追高",
+        "跌破MA20",
+        "MACD偏空"
+      ],
+      "volume_flags": [
+        "放量上涨"
+      ],
+      "final_score": 6.0,
+      "profit_probability": 0.2,
+      "action": "观察",
+      "avg_cost": null,
+      "chip_profit_ratio": null,
+      "stock_backtest": null,
+      "summary": "观察，总分6.0，强势空头，来源于低位涨停换手率策略，偏离MA5过大，疑似追高；跌破MA20",
+      "data_source": "BaostockFetcher"
+    },
+    {
+      "status": "ok",
+      "code": "sz.301529",
+      "name": "sz.301529",
+      "price": 108.27,
+      "change_pct": 11.6071,
+      "turnover_rate": 0.0,
+      "volume_ratio": 1.78,
+      "trend_status": "强势空头",
+      "buy_signal": "强烈卖出",
+      "signal_score": 23,
+      "matched_source_strategies": [
+        "低位涨停换手率策略"
+      ],
+      "score_breakdown": {
+        "trend": 0,
+        "position": 0,
+        "chip": 3.0,
+        "volume_pattern": 9.0,
+        "risk_penalty": 18.0,
+        "stock_backtest": 3.0,
+        "strategy_total": 6.0
+      },
+      "strategy_hits": {
+        "bull_trend": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "ma_golden_cross": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "shrink_pullback": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "volume_breakout": {
+          "raw_score": 4,
+          "weighted_score": 4.0,
+          "reason": "量能开始放大"
+        },
+        "bottom_volume": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "box_oscillation": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "dragon_head": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "emotion_cycle": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "one_yang_three_yin": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "wave_theory": {
+          "raw_score": 1,
+          "weighted_score": 1.0,
+          "reason": "疑似调整浪中"
+        },
+        "chan_theory": {
+          "raw_score": 1,
+          "weighted_score": 1.0,
+          "reason": "缠论视角偏弱"
+        }
+      },
+      "risk_flags": [
+        "偏离MA5过大，疑似追高",
+        "跌破MA20",
+        "MACD偏空"
+      ],
+      "volume_flags": [
+        "量比活跃",
+        "放量上涨"
+      ],
+      "final_score": 3.0,
+      "profit_probability": 0.2,
+      "action": "观察",
+      "avg_cost": null,
+      "chip_profit_ratio": null,
+      "stock_backtest": null,
+      "summary": "观察，总分3.0，强势空头，来源于低位涨停换手率策略，偏离MA5过大，疑似追高；跌破MA20",
+      "data_source": "BaostockFetcher"
+    },
+    {
+      "code": "sh.510020",
+      "status": "error",
+      "error": "历史数据不足: sh.510020",
+      "final_score": 0
+    },
+    {
+      "code": "sh.510050",
+      "status": "error",
+      "error": "历史数据不足: sh.510050",
+      "final_score": 0
+    },
+    {
+      "code": "sh.510710",
+      "status": "error",
+      "error": "历史数据不足: sh.510710",
+      "final_score": 0
+    },
+    {
+      "code": "sh.560950",
+      "status": "error",
+      "error": "历史数据不足: sh.560950",
+      "final_score": 0
+    },
+    {
+      "status": "ok",
+      "code": "sz.000592",
+      "name": "sz.000592",
+      "price": 11.17,
+      "change_pct": 10.0493,
+      "turnover_rate": 0.0,
+      "volume_ratio": 1.36,
+      "trend_status": "强势空头",
+      "buy_signal": "强烈卖出",
+      "signal_score": 23,
+      "matched_source_strategies": [
+        "低位涨停换手率策略"
+      ],
+      "score_breakdown": {
+        "trend": 0,
+        "position": 0,
+        "chip": 3.0,
+        "volume_pattern": 5.0,
+        "risk_penalty": 18.0,
+        "stock_backtest": 3.0,
+        "strategy_total": 2.0
+      },
+      "strategy_hits": {
+        "bull_trend": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "ma_golden_cross": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "shrink_pullback": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "volume_breakout": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "bottom_volume": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "box_oscillation": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "dragon_head": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "emotion_cycle": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "one_yang_three_yin": {
+          "raw_score": 0.0,
+          "weighted_score": 0.0,
+          "reason": "未命中"
+        },
+        "wave_theory": {
+          "raw_score": 1,
+          "weighted_score": 1.0,
+          "reason": "疑似调整浪中"
+        },
+        "chan_theory": {
+          "raw_score": 1,
+          "weighted_score": 1.0,
+          "reason": "缠论视角偏弱"
+        }
+      },
+      "risk_flags": [
+        "偏离MA5过大，疑似追高",
+        "跌破MA20",
+        "MACD偏空"
+      ],
+      "volume_flags": [
+        "放量上涨"
+      ],
+      "final_score": 0,
+      "profit_probability": 0.2,
+      "action": "观察",
+      "avg_cost": null,
+      "chip_profit_ratio": null,
+      "stock_backtest": null,
+      "summary": "观察，总分0，强势空头，来源于低位涨停换手率策略，偏离MA5过大，疑似追高；跌破MA20",
+      "data_source": "BaostockFetcher"
+    }
+  ]
+}
