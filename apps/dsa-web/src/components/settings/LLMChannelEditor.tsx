@@ -69,6 +69,12 @@ const CHANNEL_PRESETS: Record<string, ChannelPreset> = {
     baseUrl: '',
     placeholder: 'claude-3-5-sonnet-20241022',
   },
+  minimax: {
+    label: 'MiniMax（Token Plan）',
+    protocol: 'anthropic',
+    baseUrl: 'https://api.minimaxi.com/anthropic',
+    placeholder: 'MiniMax-M2.7',
+  },
   openai: {
     label: 'OpenAI 官方',
     protocol: 'openai',
