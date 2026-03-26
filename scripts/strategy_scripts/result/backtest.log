@@ -1,0 +1,273 @@
+2026-03-24 19:10:09 - strategy_backtest - INFO - 成功创建数据库连接池 (大小: 5)
+2026-03-24 19:13:21 - strategy_backtest - INFO - 成功获取 12610918 条股票数据 (7459 只股票)
+2026-03-24 19:13:34 - strategy_backtest - INFO - 收益率计算完成，涵盖 7459 只股票
+2026-03-24 19:13:34 - strategy_backtest - INFO - 即将回测的策略: 低位涨停换手率策略, 孕阳线策略, 神奇九转策略, 多均线共振策略
+2026-03-24 19:13:34 - strategy_backtest - INFO - 开始应用策略: 低位涨停换手率策略
+2026-03-24 19:13:34 - strategy_backtest - INFO - 开始应用策略: 孕阳线策略
+2026-03-24 19:13:35 - strategy_backtest - INFO - 开始应用策略: 神奇九转策略
+2026-03-24 19:13:35 - strategy_backtest - INFO - 开始应用策略: 多均线共振策略
+2026-03-24 19:17:35 - strategy_backtest - INFO - 孕阳线策略: 生成 2973 个买入信号
+2026-03-24 19:18:53 - strategy_backtest - INFO - 神奇九转策略: 生成 14393 个买入信号
+2026-03-24 19:18:58 - strategy_backtest - INFO - 低位涨停换手率策略: 生成 9778 个买入信号
+2026-03-24 19:21:07 - strategy_backtest - INFO - 多均线共振策略: 生成 649 个买入信号
+2026-03-24 19:21:08 - strategy_backtest - INFO - 所有策略报告已汇总保存至: ./result/策略汇总报告_20260324_192108.xlsx
+2026-03-24 19:21:08 - strategy_backtest - INFO - 
+策略回测报告摘要:
+2026-03-24 19:21:08 - strategy_backtest - INFO - 
+策略: 孕阳线策略
+2026-03-24 19:21:08 - strategy_backtest - INFO - 买入次数: 2973
+2026-03-24 19:21:08 - strategy_backtest - INFO - 1日上涨概率: 57.48%
+2026-03-24 19:21:08 - strategy_backtest - INFO - 1日平均收益率: 1.19%
+2026-03-24 19:21:08 - strategy_backtest - INFO - 3日上涨概率: 46.43%
+2026-03-24 19:21:08 - strategy_backtest - INFO - 3日平均收益率: 0.07%
+2026-03-24 19:21:08 - strategy_backtest - INFO - 5日上涨概率: 53.10%
+2026-03-24 19:21:08 - strategy_backtest - INFO - 5日平均收益率: 1.04%
+2026-03-24 19:21:08 - strategy_backtest - INFO - 10日上涨概率: 55.71%
+2026-03-24 19:21:08 - strategy_backtest - INFO - 10日平均收益率: 2.94%
+2026-03-24 19:21:08 - strategy_backtest - INFO - 20日上涨概率: 58.34%
+2026-03-24 19:21:08 - strategy_backtest - INFO - 20日平均收益率: 4.59%
+2026-03-24 19:21:08 - strategy_backtest - INFO - 
+策略: 神奇九转策略
+2026-03-24 19:21:08 - strategy_backtest - INFO - 买入次数: 14393
+2026-03-24 19:21:08 - strategy_backtest - INFO - 1日上涨概率: 49.79%
+2026-03-24 19:21:08 - strategy_backtest - INFO - 1日平均收益率: 0.51%
+2026-03-24 19:21:08 - strategy_backtest - INFO - 3日上涨概率: 51.85%
+2026-03-24 19:21:08 - strategy_backtest - INFO - 3日平均收益率: 1.40%
+2026-03-24 19:21:08 - strategy_backtest - INFO - 5日上涨概率: 50.90%
+2026-03-24 19:21:08 - strategy_backtest - INFO - 5日平均收益率: 1.33%
+2026-03-24 19:21:08 - strategy_backtest - INFO - 10日上涨概率: 51.16%
+2026-03-24 19:21:08 - strategy_backtest - INFO - 10日平均收益率: 2.42%
+2026-03-24 19:21:08 - strategy_backtest - INFO - 20日上涨概率: 52.84%
+2026-03-24 19:21:08 - strategy_backtest - INFO - 20日平均收益率: 3.51%
+2026-03-24 19:21:08 - strategy_backtest - INFO - 
+策略: 低位涨停换手率策略
+2026-03-24 19:21:08 - strategy_backtest - INFO - 买入次数: 9778
+2026-03-24 19:21:08 - strategy_backtest - INFO - 1日上涨概率: 61.96%
+2026-03-24 19:21:08 - strategy_backtest - INFO - 1日平均收益率: 2.10%
+2026-03-24 19:21:08 - strategy_backtest - INFO - 3日上涨概率: 56.73%
+2026-03-24 19:21:08 - strategy_backtest - INFO - 3日平均收益率: 2.80%
+2026-03-24 19:21:08 - strategy_backtest - INFO - 5日上涨概率: 55.16%
+2026-03-24 19:21:08 - strategy_backtest - INFO - 5日平均收益率: 3.18%
+2026-03-24 19:21:08 - strategy_backtest - INFO - 10日上涨概率: 52.29%
+2026-03-24 19:21:08 - strategy_backtest - INFO - 10日平均收益率: 3.13%
+2026-03-24 19:21:08 - strategy_backtest - INFO - 20日上涨概率: 54.37%
+2026-03-24 19:21:08 - strategy_backtest - INFO - 20日平均收益率: 4.82%
+2026-03-24 19:21:08 - strategy_backtest - INFO - 
+策略: 多均线共振策略
+2026-03-24 19:21:08 - strategy_backtest - INFO - 买入次数: 649
+2026-03-24 19:21:08 - strategy_backtest - INFO - 1日上涨概率: 48.38%
+2026-03-24 19:21:08 - strategy_backtest - INFO - 1日平均收益率: 0.19%
+2026-03-24 19:21:08 - strategy_backtest - INFO - 3日上涨概率: 51.85%
+2026-03-24 19:21:08 - strategy_backtest - INFO - 3日平均收益率: 0.37%
+2026-03-24 19:21:08 - strategy_backtest - INFO - 5日上涨概率: 48.46%
+2026-03-24 19:21:08 - strategy_backtest - INFO - 5日平均收益率: 0.30%
+2026-03-24 19:21:08 - strategy_backtest - INFO - 10日上涨概率: 45.33%
+2026-03-24 19:21:08 - strategy_backtest - INFO - 10日平均收益率: 0.11%
+2026-03-24 19:21:08 - strategy_backtest - INFO - 20日上涨概率: 39.97%
+2026-03-24 19:21:08 - strategy_backtest - INFO - 20日平均收益率: -1.07%
+2026-03-24 19:21:08 - strategy_backtest - INFO - 获取 2026-03-23 符合策略的股票列表
+2026-03-24 19:21:08 - strategy_backtest - INFO - 将要运行的策略: 低位涨停换手率策略, 孕阳线策略, 神奇九转策略, 多均线共振策略
+2026-03-24 19:21:59 - strategy_backtest - INFO - 策略 低位涨停换手率策略 当日匹配 3 只股票
+2026-03-24 19:26:38 - strategy_backtest - INFO - 策略 神奇九转策略 当日匹配 2 只股票
+2026-03-24 19:34:09 - strategy_backtest - INFO - 已导出候选股JSON: /opt/daily_stock_analysis/scripts/strategy_scripts/result/candidates.json，共 5 只股票
+2026-03-24 19:34:09 - strategy_backtest - INFO - 开始执行候选股增强打分: /root/anaconda3/bin/conda run -n daily_stock_analysis python /opt/daily_stock_analysis/scripts/candidate_enhancer.py --input /opt/daily_stock_analysis/scripts/strategy_scripts/result/candidates.json --output /opt/daily_stock_analysis/scripts/strategy_scripts/result/candidates_enhanced.json --output_csv /opt/daily_stock_analysis/scripts/strategy_scripts/result/candidates_enhanced.csv --top_n 10
+2026-03-24 19:40:44 - strategy_backtest - INFO - 候选股增强打分完成: /opt/daily_stock_analysis/scripts/strategy_scripts/result/candidates_enhanced.json
+2026-03-24 19:40:44 - strategy_backtest - INFO - 已将候选增强 Top 5 添加到邮件正文顶部
+2026-03-24 19:40:45 - strategy_backtest - INFO - 已添加附件: 2026-03-23-report.xlsx
+2026-03-24 19:40:45 - strategy_backtest - INFO - 尝试使用SSL连接... (尝试 1/5)
+2026-03-24 19:41:03 - strategy_backtest - INFO - 已连接到SMTP服务器，准备登录...
+2026-03-24 19:41:03 - strategy_backtest - INFO - 登录成功，准备发送邮件...
+2026-03-24 19:56:58 - strategy_backtest - ERROR - 发送邮件失败 (尝试 1/5): (502, b'Timeout from 117.72.70.67 to newxmesmtplogicsvrszc43-0.qq.com.')
+2026-03-24 19:56:58 - strategy_backtest - INFO - 等待5秒后重试...
+2026-03-24 19:57:03 - strategy_backtest - DEBUG - 关闭SMTP连接时出现小问题（可忽略）: please run connect() first
+2026-03-24 19:57:03 - strategy_backtest - INFO - 尝试使用SSL连接... (尝试 2/5)
+2026-03-24 19:57:03 - strategy_backtest - INFO - 已连接到SMTP服务器，准备登录...
+2026-03-24 19:57:03 - strategy_backtest - INFO - 登录成功，准备发送邮件...
+2026-03-24 19:57:04 - strategy_backtest - INFO - 策略匹配股票邮件发送成功（含附件，顶部包含候选增强结果）
+2026-03-24 19:57:04 - strategy_backtest - INFO - 数据库连接池已关闭
+2026-03-25 19:10:06 - strategy_backtest - INFO - 成功创建数据库连接池 (大小: 5)
+2026-03-25 19:13:41 - strategy_backtest - INFO - 成功获取 12610918 条股票数据 (7459 只股票)
+2026-03-25 19:13:53 - strategy_backtest - INFO - 收益率计算完成，涵盖 7459 只股票
+2026-03-25 19:13:53 - strategy_backtest - INFO - 即将回测的策略: 低位涨停换手率策略, 孕阳线策略, 神奇九转策略, 多均线共振策略
+2026-03-25 19:13:53 - strategy_backtest - INFO - 开始应用策略: 低位涨停换手率策略
+2026-03-25 19:13:53 - strategy_backtest - INFO - 开始应用策略: 孕阳线策略
+2026-03-25 19:13:54 - strategy_backtest - INFO - 开始应用策略: 神奇九转策略
+2026-03-25 19:13:54 - strategy_backtest - INFO - 开始应用策略: 多均线共振策略
+2026-03-25 19:17:55 - strategy_backtest - INFO - 孕阳线策略: 生成 2973 个买入信号
+2026-03-25 19:19:02 - strategy_backtest - INFO - 神奇九转策略: 生成 14393 个买入信号
+2026-03-25 19:19:07 - strategy_backtest - INFO - 低位涨停换手率策略: 生成 9778 个买入信号
+2026-03-25 19:21:29 - strategy_backtest - INFO - 多均线共振策略: 生成 649 个买入信号
+2026-03-25 19:21:30 - strategy_backtest - INFO - 所有策略报告已汇总保存至: ./result/策略汇总报告_20260325_192129.xlsx
+2026-03-25 19:21:30 - strategy_backtest - INFO - 
+策略回测报告摘要:
+2026-03-25 19:21:30 - strategy_backtest - INFO - 
+策略: 孕阳线策略
+2026-03-25 19:21:30 - strategy_backtest - INFO - 买入次数: 2973
+2026-03-25 19:21:30 - strategy_backtest - INFO - 1日上涨概率: 57.48%
+2026-03-25 19:21:30 - strategy_backtest - INFO - 1日平均收益率: 1.19%
+2026-03-25 19:21:30 - strategy_backtest - INFO - 3日上涨概率: 46.43%
+2026-03-25 19:21:30 - strategy_backtest - INFO - 3日平均收益率: 0.07%
+2026-03-25 19:21:30 - strategy_backtest - INFO - 5日上涨概率: 53.10%
+2026-03-25 19:21:30 - strategy_backtest - INFO - 5日平均收益率: 1.04%
+2026-03-25 19:21:30 - strategy_backtest - INFO - 10日上涨概率: 55.71%
+2026-03-25 19:21:30 - strategy_backtest - INFO - 10日平均收益率: 2.94%
+2026-03-25 19:21:30 - strategy_backtest - INFO - 20日上涨概率: 58.34%
+2026-03-25 19:21:30 - strategy_backtest - INFO - 20日平均收益率: 4.59%
+2026-03-25 19:21:30 - strategy_backtest - INFO - 
+策略: 神奇九转策略
+2026-03-25 19:21:30 - strategy_backtest - INFO - 买入次数: 14393
+2026-03-25 19:21:30 - strategy_backtest - INFO - 1日上涨概率: 49.79%
+2026-03-25 19:21:30 - strategy_backtest - INFO - 1日平均收益率: 0.51%
+2026-03-25 19:21:30 - strategy_backtest - INFO - 3日上涨概率: 51.85%
+2026-03-25 19:21:30 - strategy_backtest - INFO - 3日平均收益率: 1.40%
+2026-03-25 19:21:30 - strategy_backtest - INFO - 5日上涨概率: 50.90%
+2026-03-25 19:21:30 - strategy_backtest - INFO - 5日平均收益率: 1.33%
+2026-03-25 19:21:30 - strategy_backtest - INFO - 10日上涨概率: 51.16%
+2026-03-25 19:21:30 - strategy_backtest - INFO - 10日平均收益率: 2.42%
+2026-03-25 19:21:30 - strategy_backtest - INFO - 20日上涨概率: 52.84%
+2026-03-25 19:21:30 - strategy_backtest - INFO - 20日平均收益率: 3.51%
+2026-03-25 19:21:30 - strategy_backtest - INFO - 
+策略: 低位涨停换手率策略
+2026-03-25 19:21:30 - strategy_backtest - INFO - 买入次数: 9778
+2026-03-25 19:21:30 - strategy_backtest - INFO - 1日上涨概率: 61.96%
+2026-03-25 19:21:30 - strategy_backtest - INFO - 1日平均收益率: 2.10%
+2026-03-25 19:21:30 - strategy_backtest - INFO - 3日上涨概率: 56.73%
+2026-03-25 19:21:30 - strategy_backtest - INFO - 3日平均收益率: 2.80%
+2026-03-25 19:21:30 - strategy_backtest - INFO - 5日上涨概率: 55.16%
+2026-03-25 19:21:30 - strategy_backtest - INFO - 5日平均收益率: 3.18%
+2026-03-25 19:21:30 - strategy_backtest - INFO - 10日上涨概率: 52.29%
+2026-03-25 19:21:30 - strategy_backtest - INFO - 10日平均收益率: 3.13%
+2026-03-25 19:21:30 - strategy_backtest - INFO - 20日上涨概率: 54.37%
+2026-03-25 19:21:30 - strategy_backtest - INFO - 20日平均收益率: 4.82%
+2026-03-25 19:21:30 - strategy_backtest - INFO - 
+策略: 多均线共振策略
+2026-03-25 19:21:30 - strategy_backtest - INFO - 买入次数: 649
+2026-03-25 19:21:30 - strategy_backtest - INFO - 1日上涨概率: 48.38%
+2026-03-25 19:21:30 - strategy_backtest - INFO - 1日平均收益率: 0.19%
+2026-03-25 19:21:30 - strategy_backtest - INFO - 3日上涨概率: 51.85%
+2026-03-25 19:21:30 - strategy_backtest - INFO - 3日平均收益率: 0.37%
+2026-03-25 19:21:30 - strategy_backtest - INFO - 5日上涨概率: 48.46%
+2026-03-25 19:21:30 - strategy_backtest - INFO - 5日平均收益率: 0.30%
+2026-03-25 19:21:30 - strategy_backtest - INFO - 10日上涨概率: 45.33%
+2026-03-25 19:21:30 - strategy_backtest - INFO - 10日平均收益率: 0.11%
+2026-03-25 19:21:30 - strategy_backtest - INFO - 20日上涨概率: 39.97%
+2026-03-25 19:21:30 - strategy_backtest - INFO - 20日平均收益率: -1.07%
+2026-03-25 19:21:30 - strategy_backtest - INFO - 获取 2026-03-23 符合策略的股票列表
+2026-03-25 19:21:30 - strategy_backtest - INFO - 将要运行的策略: 低位涨停换手率策略, 孕阳线策略, 神奇九转策略, 多均线共振策略
+2026-03-25 19:22:16 - strategy_backtest - INFO - 策略 低位涨停换手率策略 当日匹配 3 只股票
+2026-03-25 19:26:21 - strategy_backtest - INFO - 策略 神奇九转策略 当日匹配 2 只股票
+2026-03-25 19:33:08 - strategy_backtest - INFO - 已导出候选股JSON: /opt/daily_stock_analysis/scripts/strategy_scripts/result/candidates.json，共 5 只股票
+2026-03-25 19:33:08 - strategy_backtest - INFO - 开始执行候选股增强打分: /root/anaconda3/bin/conda run -n daily_stock_analysis python /opt/daily_stock_analysis/scripts/candidate_enhancer.py --input /opt/daily_stock_analysis/scripts/strategy_scripts/result/candidates.json --output /opt/daily_stock_analysis/scripts/strategy_scripts/result/candidates_enhanced.json --output_csv /opt/daily_stock_analysis/scripts/strategy_scripts/result/candidates_enhanced.csv --top_n 10
+2026-03-25 19:40:22 - strategy_backtest - INFO - 候选股增强打分完成: /opt/daily_stock_analysis/scripts/strategy_scripts/result/candidates_enhanced.json
+2026-03-25 19:40:22 - strategy_backtest - INFO - 已将候选增强 Top 5 添加到邮件正文顶部
+2026-03-25 19:40:23 - strategy_backtest - INFO - 已添加附件: 2026-03-23-report.xlsx
+2026-03-25 19:40:23 - strategy_backtest - INFO - 尝试使用SSL连接... (尝试 1/5)
+2026-03-25 19:40:36 - strategy_backtest - INFO - 已连接到SMTP服务器，准备登录...
+2026-03-25 19:40:36 - strategy_backtest - INFO - 登录成功，准备发送邮件...
+2026-03-25 19:40:40 - strategy_backtest - INFO - 策略匹配股票邮件发送成功（含附件，顶部包含候选增强结果）
+2026-03-25 19:40:40 - strategy_backtest - INFO - 数据库连接池已关闭
+2026-03-26 07:58:34 - strategy_backtest - INFO - 成功创建数据库连接池 (大小: 5)
+2026-03-26 08:01:44 - strategy_backtest - INFO - 成功获取 12625239 条股票数据 (7462 只股票)
+2026-03-26 08:01:56 - strategy_backtest - INFO - 收益率计算完成，涵盖 7462 只股票
+2026-03-26 08:01:56 - strategy_backtest - INFO - 即将回测的策略: 低位涨停换手率策略, 孕阳线策略, 神奇九转策略, 多均线共振策略
+2026-03-26 08:01:56 - strategy_backtest - INFO - 开始应用策略: 低位涨停换手率策略
+2026-03-26 08:01:56 - strategy_backtest - INFO - 开始应用策略: 孕阳线策略
+2026-03-26 08:01:57 - strategy_backtest - INFO - 开始应用策略: 神奇九转策略
+2026-03-26 08:01:57 - strategy_backtest - INFO - 开始应用策略: 多均线共振策略
+2026-03-26 08:06:00 - strategy_backtest - INFO - 孕阳线策略: 生成 3110 个买入信号
+2026-03-26 08:07:07 - strategy_backtest - INFO - 神奇九转策略: 生成 14477 个买入信号
+2026-03-26 08:07:11 - strategy_backtest - INFO - 低位涨停换手率策略: 生成 9801 个买入信号
+2026-03-26 08:09:18 - strategy_backtest - INFO - 多均线共振策略: 生成 650 个买入信号
+2026-03-26 08:09:19 - strategy_backtest - INFO - 所有策略报告已汇总保存至: ./result/策略汇总报告_20260326_080919.xlsx
+2026-03-26 08:09:19 - strategy_backtest - INFO - 
+策略回测报告摘要:
+2026-03-26 08:09:19 - strategy_backtest - INFO - 
+策略: 孕阳线策略
+2026-03-26 08:09:19 - strategy_backtest - INFO - 买入次数: 3110
+2026-03-26 08:09:19 - strategy_backtest - INFO - 1日上涨概率: 59.20%
+2026-03-26 08:09:19 - strategy_backtest - INFO - 1日平均收益率: 1.25%
+2026-03-26 08:09:19 - strategy_backtest - INFO - 3日上涨概率: 46.45%
+2026-03-26 08:09:19 - strategy_backtest - INFO - 3日平均收益率: 0.07%
+2026-03-26 08:09:19 - strategy_backtest - INFO - 5日上涨概率: 53.06%
+2026-03-26 08:09:19 - strategy_backtest - INFO - 5日平均收益率: 1.04%
+2026-03-26 08:09:19 - strategy_backtest - INFO - 10日上涨概率: 55.67%
+2026-03-26 08:09:19 - strategy_backtest - INFO - 10日平均收益率: 2.93%
+2026-03-26 08:09:19 - strategy_backtest - INFO - 20日上涨概率: 58.29%
+2026-03-26 08:09:19 - strategy_backtest - INFO - 20日平均收益率: 4.58%
+2026-03-26 08:09:19 - strategy_backtest - INFO - 
+策略: 神奇九转策略
+2026-03-26 08:09:19 - strategy_backtest - INFO - 买入次数: 14477
+2026-03-26 08:09:19 - strategy_backtest - INFO - 1日上涨概率: 49.99%
+2026-03-26 08:09:19 - strategy_backtest - INFO - 1日平均收益率: 0.52%
+2026-03-26 08:09:19 - strategy_backtest - INFO - 3日上涨概率: 51.84%
+2026-03-26 08:09:19 - strategy_backtest - INFO - 3日平均收益率: 1.40%
+2026-03-26 08:09:19 - strategy_backtest - INFO - 5日上涨概率: 50.88%
+2026-03-26 08:09:19 - strategy_backtest - INFO - 5日平均收益率: 1.33%
+2026-03-26 08:09:19 - strategy_backtest - INFO - 10日上涨概率: 51.15%
+2026-03-26 08:09:19 - strategy_backtest - INFO - 10日平均收益率: 2.41%
+2026-03-26 08:09:19 - strategy_backtest - INFO - 20日上涨概率: 52.83%
+2026-03-26 08:09:19 - strategy_backtest - INFO - 20日平均收益率: 3.51%
+2026-03-26 08:09:19 - strategy_backtest - INFO - 
+策略: 低位涨停换手率策略
+2026-03-26 08:09:19 - strategy_backtest - INFO - 买入次数: 9801
+2026-03-26 08:09:19 - strategy_backtest - INFO - 1日上涨概率: 61.98%
+2026-03-26 08:09:19 - strategy_backtest - INFO - 1日平均收益率: 2.10%
+2026-03-26 08:09:19 - strategy_backtest - INFO - 3日上涨概率: 56.73%
+2026-03-26 08:09:19 - strategy_backtest - INFO - 3日平均收益率: 2.80%
+2026-03-26 08:09:19 - strategy_backtest - INFO - 5日上涨概率: 55.14%
+2026-03-26 08:09:19 - strategy_backtest - INFO - 5日平均收益率: 3.18%
+2026-03-26 08:09:19 - strategy_backtest - INFO - 10日上涨概率: 52.29%
+2026-03-26 08:09:19 - strategy_backtest - INFO - 10日平均收益率: 3.13%
+2026-03-26 08:09:19 - strategy_backtest - INFO - 20日上涨概率: 54.35%
+2026-03-26 08:09:19 - strategy_backtest - INFO - 20日平均收益率: 4.81%
+2026-03-26 08:09:19 - strategy_backtest - INFO - 
+策略: 多均线共振策略
+2026-03-26 08:09:19 - strategy_backtest - INFO - 买入次数: 650
+2026-03-26 08:09:19 - strategy_backtest - INFO - 1日上涨概率: 48.46%
+2026-03-26 08:09:19 - strategy_backtest - INFO - 1日平均收益率: 0.19%
+2026-03-26 08:09:19 - strategy_backtest - INFO - 3日上涨概率: 51.93%
+2026-03-26 08:09:19 - strategy_backtest - INFO - 3日平均收益率: 0.38%
+2026-03-26 08:09:19 - strategy_backtest - INFO - 5日上涨概率: 48.46%
+2026-03-26 08:09:19 - strategy_backtest - INFO - 5日平均收益率: 0.30%
+2026-03-26 08:09:19 - strategy_backtest - INFO - 10日上涨概率: 45.13%
+2026-03-26 08:09:19 - strategy_backtest - INFO - 10日平均收益率: 0.03%
+2026-03-26 08:09:19 - strategy_backtest - INFO - 20日上涨概率: 39.84%
+2026-03-26 08:09:19 - strategy_backtest - INFO - 20日平均收益率: -1.09%
+2026-03-26 08:09:19 - strategy_backtest - INFO - 获取 2026-03-25 符合策略的股票列表
+2026-03-26 08:09:19 - strategy_backtest - INFO - 将要运行的策略: 低位涨停换手率策略, 孕阳线策略, 神奇九转策略, 多均线共振策略
+2026-03-26 08:10:07 - strategy_backtest - INFO - 策略 低位涨停换手率策略 当日匹配 7 只股票
+2026-03-26 08:14:15 - strategy_backtest - INFO - 策略 神奇九转策略 当日匹配 20 只股票
+2026-03-26 08:21:08 - strategy_backtest - INFO - 已导出候选股JSON: /opt/daily_stock_analysis/scripts/strategy_scripts/result/candidates.json，共 27 只股票
+2026-03-26 08:21:08 - strategy_backtest - INFO - 开始执行候选股增强打分: /root/anaconda3/bin/conda run -n daily_stock_analysis python /opt/daily_stock_analysis/scripts/candidate_enhancer.py --input /opt/daily_stock_analysis/scripts/strategy_scripts/result/candidates.json --output /opt/daily_stock_analysis/scripts/strategy_scripts/result/candidates_enhanced.json --output_csv /opt/daily_stock_analysis/scripts/strategy_scripts/result/candidates_enhanced.csv --top_n 10
+2026-03-26 08:51:41 - strategy_backtest - INFO - 候选股增强打分完成: /opt/daily_stock_analysis/scripts/strategy_scripts/result/candidates_enhanced.json
+2026-03-26 08:51:41 - strategy_backtest - INFO - 已将候选增强 Top 10 添加到邮件正文顶部
+2026-03-26 08:51:41 - strategy_backtest - INFO - 已添加附件: 2026-03-25-report.xlsx
+2026-03-26 08:51:41 - strategy_backtest - INFO - 尝试使用SSL连接... (尝试 1/5)
+2026-03-26 08:51:43 - strategy_backtest - INFO - 已连接到SMTP服务器，准备登录...
+2026-03-26 08:51:44 - strategy_backtest - INFO - 登录成功，准备发送邮件...
+2026-03-26 09:14:44 - strategy_backtest - ERROR - 发送邮件失败 (尝试 1/5): Server not connected
+2026-03-26 09:14:44 - strategy_backtest - INFO - 等待5秒后重试...
+2026-03-26 09:14:49 - strategy_backtest - DEBUG - 关闭SMTP连接时出现小问题（可忽略）: please run connect() first
+2026-03-26 09:14:49 - strategy_backtest - INFO - 尝试使用SSL连接... (尝试 2/5)
+2026-03-26 09:14:57 - strategy_backtest - INFO - 已连接到SMTP服务器，准备登录...
+2026-03-26 09:14:59 - strategy_backtest - INFO - 登录成功，准备发送邮件...
+2026-03-26 09:49:05 - strategy_backtest - ERROR - 发送邮件失败 (尝试 2/5): (502, b'Timeout from 117.72.70.67 to newxmesmtplogicsvrsza73-0.qq.com.')
+2026-03-26 09:49:05 - strategy_backtest - INFO - 等待5秒后重试...
+2026-03-26 09:49:10 - strategy_backtest - DEBUG - 关闭SMTP连接时出现小问题（可忽略）: please run connect() first
+2026-03-26 09:49:10 - strategy_backtest - INFO - 尝试使用SSL连接... (尝试 3/5)
+2026-03-26 09:49:11 - strategy_backtest - INFO - 已连接到SMTP服务器，准备登录...
+2026-03-26 09:49:13 - strategy_backtest - INFO - 登录成功，准备发送邮件...
+2026-03-26 10:04:11 - strategy_backtest - ERROR - 发送邮件失败 (尝试 3/5): Connection unexpectedly closed
+2026-03-26 10:04:11 - strategy_backtest - INFO - 等待5秒后重试...
+2026-03-26 10:04:16 - strategy_backtest - DEBUG - 关闭SMTP连接时出现小问题（可忽略）: please run connect() first
+2026-03-26 10:04:16 - strategy_backtest - INFO - 尝试使用SSL连接... (尝试 4/5)
+2026-03-26 10:09:27 - strategy_backtest - INFO - 已连接到SMTP服务器，准备登录...
+2026-03-26 10:09:27 - strategy_backtest - INFO - 登录成功，准备发送邮件...
+2026-03-26 10:21:13 - strategy_backtest - ERROR - 发送邮件失败 (尝试 4/5): Server not connected
+2026-03-26 10:21:13 - strategy_backtest - INFO - 等待5秒后重试...
+2026-03-26 10:21:18 - strategy_backtest - DEBUG - 关闭SMTP连接时出现小问题（可忽略）: please run connect() first
+2026-03-26 10:21:18 - strategy_backtest - INFO - 尝试使用SSL连接... (尝试 5/5)
+2026-03-26 10:21:18 - strategy_backtest - INFO - 已连接到SMTP服务器，准备登录...
+2026-03-26 10:21:19 - strategy_backtest - INFO - 登录成功，准备发送邮件...
+2026-03-26 10:21:20 - strategy_backtest - INFO - 策略匹配股票邮件发送成功（含附件，顶部包含候选增强结果）
+2026-03-26 10:21:20 - strategy_backtest - INFO - 数据库连接池已关闭
