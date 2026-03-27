@@ -128,13 +128,7 @@ const SettingsPage: React.FC = () => {
   const SYSTEM_HIDDEN_KEYS = new Set([
     'ADMIN_AUTH_ENABLED',
   ]);
-  const AGENT_HIDDEN_KEYS = new Set([
-    'AGENT_DEEP_RESEARCH_BUDGET',
-    'AGENT_DEEP_RESEARCH_TIMEOUT',
-    'AGENT_EVENT_MONITOR_ENABLED',
-    'AGENT_EVENT_MONITOR_INTERVAL_MINUTES',
-    'AGENT_EVENT_ALERT_RULES_JSON',
-  ]);
+  const AGENT_HIDDEN_KEYS = new Set<string>();
   const activeItems =
     activeCategory === 'ai_model'
       ? rawActiveItems.filter((item) => {
