@@ -1,0 +1,47 @@
+# 成交量放量策略 / Volume Surge (2-Sigma) Strategy
+# Volume breaks above 20-day mean + 2x standard deviation
+
+name: volume_surge_std
+display_name: 成交量放量策略
+description: 成交量超过20日均量2倍标准差，价格同时突破20日高点，量价齐升确认突破有效性。
+category: trend
+core_rules: [2, 3]
+required_tools:
+  - get_daily_history
+  - analyze_trend
+aliases: [量能放量, 成交量放量, 2倍量, 放量确认]
+default_priority: 25
+market_regimes: [trending_up, volatile]
+
+instructions: |
+  **成交量放量策略（Volume Surge / 2-Sigma Breakout Strategy）**
+
+  适用场景：突破关键阻力位时的量能确认信号，配合放量提高胜率。
+
+  信号判定标准（需同时满足）：
+
+  1. **量能突破**：
+     - 当日成交量 > 20 日均量 + 2 倍标准差。
+     - 使用 `get_daily_history` 获取历史成交量数据并计算。
+     - 量比（volume_ratio）> 2.0 更佳。
+
+  2. **价格同步突破**：
+     - 收盘价 > 前 20 日最高价。
+     - 阳线收盘（收盘 > 开盘）更佳。
+     - 收盘处于当日振幅上方 50% 属于强势信号。
+
+  3. **量能持续性**：
+     - 放量当日成交量 > 前 1 日成交量 × 1.5（量能持续放大）。
+     - 连续 2 日放量信号更强。
+     - 缩量突破需警惕（可能是假突破）。
+
+  4. **趋势背景**：
+     - RSI(6) 在 30-70 区间（避免超买超卖）。
+     - 配合均线多头排列胜率更高。
+     - 整体趋势向上时放量突破胜率更大。
+
+  评分调整：
+  - 成交量 > 均量+2σ + 价格突破20日高点 + 阳线：sentiment_score +12
+  - 量能持续放大（连续2日放量）：sentiment_score +8
+  - RSI 适中（40-60）：sentiment_score +5
+  - 缩量突破：sentiment_score -10，提示谨慎

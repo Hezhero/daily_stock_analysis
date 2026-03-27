@@ -1,0 +1,52 @@
+# 组合策略 / Ensemble Multi-Strategy
+# Requires 2 or more strategies to trigger simultaneously with minimum score threshold
+
+name: ensemble_strategy
+display_name: 组合策略
+description: 多策略共振 — 至少2个以下策略同时触发（均线交叉、成交量突破、多均线共振）时买入，要求信号综合评分达到阈值，降低假信号风险。
+category: framework
+core_rules: [1, 2, 3, 4]
+required_tools:
+  - get_daily_history
+  - analyze_trend
+aliases: [组合, 共振策略, 多策略, 综合策略]
+default_priority: 10
+market_regimes: [trending_up, volatile]
+
+instructions: |
+  **组合策略（Ensemble Multi-Strategy）**
+
+  适用场景：多维度共振确认，提高信号可靠性，减少假信号。
+
+  信号判定标准（需同时满足）：
+
+  1. **多策略同时触发（至少2个）**：
+     - 均线交叉策略触发：MA5 上穿 MA20 + 量能 1.5 倍 + MACD 柱状线翻红。
+     - 成交量突破策略触发：成交量 > 20 日均量 + 2 倍标准差 + 价格突破 20 日高点。
+     - 多均线共振策略触发：均线多头排列 + MACD 金叉 + RSI 三线向上。
+
+  2. **综合信号评分阈值**：
+     - 每个策略贡献基础分：均线交叉 (+6)、成交量突破 (+5)、多均线共振 (+8)、神奇九转 (+7)、孕阳线 (+6)、涨停回调 (+5)。
+     - 综合评分 >= 12 分（至少 2 个策略触发）才发出买入信号。
+     - 综合评分 >= 16 分（3 个及以上策略共振）→ sentiment_score +20。
+     - 综合评分 12-15 分 → sentiment_score +12。
+
+  3. **时间同步要求**：
+     - 各策略信号应在最近 3 个交易日内产生。
+     - 时间跨度超过 5 个交易日则不视为共振。
+
+  4. **过滤机制**：
+     - 大盘处于下降通道时，即使多策略共振也应降低权重。
+     - RSI 超买（>80）时减少仓位建议。
+
+  组合策略输出规范：
+  - 明确列出哪些策略同时触发（如"均线交叉 + 成交量突破共振"）。
+  - 给出综合评分（满分 20 分制）。
+  - 操作建议：强烈买入 / 买入 / 观望（取决于评分）。
+  - 止损：跌破共振触发日的最低价。
+
+  优势：
+  - 相比单一策略，假信号率显著降低。
+  - 适合追求稳定收益、不追求最低买入价的投资者。
+
+  注意：共振信号触发频率较低，但胜率更高。

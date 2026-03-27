@@ -696,6 +696,12 @@ class Config:
     # 基本面缓存最大条目数（避免长时间运行内存增长）
     fundamental_cache_max_entries: int = 256
 
+    # === 分析结果 LRU 缓存（TTL）===
+    # AI 分析结果缓存 TTL（秒），减少重复 LLM 调用
+    analysis_cache_ttl_seconds: int = 3600
+    # 分析结果缓存最大条目数
+    analysis_cache_max_entries: int = 500
+
     # === Portfolio PR2: import/risk/fx settings ===
     portfolio_risk_concentration_alert_pct: float = 35.0
     portfolio_risk_drawdown_alert_pct: float = 15.0
@@ -1327,6 +1333,18 @@ class Config:
                 os.getenv('FUNDAMENTAL_CACHE_MAX_ENTRIES'),
                 256,
                 field_name='FUNDAMENTAL_CACHE_MAX_ENTRIES',
+                minimum=1,
+            ),
+            analysis_cache_ttl_seconds=parse_env_int(
+                os.getenv('ANALYSIS_CACHE_TTL_SECONDS'),
+                3600,
+                field_name='ANALYSIS_CACHE_TTL_SECONDS',
+                minimum=0,
+            ),
+            analysis_cache_max_entries=parse_env_int(
+                os.getenv('ANALYSIS_CACHE_MAX_ENTRIES'),
+                500,
+                field_name='ANALYSIS_CACHE_MAX_ENTRIES',
                 minimum=1,
             ),
             portfolio_risk_concentration_alert_pct=parse_env_float(

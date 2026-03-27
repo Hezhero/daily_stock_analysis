@@ -46,6 +46,25 @@ from bot.models import BotMessage
 logger = logging.getLogger(__name__)
 
 
+class TraceLoggerAdapter(logging.LoggerAdapter):
+    """
+    Logger adapter that automatically injects a trace_id into every log record.
+
+    Usage::
+
+        adapter = TraceLoggerAdapter(logging.getLogger(__name__), {"trace_id": "abc123"})
+        adapter.info("hello")  # → [abc123] hello
+    """
+
+    def process(self, msg, kwargs):
+        extra = dict(self.extra)
+        if "extra" in kwargs:
+            extra.update(kwargs["extra"])
+        kwargs["extra"] = extra
+        trace_id = extra.get("trace_id", "-")
+        return f"[{trace_id}] {msg}", kwargs
+
+
 class StockAnalysisPipeline:
     """
     股票分析主流程调度器
@@ -63,14 +82,16 @@ class StockAnalysisPipeline:
         source_message: Optional[BotMessage] = None,
         query_id: Optional[str] = None,
         query_source: Optional[str] = None,
-        save_context_snapshot: Optional[bool] = None
+        save_context_snapshot: Optional[bool] = None,
+        trace_id: Optional[str] = None,
     ):
         """
         初始化调度器
-        
+
         Args:
             config: 配置对象（可选，默认使用全局配置）
             max_workers: 最大并发线程数（可选，默认从配置读取）
+            trace_id: 链路追踪 ID（可选，默认自动生成）
         """
         self.config = config or get_config()
         self.max_workers = max_workers or self.config.max_workers
@@ -80,6 +101,10 @@ class StockAnalysisPipeline:
         self.save_context_snapshot = (
             self.config.save_context_snapshot if save_context_snapshot is None else save_context_snapshot
         )
+        # 统一 Trace ID：贯穿数据获取→分析→推送全链路
+        self.trace_id = trace_id or uuid.uuid4().hex[:12]
+        # TraceLoggerAdapter 自动在所有日志前加上 [trace_id] 前缀
+        self.log = TraceLoggerAdapter(logger, {"trace_id": self.trace_id})
         
         # 初始化各模块
         self.db = get_db()
@@ -102,21 +127,21 @@ class StockAnalysisPipeline:
             news_strategy_profile=getattr(self.config, "news_strategy_profile", "short"),
         )
         
-        logger.info(f"调度器初始化完成，最大并发数: {self.max_workers}")
-        logger.info("已启用技术分析引擎（均线/趋势/量价指标）")
+        self.log.info(f"调度器初始化完成，最大并发数: {self.max_workers}，trace_id: {self.trace_id}")
+        self.log.info("已启用技术分析引擎（均线/趋势/量价指标）")
         # 打印实时行情/筹码配置状态
         if self.config.enable_realtime_quote:
-            logger.info(f"实时行情已启用 (优先级: {self.config.realtime_source_priority})")
+            self.log.info(f"实时行情已启用 (优先级: {self.config.realtime_source_priority})")
         else:
-            logger.info("实时行情已禁用，将使用历史收盘价")
+            self.log.info("实时行情已禁用，将使用历史收盘价")
         if self.config.enable_chip_distribution:
-            logger.info("筹码分布分析已启用")
+            self.log.info("筹码分布分析已启用")
         else:
-            logger.info("筹码分布分析已禁用")
+            self.log.info("筹码分布分析已禁用")
         if self.search_service.is_available:
-            logger.info("搜索服务已启用")
+            self.log.info("搜索服务已启用")
         else:
-            logger.warning("搜索服务未启用（未配置搜索能力）")
+            self.log.warning("搜索服务未启用（未配置搜索能力）")
 
         # 初始化社交舆情服务（仅美股）
         self.social_sentiment_service = SocialSentimentService(
@@ -160,11 +185,11 @@ class StockAnalysisPipeline:
             
             # 断点续传检查：如果今日数据已存在，跳过
             if not force_refresh and self.db.has_today_data(code, today):
-                logger.info(f"{stock_name}({code}) 今日数据已存在，跳过获取（断点续传）")
+                self.log.info(f"{stock_name}({code}) 今日数据已存在，跳过获取（断点续传）")
                 return True, None
 
             # 从数据源获取数据
-            logger.info(f"{stock_name}({code}) 开始从数据源获取数据...")
+            self.log.info(f"{stock_name}({code}) 开始从数据源获取数据...")
             df, source_name = self.fetcher_manager.get_daily_data(code, days=30)
 
             if df is None or df.empty:
@@ -172,13 +197,13 @@ class StockAnalysisPipeline:
 
             # 保存到数据库
             saved_count = self.db.save_daily_data(df, code, source_name)
-            logger.info(f"{stock_name}({code}) 数据保存成功（来源: {source_name}，新增 {saved_count} 条）")
+            self.log.info(f"{stock_name}({code}) 数据保存成功（来源: {source_name}，新增 {saved_count} 条）")
 
             return True, None
 
         except Exception as e:
             error_msg = f"获取/保存数据失败: {str(e)}"
-            logger.error(f"{stock_name}({code}) {error_msg}")
+            self.log.error(f"{stock_name}({code}) {error_msg}")
             return False, error_msg
     
     def analyze_stock(self, code: str, report_type: ReportType, query_id: str) -> Optional[AnalysisResult]:
@@ -216,13 +241,13 @@ class StockAnalysisPipeline:
                     # 兼容不同数据源的字段（有些数据源可能没有 volume_ratio）
                     volume_ratio = getattr(realtime_quote, 'volume_ratio', None)
                     turnover_rate = getattr(realtime_quote, 'turnover_rate', None)
-                    logger.info(f"{stock_name}({code}) 实时行情: 价格={realtime_quote.price}, "
+                    self.log.info(f"{stock_name}({code}) 实时行情: 价格={realtime_quote.price}, "
                               f"量比={volume_ratio}, 换手率={turnover_rate}% "
                               f"(来源: {realtime_quote.source.value if hasattr(realtime_quote, 'source') else 'unknown'})")
                 else:
-                    logger.info(f"{stock_name}({code}) 实时行情获取失败或已禁用，将使用历史数据进行分析")
+                    self.log.info(f"{stock_name}({code}) 实时行情获取失败或已禁用，将使用历史数据进行分析")
             except Exception as e:
-                logger.warning(f"{stock_name}({code}) 获取实时行情失败: {e}")
+                self.log.warning(f"{stock_name}({code}) 获取实时行情失败: {e}")
 
             # 如果还是没有名称，使用代码作为名称
             if not stock_name:
@@ -233,12 +258,12 @@ class StockAnalysisPipeline:
             try:
                 chip_data = self.fetcher_manager.get_chip_distribution(code)
                 if chip_data:
-                    logger.info(f"{stock_name}({code}) 筹码分布: 获利比例={chip_data.profit_ratio:.1%}, "
+                    self.log.info(f"{stock_name}({code}) 筹码分布: 获利比例={chip_data.profit_ratio:.1%}, "
                               f"90%集中度={chip_data.concentration_90:.2%}")
                 else:
-                    logger.debug(f"{stock_name}({code}) 筹码分布获取失败或已禁用")
+                    self.log.debug(f"{stock_name}({code}) 筹码分布获取失败或已禁用")
             except Exception as e:
-                logger.warning(f"{stock_name}({code}) 获取筹码分布失败: {e}")
+                self.log.warning(f"{stock_name}({code}) 获取筹码分布失败: {e}")
 
             # If agent mode is explicitly enabled, or specific agent skills are configured, use the Agent analysis pipeline.
             # NOTE: use config.agent_mode (explicit opt-in) instead of
@@ -251,7 +276,7 @@ class StockAnalysisPipeline:
                 configured_skills = getattr(self.config, 'agent_skills', [])
                 if configured_skills and configured_skills != ['all']:
                     use_agent = True
-                    logger.info(f"{stock_name}({code}) Auto-enabled agent mode due to configured skills: {configured_skills}")
+                    self.log.info(f"{stock_name}({code}) Auto-enabled agent mode due to configured skills: {configured_skills}")
 
             # Step 2.5: 基本面能力聚合（统一入口，异常降级）
             # - 失败时返回 partial/failed，不影响既有技术面/新闻链路
@@ -263,7 +288,7 @@ class StockAnalysisPipeline:
                     budget_seconds=getattr(self.config, 'fundamental_stage_timeout_seconds', 1.5),
                 )
             except Exception as e:
-                logger.warning(f"{stock_name}({code}) 基本面聚合失败: {e}")
+                self.log.warning(f"{stock_name}({code}) 基本面聚合失败: {e}")
                 fundamental_context = self.fetcher_manager.build_failed_fundamental_context(code, str(e))
 
             fundamental_context = self._attach_belong_boards_to_fundamental_context(
@@ -295,13 +320,13 @@ class StockAnalysisPipeline:
                     if self.config.enable_realtime_quote and realtime_quote:
                         df = self._augment_historical_with_realtime(df, realtime_quote, code)
                     trend_result = self.trend_analyzer.analyze(df, code)
-                    logger.info(f"{stock_name}({code}) 趋势分析: {trend_result.trend_status.value}, "
+                    self.log.info(f"{stock_name}({code}) 趋势分析: {trend_result.trend_status.value}, "
                               f"买入信号={trend_result.buy_signal.value}, 评分={trend_result.signal_score}")
             except Exception as e:
-                logger.warning(f"{stock_name}({code}) 趋势分析失败: {e}", exc_info=True)
+                self.log.warning(f"{stock_name}({code}) 趋势分析失败: {e}", exc_info=True)
 
             if use_agent:
-                logger.info(f"{stock_name}({code}) 启用 Agent 模式进行分析")
+                self.log.info(f"{stock_name}({code}) 启用 Agent 模式进行分析")
                 return self._analyze_with_agent(
                     code,
                     report_type,
@@ -316,7 +341,7 @@ class StockAnalysisPipeline:
             # Step 4: 多维度情报搜索（最新消息+风险排查+业绩预期）
             news_context = None
             if self.search_service.is_available:
-                logger.info(f"{stock_name}({code}) 开始多维度情报搜索...")
+                self.log.info(f"{stock_name}({code}) 开始多维度情报搜索...")
 
                 # 使用多维度搜索（最多5次搜索）
                 intel_results = self.search_service.search_comprehensive_intel(
@@ -331,7 +356,7 @@ class StockAnalysisPipeline:
                     total_results = sum(
                         len(r.results) for r in intel_results.values() if r.success
                     )
-                    logger.info(f"{stock_name}({code}) 情报搜索完成: 共 {total_results} 条结果")
+                    self.log.info(f"{stock_name}({code}) 情报搜索完成: 共 {total_results} 条结果")
                     logger.debug(f"{stock_name}({code}) 情报搜索结果:\n{news_context}")
 
                     # 保存新闻情报到数据库（用于后续复盘与查询）
@@ -350,7 +375,7 @@ class StockAnalysisPipeline:
                     except Exception as e:
                         logger.warning(f"{stock_name}({code}) 保存新闻情报失败: {e}")
             else:
-                logger.info(f"{stock_name}({code}) 搜索服务不可用，跳过情报搜索")
+                self.log.info(f"{stock_name}({code}) 搜索服务不可用，跳过情报搜索")
 
             # Step 4.5: Social sentiment intelligence (US stocks only)
             if self.social_sentiment_service.is_available and is_us_stock_code(code):
@@ -389,6 +414,9 @@ class StockAnalysisPipeline:
                 fundamental_context,
             )
             
+            # 将 trace_id 注入上下文，供 analyzer 使用
+            enhanced_context["trace_id"] = self.trace_id
+
             # Step 7: 调用 AI 分析（传入增强的上下文和新闻）
             result = self.analyzer.analyze(enhanced_context, news_context=news_context)
 
@@ -430,7 +458,7 @@ class StockAnalysisPipeline:
             return result
 
         except Exception as e:
-            logger.error(f"{stock_name}({code}) 分析失败: {e}")
+            self.log.error(f"{stock_name}({code}) 分析失败: {e}")
             logger.exception(f"{stock_name}({code}) 详细错误信息:")
             return None
     

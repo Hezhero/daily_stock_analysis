@@ -1,0 +1,51 @@
+# 低位涨停换手率策略 / Low Position Limit-Up with Turnover Strategy
+# Limit-up after downtrend stabilization with high turnover confirmation
+
+name: low_position_limitup
+display_name: 低位涨停换手率策略
+description: 下跌趋势中止跌后出现涨停（涨幅>=9.5%），换手率>=5%，股价<50元，且前20个交易日内无涨停记录。
+category: reversal
+core_rules: [2, 3]
+required_tools:
+  - get_daily_history
+aliases: [低位涨停, 止跌涨停, 换手率涨停]
+default_priority: 30
+market_regimes: [bear, volatile]
+
+instructions: |
+  **低位涨停换手率策略（Low Position Limit-Up Strategy）**
+
+  适用场景：超跌反弹的确认，涨停+高换手率代表资金积极入场。
+
+  信号判定标准（需同时满足）：
+
+  1. **下跌趋势止跌确认**：
+     - 股价处于近期低位（距离 20 日高点跌幅 > 10%）。
+     - 连续 3 日不创新低或出现底部抬高血压。
+
+  2. **涨停信号**：
+     - 当日涨幅（pct_chg）>= 9.5%（接近涨停）。
+     - 使用 `get_daily_history` 获取 pct_chg 验证。
+
+  3. **换手率确认**：
+     - 换手率（turnover_rate）>= 5%。
+     - 高换手率代表活跃资金参与（非主力对倒）。
+
+  4. **价格区间**：
+     - 股价 < 50 元（低价股弹性更大，适合短线）。
+     - 股价 > 2 元（避免低价股流动性陷阱）。
+
+  5. **无前期涨停**：
+     - 往前 20 个交易日内无涨停记录。
+     - 确保是蓄势后的首次启动。
+
+  6. **买入时机**：
+     - 涨停次日开盘价买入（或收盘确认后买入）。
+     - 若次日下跌 > 3%，止损出局。
+
+  评分调整：
+  - 涨停 + 换手率>=8% + 低价：sentiment_score +15
+  - 前期跌幅>30%（超跌）：sentiment_score +10
+  - 次日下跌>3%：sentiment_score -15，提示止损
+
+  注意：高位涨停不适用此策略，需严格区分"超跌反弹"与"高位诱多"。

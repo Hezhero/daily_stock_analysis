@@ -179,7 +179,8 @@ class TaskService:
                 source_message=source_message,
                 query_id=task_id,
                 query_source=query_source,
-                save_context_snapshot=save_context_snapshot
+                save_context_snapshot=save_context_snapshot,
+                trace_id=task_id[:12] if task_id else None
             )
 
             # 执行单只股票分析（启用单股推送）

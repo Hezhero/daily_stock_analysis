@@ -1,0 +1,45 @@
+# 涨停回调量价共振策略 / Limit-Up Pullback Volume-Price Resonance Strategy
+# Limit-up followed by volume shrinkage and MA20 uptrend confirmation
+
+name: limitup_resonance
+display_name: 涨停回调量价共振策略
+description: 涨停后缩量回调至20日均线附近，20日均线向上，价格获得均线支撑时量价共振上涨。
+category: reversal
+core_rules: [2, 3]
+required_tools:
+  - get_daily_history
+  - analyze_trend
+aliases: [量价共振, 涨停缩量, 量价齐升]
+default_priority: 28
+market_regimes: [trending_up, volatile]
+
+instructions: |
+  **涨停回调量价共振策略（Limit-Up Pullback Volume-Price Resonance Strategy）**
+
+  适用场景：强势股的二波启动，涨停代表主力意图，回调到均线支撑是理想买点。
+
+  信号判定标准（需同时满足）：
+
+  1. **涨停确认**：
+     - 当日涨幅 >= 9.5%（接近涨停或涨停）。
+     - 往前 10 个交易日有涨停记录（近期有过强势表现）。
+
+  2. **缩量回调**：
+     - 涨停后成交量持续萎缩（量能萎缩至涨停日的 40% 以下）。
+     - 价格回调，回调幅度不超过涨停涨幅的 50%。
+
+  3. **均线支撑确认**：
+     - MA20 向上运行（今日 MA20 > 昨日 MA20）。
+     - 价格在 MA20 上方或回踩 MA20 附近（收盘 >= MA20 × 0.97）。
+
+  4. **量价共振启动**：
+     - 回调结束后，当日成交量较前 5 日均量放大 1.5 倍以上。
+     - 价格重新上涨（收盘 > 开盘）。
+     - RSI 处于上升通道（RSI6 > RSI6 前一日）。
+
+  评分调整：
+  - 涨停 + 极度缩量（<30%）+ MA20 支撑 + 放量启动：sentiment_score +18
+  - 涨停后量能持续缩减（主力控盘）：sentiment_score +8
+  - 跌破 MA20 且无法收复：sentiment_score -12，止损
+
+  注意：连续缩量超过 7 日需警惕（可能是主力已出货）。

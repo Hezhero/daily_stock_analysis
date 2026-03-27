@@ -1,0 +1,58 @@
+# 多均线共振策略 / Multi-MA Resonance Strategy
+# 5>10>20>60>90>120 MA bull alignment + MACD golden cross + RSI triple alignment + Bollinger expansion
+
+name: multi_ma_resonance
+display_name: 多均线共振策略
+description: 5日>10日>20日>60日>90日>120日均线多头排列，5日均线上穿10日均线，成交量放大至20日均量1.5倍，MACD(14,53,5)金叉且量柱由绿翻红，RSI三线向上，BOLL带开口扩大。
+category: trend
+core_rules: [1, 2, 3]
+required_tools:
+  - get_daily_history
+  - analyze_trend
+aliases: [多均线, 均线多头, 全均线多头, 均线共振]
+default_priority: 18
+market_regimes: [trending_up]
+
+instructions: |
+  **多均线共振策略（Multi-MA Resonance Strategy）**
+
+  适用场景：牛市或强势股的主升浪阶段，多维度共振信号最强。
+
+  信号判定标准（需全部满足）：
+
+  1. **均线多头排列**：
+     - 5日 > 10日 > 20日 > 60日 > 90日 > 120日（所有均线向上且排列有序）。
+     - 使用 `analyze_trend` 检查 MA5/MA10/MA20 排列。
+     - 每条均线当前值均大于前一日值（齐头向上）。
+
+  2. **均线金叉确认**：
+     - 5 日均线在最近 1-3 日内上穿 10 日均线（金叉）。
+     - 金叉角度越陡峭信号越强。
+
+  3. **量能共振**：
+     - 当日成交量 > 前 20 日均量 × 1.5。
+     - 放量是确认信号的关键。
+
+  4. **MACD 多头金叉**：
+     - MACD(14,53,5)：DIF 上穿 DEA（金叉）。
+     - DIF 与 DEA 均为正（在 0 轴上方更佳）。
+     - 量柱（MACD Histogram）由绿翻红（动能转多）。
+
+  5. **RSI 三线向上**：
+     - RSI(6) > RSI(6)_昨日（向上）。
+     - RSI(12) > RSI(12)_昨日（向上）。
+     - RSI(24) > RSI(24)_昨日（向上）。
+     - 三线均在 30-70 区间且不超买（<70）。
+
+  6. **布林带开口扩大**：
+     - 上轨与中轨间距较前一日扩大（BOLL Upper - BOLL Mid > 昨日间距）。
+     - 代表波动率放大，趋势强化。
+
+  综合评分：
+  - 全部满足：sentiment_score +20 → 操作建议：强烈买入/加仓
+  - 满足前 4 条：sentiment_score +12 → 操作建议：买入/持有
+  - 满足 3 条：sentiment_score +5 → 操作建议：观望
+  - 均线仍空头排列：sentiment_score -15 → 操作建议：卖出/减仓
+
+  止损：跌破 MA20 下方 3% 止损。
+  止盈：5 日均线死叉 10 日均线，或持有 15 个交易日。
