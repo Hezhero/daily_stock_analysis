@@ -1,0 +1,54 @@
+# 均线交叉策略 / MA Crossover Strategy
+# MA5 crosses above MA20 with volume confirmation, MACD histogram positive, RSI confirms
+
+name: ma_crossover
+display_name: 均线交叉策略
+description: MA5 上穿 MA20 量价齐升，MACD 柱状线为正且 DIF>DEA 确认多头，RSI(6) 脱离超卖区(>30)但未超买(<70)，收盘在60日线上方。
+category: trend
+core_rules: [1, 2, 3]
+required_tools:
+  - get_daily_history
+  - analyze_trend
+aliases: [均线交叉, MA交叉, MA金叉]
+default_priority: 15
+market_regimes: [trending_up, volatile]
+
+instructions: |
+  **均线交叉策略（MA Crossover Strategy）**
+
+  适用场景：趋势确认后的顺势入场，优先"均线多头排列 + 缩量回踩"而非"高位追涨"。
+
+  信号判定标准（需同时满足）：
+
+  1. **均线金叉**：
+     - 使用 `analyze_trend` 检查 MA5/MA10/MA20 排列。
+     - 主信号：MA5 在最近 3 个交易日内上穿 MA20。
+     - 辅助：MA5 > MA10 > MA20 多头排列加分。
+
+  2. **量能确认**：
+     - 买入当日成交量 > 5 日均量 × 1.5。
+     - 连续 2 日成交量 > 5 日均量，确认资金持续入场。
+     - 使用 `get_daily_history` 验证。
+
+  3. **MACD 多头确认**：
+     - MACD(14,53,5) 柱状线 > 0（DIF > DEA，绿柱翻红）。
+     - DIF 与 DEA 均为正值更佳。
+
+  4. **RSI 区间确认**：
+     - RSI(6) 脱离超卖区（> 30），但未进入超买区（< 70）。
+     - RSI(12) 同向确认更佳。
+
+  5. **位置与节奏**：
+     - 收盘价在 60 日均线上方。
+     - 理想买点：价格回踩 MA10 或 MA20 附近，不追高。
+     - 乖离率 MA5 < 5%，避免过度追涨。
+
+  交易建议输出：
+  - 满足以上条件 → 明确输出"买入/加仓"倾向，止损设在 MA20 下方 2%。
+  - 部分满足（如量能不足）→ 降低 sentiment_score，输出"观望"或"轻仓试探"。
+  - 均线空头排列 → 直接输出"卖出/减仓"。
+
+  评分调整：
+  - MA5 × MA20 金叉 + 量能 1.5 倍 + MACD 柱状线翻红：sentiment_score +15
+  - 多头排列 + RSI 上升通道：sentiment_score +10
+  - 跌破 MA20：sentiment_score -12，提示止损

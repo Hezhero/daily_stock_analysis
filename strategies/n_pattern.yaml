@@ -1,0 +1,44 @@
+# N字反包策略 / N-Pattern Reversal Strategy
+# Price pulls back then breaks above previous swing high
+
+name: n_pattern
+display_name: N字反包策略
+description: 回调后的收盘价低于前一个上涨波段的高点，且当前收盘价高于该高点时产生买入信号，N型结构反转确认。
+category: pattern
+core_rules: [2, 3]
+required_tools:
+  - get_daily_history
+  - analyze_trend
+aliases: [N字, N形, 反包, N字反包]
+default_priority: 30
+market_regimes: [trending_up, volatile]
+
+instructions: |
+  **N字反包策略（N-Pattern Reversal Strategy）**
+
+  适用场景：上升趋势中的回调后再次启动，属于趋势延续类策略。
+
+  信号判定标准（需同时满足）：
+
+  1. **N型结构识别**：
+     - 第一笔上涨：价格从低点 A 上涨到高点 B。
+     - 回调笔：价格从 B 回调到 C（C < B）。
+     - 第二笔上涨：价格从 C 上涨突破 B（B 为前高）。
+     - 使用 `get_daily_history` 识别最近波段高低价。
+
+  2. **反包确认**：
+     - 回调后当日（或次日）收盘价 > 前一波段高点 B。
+     - 阳线收盘（收盘 > 开盘）更佳。
+
+  3. **量能配合**：
+     - 突破时成交量 > 5 日均量。
+     - 缩量突破需警惕（可能是假突破）。
+
+  4. **趋势背景**：
+     - 整体处于上升趋势（价格在 MA20 之上）。
+     - 回调幅度适中（C 点不低于 A 点过多）。
+
+  评分调整：
+  - N型完整 + 量能放大 + 阳线突破：sentiment_score +12
+  - 突破时 RSI 在 40-60 区间：sentiment_score +5
+  - 回调幅度过深（>50%）：sentiment_score -8

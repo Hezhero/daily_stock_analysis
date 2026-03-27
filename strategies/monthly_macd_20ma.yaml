@@ -1,0 +1,46 @@
+# MACD月线金叉+20日线策略 / Monthly MACD Golden Cross + 20MA Strategy
+# Monthly MACD golden cross with 20-day MA breakout
+
+name: monthly_macd_20ma
+display_name: MACD月线金叉+20日线策略
+description: 月线级别MACD在零轴下方或附近形成金叉，同时20日均线向上且价格放量突破20日线。
+category: trend
+core_rules: [2, 3]
+required_tools:
+  - get_daily_history
+  - analyze_trend
+aliases: [月线MACD金叉, MACD月金叉]
+default_priority: 40
+market_regimes: [trending_up]
+
+instructions: |
+  **MACD月线金叉+20日线策略（Monthly MACD Golden Cross + 20MA Strategy）**
+
+  适用场景：中期趋势启动的确认，月线MACD金叉代表中期多空转换。
+
+  信号判定标准（需同时满足）：
+
+  1. **月线MACD金叉**：
+     - 使用日线数据模拟月线效果：将日线MACD(12,26,9)的参数调整为更大周期。
+     - 或直接使用月线数据（如 AkShare 的月线接口）。
+     - DIF 上穿 DEA，且 DIF 与 DEA 仍在 0 轴下方（刚转多）。
+     - DIF 拐头向上（今日 > 昨日）更佳。
+
+  2. **20日均线支撑确认**：
+     - MA20 向上运行（今日 MA20 > 昨日 MA20）。
+     - 价格回踩 MA20 后企稳（收盘价 >= MA20 × 0.98）。
+
+  3. **放量突破确认**：
+     - 放量：成交量 > 前 5 日均量 × 1.5。
+     - 阳线收盘：收盘价 > 开盘价。
+
+  4. **趋势背景**：
+     - RSI(6) 在 40-70 区间（偏强但未超买）。
+     - KDJ 金叉辅助确认。
+
+  评分调整：
+  - 月线MACD金叉（0轴下方）+ 放量阳线 + MA20 支撑：sentiment_score +15
+  - 0轴上方金叉（趋势已启动）：sentiment_score +10
+  - 量能不足（<1.3倍）：sentiment_score -5
+
+  注意：月线MACD金叉信号较少，但胜率较高，适合中线布局。

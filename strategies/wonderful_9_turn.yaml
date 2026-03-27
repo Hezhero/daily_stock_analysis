@@ -1,0 +1,56 @@
+# 神奇九转策略 / Wonderful 9-Turn Strategy
+# 9 consecutive days of close < close 4 days ago + RSI < 30 + MACD green column narrowing + MA support
+
+name: wonderful_9_turn
+display_name: 神奇九转策略
+description: 连续9天收盘价低于4天前收盘价，RSI低于30超卖区，MACD绿柱缩短且仍在0轴下方，20日与60日均线齐头向上且价格获得支撑。
+category: reversal
+core_rules: [1, 2, 4]
+required_tools:
+  - get_daily_history
+  - analyze_trend
+aliases: [神奇九转, 九转策略, 9转]
+default_priority: 20
+market_regimes: [bear, volatile]
+
+instructions: |
+  **神奇九转策略（Wonderful 9-Turn Reversal Strategy）**
+
+  适用场景：超跌反弹的左侧布局，属于均值回归类策略，适合在市场大幅下跌后使用。
+
+  信号判定标准（需同时满足）：
+
+  1. **神奇九转形态**：
+     - 连续 9 个交易日收盘价低于 4 个交易日前的收盘价。
+     - 同时满足：低点的比较条件（当日最低价 < 前3日/前6日最低价）。
+     - 使用 `get_daily_history` 获取最近 20 日数据验证。
+
+  2. **RSI 超卖确认**：
+     - RSI(6) < 30，进入超卖区域。
+     - RSI 越低，反弹概率越大。
+
+  3. **MACD 底部改善**：
+     - MACD(14,53,5) 绿柱（柱状线 < 0）但较前一日缩短（底部缩脚）。
+     - DIF 与 DEA 仍在 0 轴下方，但下跌动能减弱。
+     - 昨日 DIF < 昨日 DEA，今日 DIF > 今日 DEA（金叉前兆）。
+
+  4. **量能放大**：
+     - 当日成交量 > 前 5 日均量 × 1.2。
+     - 放量是反弹确认的关键信号。
+
+  5. **均线支撑确认**：
+     - MA20 和 MA60 齐头向上（今日 MA20 > 昨日 MA20，且今日 MA60 > 昨日 MA60）。
+     - 收盘价在 MA20 上方或获得 MA20 支撑（收盘价 >= MA20 × 0.98）。
+
+  6. **K 线形态**：
+     - 买入信号日收盘价 > 开盘价（收阳线）。
+     - 确认当日为反弹启动点。
+
+  交易建议输出：
+  - 满足全部条件 → sentiment_score +15，输出"买入/抄底"倾向，止损设在当日最低价下方 3%。
+  - 仅满足九转形态但量能不足 → sentiment_score +5，输出"关注，暂不介入"。
+  - RSI > 50 或均线向下 → 直接排除。
+
+  注意事项：
+  - 该策略为左侧交易，止损必须严格执行。
+  - 市场整体趋势向下时成功率降低。

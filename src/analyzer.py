@@ -45,6 +45,7 @@ from src.report_language import (
 )
 from src.schemas.report_schema import AnalysisReportSchema
 from src.market_context import get_market_role, get_market_guidelines
+from src.utils.cache import get_analysis_cache
 
 logger = logging.getLogger(__name__)
 
@@ -1137,12 +1138,23 @@ class GeminiAnalyzer:
         report_language = normalize_report_language(getattr(config, "report_language", "zh"))
         system_prompt = self._get_analysis_system_prompt(report_language, stock_code=code)
         
+        # ── 分析结果缓存（TTL LRU）──
+        _analysis_cache_ttl = getattr(config, "analysis_cache_ttl_seconds", 3600)
+        _analysis_cache_max = getattr(config, "analysis_cache_max_entries", 500)
+        cache = get_analysis_cache(max_entries=_analysis_cache_max, ttl_seconds=_analysis_cache_ttl)
+        cache_date = context.get("date", "") or ""
+        cached_result = cache.get(code, cache_date)
+        if cached_result is not None:
+            logger.info(f"[Cache] {code} {cache_date} 命中缓存，跳过 LLM 调用")
+            cached_result._from_cache = True  # type: ignore[attr-defined]
+            return cached_result
+
         # 请求前增加延时（防止连续请求触发限流）
         request_delay = config.gemini_request_delay
         if request_delay > 0:
             logger.debug(f"[LLM] 请求前等待 {request_delay:.1f} 秒...")
             time.sleep(request_delay)
-        
+
         # 优先从上下文获取股票名称（由 main.py 传入）
         name = context.get('stock_name')
         if not name or name.startswith('股票'):
@@ -1176,7 +1188,8 @@ class GeminiAnalyzer:
             
             config = self._get_runtime_config()
             model_name = config.litellm_model or "unknown"
-            logger.info(f"========== AI 分析 {name}({code}) ==========")
+            trace_id = context.get("trace_id", "-")
+            logger.info(f"========== AI 分析 {name}({code}) [trace={trace_id}] ==========")
             logger.info(f"[LLM配置] 模型: {model_name}")
             logger.info(f"[LLM配置] Prompt 长度: {len(prompt)} 字符")
             logger.info(f"[LLM配置] 是否包含新闻: {'是' if news_context else '否'}")
@@ -1256,6 +1269,13 @@ class GeminiAnalyzer:
             persist_llm_usage(llm_usage, model_used, call_type="analysis", stock_code=code)
 
             logger.info(f"[LLM解析] {name}({code}) 分析完成: {result.trend_prediction}, 评分 {result.sentiment_score}")
+
+            # 写入缓存（TTL LRU）
+            try:
+                cache.set(code, cache_date, result)
+                logger.debug(f"[Cache] {code} {cache_date} 已写入缓存")
+            except Exception as cache_err:
+                logger.warning(f"[Cache] 写入缓存失败: {cache_err}")
 
             return result
             

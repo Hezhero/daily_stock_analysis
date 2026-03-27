@@ -1,0 +1,47 @@
+# 孕阳线策略 / Bullish Engulfing (Harami Bullish) Strategy
+# Previous day is a big bearish candle, today opens higher and closes bullish within yesterday's range
+
+name: bullish_engulfing
+display_name: 孕阳线策略
+description: 上个交易日为跌幅>=7%且实体占比>=70%的大阴线，本交易日开盘价和收盘价均位于前一日开盘价与收盘价之间且收阳线时产生买入信号。
+category: pattern
+core_rules: [2, 3]
+required_tools:
+  - get_daily_history
+aliases: [孕阳, 吞噬线, 阳包阴, 曙光初现]
+default_priority: 22
+market_regimes: [bear, volatile]
+
+instructions: |
+  **孕阳线策略（Bullish Engulfing / 曙光初现 Strategy）**
+
+  适用场景：大幅下跌后的反转信号，属于 K 线形态类策略。
+
+  信号判定标准（需同时满足）：
+
+  1. **大阴线确认（昨日）**：
+     - 昨收（昨开-昨最低，且昨收 < 昨开）。
+     - 昨收 = 昨开 - 昨最低（阴线实体为从开到收的完整下跌）。
+     - 昨收跌幅 >= 7%。
+     - 实体占比：|昨收 - 昨开| / |昨高 - 昨低| >= 70%（实体占整个 K 线 70% 以上，属于"穿头破脚"大阴线）。
+
+  2. **今日高开收阳**：
+     - 今开 >= 昨开 × 1.02（高开 2% 以上）。
+     - 今开、今收均在昨开和昨收之间（价格未完全吞没昨日阴线）。
+     - 今收 > 今开（收阳线）。
+
+  3. **量能验证**：
+     - 今日成交量 < 昨日成交量（缩量更好，代表抛压减轻）。
+     - 或今日量能温和放大但不超过昨日的 1.5 倍。
+
+  4. **止损保护**：
+     - 若次日下跌 > 3%，止损出局。
+     - 若次日上涨 > 7%，止盈。
+
+  评分调整：
+  - 完美大阴线 + 高开 + 缩量收阳：sentiment_score +18
+  - 跌幅越大（>9%）：sentiment_score +8
+  - 实体占比越高（>80%）：sentiment_score +5
+  - 次日量能急剧放大（>2倍）：sentiment_score -8（可能是出货）
+
+  注意：此策略本质是"超跌反弹"，需配合整体市场环境判断。

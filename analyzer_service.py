@@ -48,7 +48,8 @@ def analyze_stock(
     pipeline = StockAnalysisPipeline(
         config=config,
         query_id=uuid.uuid4().hex,
-        query_source="cli"
+        query_source="cli",
+        trace_id=uuid.uuid4().hex[:12]
     )
     
     # 使用通知服务（如果提供）
@@ -118,7 +119,8 @@ def perform_market_review(
     pipeline = StockAnalysisPipeline(
         config=config,
         query_id=uuid.uuid4().hex,
-        query_source="cli"
+        query_source="cli",
+        trace_id=uuid.uuid4().hex[:12]
     )
     
     # 使用提供的通知服务或创建新的

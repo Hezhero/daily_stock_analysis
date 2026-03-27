@@ -1,0 +1,45 @@
+# 连续平稳后涨停策略 / Stable Then Limit-Up Strategy
+# After 10 consecutive days of tight range (<5% amplitude), limit-up triggers
+
+name: stable_then_limitup
+display_name: 连续平稳后涨停策略
+description: 连续10个交易日涨跌幅均在5%以内，第11个交易日出现涨停时买入，蓄势充分后的爆发信号。
+category: pattern
+core_rules: [2, 3]
+required_tools:
+  - get_daily_history
+aliases: [平稳涨停, 蓄势涨停, 横盘涨停]
+default_priority: 35
+market_regimes: [volatile]
+
+instructions: |
+  **连续平稳后涨停策略（Stable Then Limit-Up Strategy）**
+
+  适用场景：横盘整理充分后的向上突破，属于爆发型策略。
+
+  信号判定标准（需同时满足）：
+
+  1. **连续平稳期**：
+     - 统计最近 10 个交易日（含当日往前）。
+     - 每日涨跌幅绝对值 < 5%。
+     - 期间未出现涨停或跌停。
+     - 使用 `get_daily_history` 获取数据验证。
+
+  2. **涨停启动确认**：
+     - 第 11 个交易日涨幅 >= 10%（涨停）。
+     - 涨停时间越早（开盘不久即封板）越强。
+
+  3. **量能变化**：
+     - 涨停当日成交量较平稳期平均量放大 1.5 倍以上。
+     - 缩量涨停更强（主力控盘好）。
+
+  4. **后续处理**：
+     - 涨停后次日若高开（>3%）且量能跟上，可视为有效突破。
+     - 止损：若涨停后第 2 日即跌回平稳区间，策略失效。
+
+  评分调整：
+  - 连续10日极度平稳（振幅<3%）+ 涨停 + 缩量：sentiment_score +15
+  - 平稳期间量能逐步缩减（主力吸筹迹象）：sentiment_score +8
+  - 涨停后量能急剧放大（可能出货）：sentiment_score -10
+
+  注意：此策略不适合弱势市场，整体趋势向上时胜率更高。

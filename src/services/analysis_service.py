@@ -78,7 +78,8 @@ class AnalysisService:
             pipeline = StockAnalysisPipeline(
                 config=config,
                 query_id=query_id,
-                query_source="api"
+                query_source="api",
+                trace_id=query_id[:12] if query_id else None
             )
             
             # 确定报告类型 (API: simple/detailed/full/brief -> ReportType)

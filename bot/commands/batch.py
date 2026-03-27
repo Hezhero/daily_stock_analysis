@@ -109,7 +109,8 @@ class BatchCommand(BotCommand):
                 config=config,
                 source_message=message,
                 query_id=uuid.uuid4().hex,
-                query_source="bot"
+                query_source="bot",
+                trace_id=uuid.uuid4().hex[:12]
             )
             
             # 执行分析（会自动推送汇总报告）

@@ -1,0 +1,49 @@
+# 涨停回调策略 / Limit-Up Pullback Strategy
+# After a limit-up day, pullback to support with shrinking volume then resume
+
+name: limit_up_pullback
+display_name: 涨停回调策略
+description: 近90日内首次涨停后，缩量回调至涨停板最低价附近获得支撑，缩量整理期间量能萎缩至涨停量的50%以下，再次放量上涨时买入。
+category: reversal
+core_rules: [2, 3]
+required_tools:
+  - get_daily_history
+  - analyze_trend
+aliases: [涨停回调, 涨停回踩, 涨停洗盘]
+default_priority: 25
+market_regimes: [trending_up, volatile]
+
+instructions: |
+  **涨停回调策略（Limit-Up Pullback Strategy）**
+
+  适用场景：涨停股洗盘后的二次启动，适合短线操作。
+
+  信号判定标准（需同时满足）：
+
+  1. **90日内首次涨停确认**：
+     - 当日涨幅（pct_chg）>= 10%（或 9.5%，视板块规则）。
+     - 往前 90 个交易日内该股无涨停记录（首板）。
+     - 使用 `get_daily_history` 查询最近 90 日数据。
+
+  2. **缩量整理**：
+     - 涨停后第 2-N 日成交量持续萎缩。
+     - 当前日成交量 < 涨停当日成交量 × 50%（极度缩量）。
+     - 缩量代表主力锁仓，后市看涨。
+
+  3. **回踩支撑确认**：
+     - 价格回调至涨停板实体区间（涨停最低价 × 0.98 至涨停最低价 × 1.02）。
+     - 或回踩至 MA5/MA10 均线获得支撑。
+
+  4. **再次放量启动**：
+     - 当日成交量 > MA5 量 × 1.5。
+     - 涨幅 > 0（上涨启动）。
+
+  5. **止损保护**：
+     - 买入后若跌破涨停最低价 × 0.97，次日止损。
+
+  评分调整：
+  - 首板 + 极度缩量整理（<30%）+ 放量启动：sentiment_score +15
+  - 涨停至回踩间隔 3-5 日：sentiment_score +8
+  - 回踩时量能仍大（>50%）：sentiment_score -10
+
+  注意：ST股、新股开板不适用此策略。
