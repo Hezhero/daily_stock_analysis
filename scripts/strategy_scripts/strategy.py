@@ -1565,12 +1565,13 @@ def main():
     parser.add_argument('--strategies', nargs='+', default=['all'], help='要回测的策略列表，默认全部')
     parser.add_argument('--send_email', action='store_true', help='是否发送邮件报告')
     parser.add_argument('--export_candidates_json', type=str, help='导出当日策略候选股JSON文件路径')
+    parser.add_argument('--force', action='store_true', help='强制执行，忽略非交易日限制')
 
     args = parser.parse_args()
 
     # 判断是否为交易日
-    if not is_trading_day(datetime.now()):
-        logger.error("非交易日，程序退出")
+    if not args.force and not is_trading_day(datetime.now()):
+        logger.error("非交易日，程序退出（使用 --force 可强制运行）")
         return
 
     # 数据库配置
