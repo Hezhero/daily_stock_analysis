@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [测试] 🧪 **补充前端变更验证命令** — 对应前端资源变更同步执行 `cd apps/dsa-web && npm ci && npm run lint && npm run build`，作为版本信息展示与 Docker 重建生效验证的最小验证闭环记录。
 - [修复] 内置定时调度器现在会在运行中感知 WebUI 保存后的 `SCHEDULE_TIME` 变化，并在下一轮检查时重绑 daily job，避免 `python main.py --serve --schedule` 仍固定按启动时的 `18:00` 触发；`.env.example` 也同步删除了重复的定时任务配置示例。
 - [修复] 🪟 **Windows Release 渠道编辑器保留 MiniMax 模型前缀** — 渠道模式下填写 `minimax/<模型名>` 时，后端归一化与 Web 设置页运行时模型列表都会保留该值原样，不再误改写成 `openai/minimax/<模型名>`，从而恢复 MiniMax 模型在 Win 客户端里的保存、选择与使用。
+- [改进] Windows 桌面安装器改为支持在安装向导中自定义安装目录，安装到非默认盘符后仍沿用现有打包态目录逻辑在安装目录旁读写 `.env`、`data/stock_analysis.db` 和 `logs/desktop.log`，同时保留 `win-unpacked` 免安装分发方式。安装器仅支持当前用户安装、已禁用管理员提权（`allowElevation: false`），并通过 NSIS `.onVerifyInstDir` 在安装器层面阻止选择 `Program Files`、`Windows` 等系统保护目录，防止运行时因权限不足写文件失败。
 - [修复] 🗓️ **断点续传与 `--dry-run` 改按市场时区和交易日历判断可复用数据**（fixes #880）— 股票数据存在性检查不再直接使用服务器自然日，而是按 A 股 / 港股 / 美股各自市场时区解析“最新可复用交易日”；周末、节假日、跨时区以及盘中 / 盘后场景会统一复用最近已完成交易日，避免误判导致重复抓取或错误跳过。
 - [修复] 🐳 **Docker WebUI 运行时优先复用预构建静态资源** — `prepare_webui_frontend_assets()` 现在会先检查镜像内已有的 `static/index.html` 是否可直接复用；当容器运行时不包含 `apps/dsa-web` 源码目录且未安装 `npm` 时，也不会误报“未找到前端项目，无法自动构建”，从而恢复 Docker 部署后的 WebUI 打开能力。
 - [修复] 📨 **单股推送模式不再并发复用共享通知实例** — `StockAnalysisPipeline.run()` 现在会保留个股分析并发，但把 `SINGLE_STOCK_NOTIFY=true` 下的即时通知挪到结果收集侧串行发送；同时 `_send_single_stock_notification()` 为同一个 pipeline 实例补上实例级临界区，避免直接调用 `process_single_stock(..., single_stock_notify=True)` 时多个线程继续共享同一个 `NotificationService` 进入报告生成与发送链路，导致通知乱序、重复发送或状态污染。
