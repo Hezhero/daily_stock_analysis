@@ -13,6 +13,10 @@ from email import encoders
 import json
 import pickle
 from typing import Dict, List, Tuple, Optional
+from dotenv import load_dotenv
+
+# 加载环境变量
+load_dotenv()
 
 import smtplib
 from email.mime.multipart import MIMEMultipart
@@ -124,19 +128,19 @@ class MLModelLoader:
 
 """邮件发送配置"""
 class EmailConfig:
-    SMTP_SERVER = "smtp.qq.com"
-    SMTP_PORT = 465
-    SMTP_USER = "851448443@qq.com"
-    SMTP_PASSWORD = "aofwlgcsobymbfdj"
-    RECIPIENTS = ["la9408531@163.com", "1049220782@qq.com","122755347@qq.com"]
+    SMTP_SERVER = os.environ.get('SMTP_SERVER', 'smtp.qq.com')
+    SMTP_PORT = int(os.environ.get('SMTP_PORT', 465))
+    SMTP_USER = os.environ.get('SMTP_USER')
+    SMTP_PASSWORD = os.environ.get('SMTP_PASSWORD')
+    RECIPIENTS = [r.strip() for r in os.environ.get('EMAIL_RECEIVERS', '').split(',') if r.strip()]
 
 """数据库配置"""
 class DbConfig:
-    DB_HOST = "localhost"
-    DB_PORT = "5431"
-    DB_USER = "root"
-    DB_PASSWORD = "123629He"
-    DB_NAME = "baostock"
+    DB_HOST = os.environ.get('PG_HOST', 'localhost')
+    DB_PORT = os.environ.get('PG_PORT', '5431')
+    DB_USER = os.environ.get('PG_USER', 'root')
+    DB_PASSWORD = os.environ.get('PG_PASSWORD')
+    DB_NAME = os.environ.get('PG_DATABASE', 'baostock')
 
 class RiskConfig:
     """风险控制配置"""

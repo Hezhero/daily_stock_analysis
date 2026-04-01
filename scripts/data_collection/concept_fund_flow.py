@@ -4,10 +4,14 @@ from psycopg2 import sql
 import time
 import logging
 import os
+from dotenv import load_dotenv
 from psycopg2.extras import execute_values
 from datetime import datetime
 import random
 import pandas as pd
+
+# 加载环境变量
+load_dotenv()
 
 # 配置日志（保持与原项目日志目录一致）
 log_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'result')
@@ -28,7 +32,7 @@ logger = logging.getLogger(__name__)
 postgresql_config = {
     'host': os.environ.get('PG_HOST', '127.0.0.1'),
     'user': os.environ.get('PG_USER', 'root'),
-    'password': os.environ.get('PG_PASSWORD', '123629He'),
+    'password': os.environ.get('PG_PASSWORD'),
     'database': os.environ.get('PG_DATABASE', 'akshare'),
     'port': os.environ.get('PG_PORT', '5431')
 }

@@ -25,6 +25,10 @@ from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
 from datetime import datetime
+from dotenv import load_dotenv
+
+# 加载环境变量
+load_dotenv()
 
 from typing import Dict, List, Tuple
 
@@ -32,7 +36,6 @@ import numpy as np
 import pandas as pd
 
 # ─── 配置 ────────────────────────────────────────────────────────────
-DB_URL = "postgresql://root:123629He@127.0.0.1:5431/baostock"
 INITIAL_CAPITAL = 1000000.0
 TOP_N_VALIDATE = 5
 HOLDING_PERIODS = [1, 3, 5, 10]
@@ -43,11 +46,11 @@ VALIDATE_DAYS = 5  # 验证区间交易日数量
 # ═══════════════════════════════════════════════════════════════════════
 
 class EmailConfig:
-    SMTP_SERVER = "smtp.qq.com"
-    SMTP_PORT = 465
-    SMTP_USER = "851448443@qq.com"
-    SMTP_PASSWORD = "aofwlgcsobymbfdj"
-    RECIPIENTS = ["la9408531@163.com", "1049220782@qq.com", "122755347@qq.com"]
+    SMTP_SERVER = os.environ.get('SMTP_SERVER', 'smtp.qq.com')
+    SMTP_PORT = int(os.environ.get('SMTP_PORT', 465))
+    SMTP_USER = os.environ.get('SMTP_USER')
+    SMTP_PASSWORD = os.environ.get('SMTP_PASSWORD')
+    RECIPIENTS = [r.strip() for r in os.environ.get('EMAIL_RECEIVERS', '').split(',') if r.strip()]
 
 logging.basicConfig(
     level=logging.INFO,
@@ -67,8 +70,11 @@ def load_data(start: str, end: str) -> pd.DataFrame:
 
     logger.info(f"加载数据 {start} ~ {end} (PostgreSQL) ...")
     conn = psycopg2.connect(
-        host="127.0.0.1", port=5431, database="baostock",
-        user="root", password="123629He"
+        host=os.environ.get('PG_HOST', '127.0.0.1'),
+        port=int(os.environ.get('PG_PORT', 5431)),
+        database=os.environ.get('PG_DATABASE', 'baostock'),
+        user=os.environ.get('PG_USER', 'root'),
+        password=os.environ.get('PG_PASSWORD')
     )
     df = pd.read_sql(
         """
