@@ -12,6 +12,7 @@ A股自选股智能分析系统 - 核心分析流水线
 """
 
 import logging
+import threading
 import time
 import uuid
 from collections import defaultdict
@@ -44,6 +45,10 @@ from bot.models import BotMessage
 
 
 logger = logging.getLogger(__name__)
+
+# 防御性 guard：当实例绕过 __init__（如测试中 __new__）构造时，
+# double-check 初始化 _single_stock_notify_lock 仍然线程安全。
+_SINGLE_STOCK_NOTIFY_LOCK_INIT_GUARD = threading.Lock()
 
 
 class StockAnalysisPipeline:
@@ -88,6 +93,7 @@ class StockAnalysisPipeline:
         self.trend_analyzer = StockTrendAnalyzer()  # 技术分析器
         self.analyzer = GeminiAnalyzer(config=self.config)
         self.notifier = NotificationService(source_message=source_message)
+        self._single_stock_notify_lock = threading.Lock()
         
         # 初始化搜索服务
         self.search_service = SearchService(
@@ -1138,25 +1144,12 @@ class StockAnalysisPipeline:
                     )
                 
                 # 单股推送模式（#55）：每分析完一只股票立即推送
-                if single_stock_notify and self.notifier.is_available():
-                    try:
-                        # 根据报告类型选择生成方法
-                        if report_type == ReportType.FULL:
-                            report_content = self.notifier.generate_dashboard_report([result])
-                            logger.info(f"[{code}] 使用完整报告格式")
-                        elif report_type == ReportType.BRIEF:
-                            report_content = self.notifier.generate_brief_report([result])
-                            logger.info(f"[{code}] 使用简洁报告格式")
-                        else:
-                            report_content = self.notifier.generate_single_stock_report(result)
-                            logger.info(f"[{code}] 使用精简报告格式")
-                        
-                        if self.notifier.send(report_content, email_stock_codes=[code]):
-                            logger.info(f"[{code}] 单股推送成功")
-                        else:
-                            logger.warning(f"[{code}] 单股推送失败")
-                    except Exception as e:
-                        logger.error(f"[{code}] 单股推送异常: {e}")
+                if single_stock_notify:
+                    self._send_single_stock_notification(
+                        result,
+                        report_type=report_type,
+                        fallback_code=code,
+                    )
             
             return result
             
@@ -1231,7 +1224,10 @@ class StockAnalysisPipeline:
         analysis_delay = getattr(self.config, 'analysis_delay', 0)
 
         if single_stock_notify:
-            logger.info(f"已启用单股推送模式：每分析完一只股票立即推送（报告类型: {report_type_str}）")
+            logger.info(
+                "已启用单股推送模式：分析仍并发执行，通知改为在结果收集侧串行发送（报告类型: %s）",
+                report_type_str,
+            )
         
         results: List[AnalysisResult] = []
         
@@ -1244,7 +1240,7 @@ class StockAnalysisPipeline:
                     self.process_single_stock,
                     code,
                     skip_analysis=dry_run,
-                    single_stock_notify=single_stock_notify and send_notification,
+                    single_stock_notify=False,
                     report_type=report_type,  # Issue #119: 传递报告类型
                     analysis_query_id=uuid.uuid4().hex,
                 ): code
@@ -1258,6 +1254,12 @@ class StockAnalysisPipeline:
                     result = future.result()
                     if result:
                         results.append(result)
+                        if single_stock_notify and send_notification and not dry_run:
+                            self._send_single_stock_notification(
+                                result,
+                                report_type=report_type,
+                                fallback_code=code,
+                            )
 
                     # Issue #128: 分析间隔 - 在个股分析和大盘分析之间添加延迟
                     if idx < len(stock_codes) - 1 and analysis_delay > 0:
@@ -1304,7 +1306,45 @@ class StockAnalysisPipeline:
                 self._send_notifications(results, report_type)
         
         return results
-    
+
+    def _send_single_stock_notification(
+        self,
+        result: AnalysisResult,
+        report_type: ReportType = ReportType.SIMPLE,
+        fallback_code: Optional[str] = None,
+    ) -> None:
+        """发送单股通知，供直接单股入口和批量串行推送共用。"""
+        if not self.notifier.is_available():
+            return
+
+        stock_code = getattr(result, "code", None) or fallback_code or "unknown"
+        notify_lock = getattr(self, "_single_stock_notify_lock", None)
+        if notify_lock is None:
+            with _SINGLE_STOCK_NOTIFY_LOCK_INIT_GUARD:
+                notify_lock = getattr(self, "_single_stock_notify_lock", None)
+                if notify_lock is None:
+                    notify_lock = threading.Lock()
+                    setattr(self, "_single_stock_notify_lock", notify_lock)
+
+        with notify_lock:
+            try:
+                if report_type == ReportType.FULL:
+                    report_content = self.notifier.generate_dashboard_report([result])
+                    logger.info(f"[{stock_code}] 使用完整报告格式")
+                elif report_type == ReportType.BRIEF:
+                    report_content = self.notifier.generate_brief_report([result])
+                    logger.info(f"[{stock_code}] 使用简洁报告格式")
+                else:
+                    report_content = self.notifier.generate_single_stock_report(result)
+                    logger.info(f"[{stock_code}] 使用精简报告格式")
+
+                if self.notifier.send(report_content, email_stock_codes=[stock_code]):
+                    logger.info(f"[{stock_code}] 单股推送成功")
+                else:
+                    logger.warning(f"[{stock_code}] 单股推送失败")
+            except Exception as e:
+                logger.error(f"[{stock_code}] 单股推送异常: {e}")
+
     def _save_local_report(
         self,
         results: List[AnalysisResult],
