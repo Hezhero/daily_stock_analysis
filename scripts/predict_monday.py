@@ -11,6 +11,10 @@ import time
 import gc
 import sys
 import os
+from dotenv import load_dotenv
+
+# 加载环境变量
+load_dotenv()
 
 import numpy as np
 import pandas as pd
@@ -24,11 +28,11 @@ logging.basicConfig(
 logger = logging.getLogger("predict")
 
 # ─── 配置 ────────────────────────────────────────────────────────────
-DB_HOST   = "127.0.0.1"
-DB_PORT   = 5431
-DB_NAME   = "baostock"
-DB_USER   = "root"
-DB_PASS   = "123629He"
+DB_HOST   = os.environ.get('PG_HOST', '127.0.0.1')
+DB_PORT   = int(os.environ.get('PG_PORT', 5431))
+DB_NAME   = os.environ.get('PG_DATABASE', 'baostock')
+DB_USER   = os.environ.get('PG_USER', 'root')
+DB_PASS   = os.environ.get('PG_PASSWORD')
 
 # 加载近90个交易日数据（保证指标计算准确）
 DATA_END   = "2026-03-27"

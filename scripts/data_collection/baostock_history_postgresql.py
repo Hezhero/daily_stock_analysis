@@ -8,11 +8,15 @@ import time
 import traceback
 from contextlib import contextmanager
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
 import psycopg2.sql as sql
 import backoff
 import pandas as pd
 import psycopg2
 import warnings
+
+# 加载环境变量
+load_dotenv()
 
 # 抑制 numpy/pandas 警告
 warnings.filterwarnings('ignore')
@@ -47,7 +51,7 @@ logger = logging.getLogger(__name__)
 postgresql_config = {
     'host': os.environ.get('PG_HOST', '127.0.0.1'),
     'user': os.environ.get('PG_USER', 'root'),
-    'password': os.environ.get('PG_PASSWORD', '123629He'),
+    'password': os.environ.get('PG_PASSWORD'),
     'database': os.environ.get('PG_DATABASE', 'baostock'),
     'port': os.environ.get('PG_PORT', '5431')
 }

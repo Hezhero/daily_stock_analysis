@@ -16,6 +16,10 @@ import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from datetime import datetime
+from dotenv import load_dotenv
+
+# 加载环境变量
+load_dotenv()
 
 import numpy as np
 import pandas as pd
@@ -32,19 +36,19 @@ from psycopg2.pool import SimpleConnectionPool
 
 """邮件发送配置"""
 class EmailConfig:
-    SMTP_SERVER = "smtp.qq.com"  # 例如: smtp.qq.com 或 smtp.gmail.com
-    SMTP_PORT = 465  # ssl 通常为465
-    SMTP_USER = "851448443@qq.com"
-    SMTP_PASSWORD = "aofwlgcsobymbfdj"  # 部分邮箱需要应用专用密码
-    RECIPIENTS = ["la9408531@163.com", "1049220782@qq.com","122755347@qq.com"]
+    SMTP_SERVER = os.environ.get('SMTP_SERVER', 'smtp.qq.com')  # 例如: smtp.qq.com 或 smtp.gmail.com
+    SMTP_PORT = int(os.environ.get('SMTP_PORT', 465))  # ssl 通常为465
+    SMTP_USER = os.environ.get('SMTP_USER')
+    SMTP_PASSWORD = os.environ.get('SMTP_PASSWORD')  # 部分邮箱需要应用专用密码
+    RECIPIENTS = [r.strip() for r in os.environ.get('EMAIL_RECEIVERS', '').split(',') if r.strip()]
 
 """数据库配置"""
 class DbConfig:
-    DB_HOST = "localhost"
-    DB_PORT = "5431"
-    DB_USER = "root"
-    DB_PASSWORD = "123629He"
-    DB_NAME = "baostock"
+    DB_HOST = os.environ.get('PG_HOST', 'localhost')
+    DB_PORT = os.environ.get('PG_PORT', '5431')
+    DB_USER = os.environ.get('PG_USER', 'root')
+    DB_PASSWORD = os.environ.get('PG_PASSWORD')
+    DB_NAME = os.environ.get('PG_DATABASE', 'baostock')
 
 class StrategyConfig:
     """策略参数集中管理"""
