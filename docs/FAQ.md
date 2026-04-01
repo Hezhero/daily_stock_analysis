@@ -130,15 +130,15 @@ PROXY_PORT=10809
 
 **Q: 配置了 GEMINI_API_KEY 和 LLM_CHANNELS，为什么只用渠道？**
 
-系统按优先级只取一种：`LITELLM_CONFIG` (YAML) > `LLM_CHANNELS` > legacy keys。一旦配置了渠道或 YAML，legacy 区域（`GEMINI_API_KEY` 等）不参与解析。
+系统按优先级只取一种：高级模型路由 YAML（`LITELLM_CONFIG`）> `LLM_CHANNELS` > legacy keys。但 YAML 仅在文件可正常解析且产出了有效 `model_list` 时才生效；如果 YAML 路径无效或内容为空，系统会自动回退到 `LLM_CHANNELS` 或 legacy keys。一旦某一层级实际生效，更低优先级的配置不参与解析。
 
-**Q: test_env 输出 ✗ 未配置任何 LLM 怎么办？**
+**Q: test_env 输出“未配置可用 AI 模型”怎么办？**
 
-配置 `LITELLM_CONFIG` / `LLM_CHANNELS` 或至少一个 `*_API_KEY`（如 `GEMINI_API_KEY`、`DEEPSEEK_API_KEY`、`AIHUBMIX_KEY`）。运行 `python test_env.py --config` 校验配置，`python test_env.py --llm` 实际调用 API 测试。
+默认先选一种服务商并填写对应 API Key；如果需要固定主模型，再补 `LITELLM_MODEL=provider/model`；如果要多模型切换，再配置 `LLM_CHANNELS` 或高级模型路由 YAML。运行 `python test_env.py --config` 校验配置，`python test_env.py --llm` 实际调用 API 测试。
 
 **Q: 如何同时使用多个模型（如 AIHubmix + DeepSeek + Gemini）？**
 
-使用渠道模式：设置 `LLM_CHANNELS=aihubmix,deepseek,gemini`，并配置各渠道的 `LLM_{NAME}_BASE_URL`、`LLM_{NAME}_API_KEY`、`LLM_{NAME}_MODELS`。也可在 Web 设置页 → AI 模型 → 渠道编辑器中可视化配置。
+使用渠道模式：设置 `LLM_CHANNELS=aihubmix,deepseek,gemini`，并配置各渠道的 `LLM_{NAME}_BASE_URL`、`LLM_{NAME}_API_KEY`、`LLM_{NAME}_MODELS`。也可在 Web 设置页 → AI 模型 → AI 模型接入 中可视化配置。
 
 ---
 
@@ -225,7 +225,7 @@ OPENAI_MODEL=deepseek-chat
 
 **配置方法**：使用 `OLLAMA_API_BASE` + `LITELLM_MODEL`，或渠道模式（`LLM_CHANNELS=ollama` + `LLM_OLLAMA_BASE_URL` + `LLM_OLLAMA_MODELS`）。
 
-**避坑**：不要使用 `OPENAI_BASE_URL` 配置 Ollama，否则会触发 LiteLLM 的 URL 拼接 bug（如 404、`api/generate/api/show`）。详见 [LLM 配置指南](LLM_CONFIG_GUIDE.md) 示例 4 与渠道示例。
+**避坑**：不要使用 `OPENAI_BASE_URL` 配置 Ollama，否则系统会错误拼接 URL（如 404、`api/generate/api/show`）。详见 [LLM 配置指南](LLM_CONFIG_GUIDE.md) 示例 4 与渠道示例。
 
 ---
 

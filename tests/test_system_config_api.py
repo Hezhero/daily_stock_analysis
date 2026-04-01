@@ -285,6 +285,23 @@ class SystemConfigApiTestCase(unittest.TestCase):
         self.assertEqual(payload["resolved_model"], "openai/gpt-4o-mini")
         mock_test.assert_called_once()
 
+    def test_validate_returns_user_facing_model_message_without_internal_env_key_name(self) -> None:
+        validation = self.service.validate(
+            items=[
+                {"key": "LLM_CHANNELS", "value": "primary"},
+                {"key": "LLM_PRIMARY_PROTOCOL", "value": "openai"},
+                {"key": "LLM_PRIMARY_API_KEY", "value": "sk-test-value"},
+                {"key": "LLM_PRIMARY_MODELS", "value": "gpt-4o-mini"},
+                {"key": "LITELLM_MODEL", "value": "openai/gpt-4o"},
+            ]
+        )
+
+        self.assertFalse(validation["valid"])
+        issue = next(issue for issue in validation["issues"] if issue["key"] == "LITELLM_MODEL")
+        self.assertEqual(issue["code"], "unknown_model")
+        self.assertNotIn("LITELLM_MODEL", issue["message"])
+        self.assertIn("primary model", issue["message"].lower())
+
 
 if __name__ == "__main__":
     unittest.main()

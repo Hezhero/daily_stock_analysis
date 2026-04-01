@@ -2003,7 +2003,7 @@ class Config:
             issues.append(ConfigIssue(
                 severity="error",
                 message=(
-                    "未配置任何 LLM（LITELLM_CONFIG / LLM_CHANNELS / *_API_KEY），"
+                    "未配置任何可用的 AI 模型接入（高级模型路由配置 / 渠道 / API Key），"
                     "AI 分析功能将不可用"
                 ),
                 field="LITELLM_CONFIG",
@@ -2012,8 +2012,8 @@ class Config:
             issues.append(ConfigIssue(
                 severity="info",
                 message=(
-                    "LITELLM_MODEL 未配置，将自动从可用 API Key 推断模型。"
-                    "建议尽早配置 LITELLM_MODEL（格式如 gemini/gemini-2.5-flash）"
+                    "尚未明确指定主模型，系统将自动从可用 API Key 推断。"
+                    "建议尽早配置主模型（格式如 gemini/gemini-2.5-flash）"
                 ),
                 field="LITELLM_MODEL",
             ))
@@ -2047,7 +2047,7 @@ class Config:
                 issues.append(ConfigIssue(
                     severity="error",
                     message=(
-                        "LITELLM_MODEL 已配置，但当前渠道/配置文件中不存在该模型。"
+                        "已配置的主模型未出现在当前渠道或高级模型路由配置中。"
                         f" 当前可用模型：{', '.join(available_router_models[:6])}"
                     ),
                     field="LITELLM_MODEL",
@@ -2062,7 +2062,7 @@ class Config:
                 issues.append(ConfigIssue(
                     severity="error",
                     message=(
-                        "AGENT_LITELLM_MODEL 已配置，但当前渠道/配置文件中不存在该模型。"
+                        "已配置的 Agent 主模型未出现在当前渠道或高级模型路由配置中。"
                         f" 当前可用模型：{', '.join(available_router_models[:6])}"
                     ),
                     field="AGENT_LITELLM_MODEL",
@@ -2077,7 +2077,7 @@ class Config:
                 issues.append(ConfigIssue(
                     severity="warning",
                     message=(
-                        "LITELLM_FALLBACK_MODELS 中包含未在当前渠道声明的模型："
+                        "备选模型中包含未在当前渠道或高级模型路由配置中声明的模型："
                         f"{', '.join(invalid_fallbacks[:3])}"
                     ),
                     field="LITELLM_FALLBACK_MODELS",
@@ -2104,7 +2104,7 @@ class Config:
             issues.append(ConfigIssue(
                 severity="error",
                 message=(
-                    "AGENT_LITELLM_MODEL 已配置，但未找到可用的运行时来源"
+                    "已配置 Agent 主模型，但未找到可用的运行时来源"
                     "（启用渠道或匹配的 API Key）。"
                 ),
                 field="AGENT_LITELLM_MODEL",

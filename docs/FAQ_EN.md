@@ -128,15 +128,15 @@ PROXY_PORT=10809
 
 **Q: Configured both GEMINI_API_KEY and LLM_CHANNELS, why does it only use channels?**
 
-The system uses exactly one mode by priority: `LITELLM_CONFIG` (YAML) > `LLM_CHANNELS` > legacy keys. Once channels or YAML are configured, the legacy section (`GEMINI_API_KEY`, etc.) is not used.
+The system uses exactly one mode by priority: advanced YAML routing (`LITELLM_CONFIG`) > `LLM_CHANNELS` > legacy keys. However, YAML routing only takes effect when the file can be parsed successfully and yields a non-empty `model_list`; if the YAML path is invalid or the content is empty, the system automatically falls back to `LLM_CHANNELS` or legacy keys. Once a tier is active, lower-priority tiers are not used.
 
-**Q: test_env outputs ✗ No LLM configured, what to do?**
+**Q: test_env says no usable AI model is configured, what should I do?**
 
-Configure `LITELLM_CONFIG` / `LLM_CHANNELS` or at least one `*_API_KEY` (e.g. `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`, `AIHUBMIX_KEY`). Run `python test_env.py --config` to validate config, `python test_env.py --llm` to actually call the API.
+Start with one provider and its API key. If you want to pin a primary model, add `LITELLM_MODEL=provider/model`. If you need multi-model switching, configure `LLM_CHANNELS` or advanced YAML routing. Run `python test_env.py --config` to validate config and `python test_env.py --llm` to actually call the API.
 
 **Q: How to use multiple models at once (e.g. AIHubmix + DeepSeek + Gemini)?**
 
-Use channel mode: set `LLM_CHANNELS=aihubmix,deepseek,gemini` and configure each channel's `LLM_{NAME}_BASE_URL`, `LLM_{NAME}_API_KEY`, `LLM_{NAME}_MODELS`. You can also configure visually in Web Settings → AI Model → Channel Editor.
+Use channel mode: set `LLM_CHANNELS=aihubmix,deepseek,gemini` and configure each channel's `LLM_{NAME}_BASE_URL`, `LLM_{NAME}_API_KEY`, `LLM_{NAME}_MODELS`. You can also configure this visually in Web Settings → AI Model → AI Model Access.
 
 ---
 
@@ -223,7 +223,7 @@ Supported model services:
 
 **Configuration**: Use `OLLAMA_API_BASE` + `LITELLM_MODEL`, or channel mode (`LLM_CHANNELS=ollama` + `LLM_OLLAMA_BASE_URL` + `LLM_OLLAMA_MODELS`).
 
-**Pitfall**: Do not use `OPENAI_BASE_URL` for Ollama, or LiteLLM will incorrectly concatenate URLs (e.g. 404, `api/generate/api/show`). See [LLM Config Guide](LLM_CONFIG_GUIDE_EN.md) Example 4 and channel examples.
+**Pitfall**: Do not use `OPENAI_BASE_URL` for Ollama, or the system will concatenate URLs incorrectly (e.g. 404, `api/generate/api/show`). See [LLM Config Guide](LLM_CONFIG_GUIDE_EN.md) Example 4 and channel examples.
 
 ---
 
