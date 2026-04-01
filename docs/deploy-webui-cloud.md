@@ -11,6 +11,7 @@
 - [方式一：直接部署（pip + python）](#方式一直接部署pip--python)
 - [方式二：Docker Compose](#方式二docker-compose)
 - [如何在浏览器里打开界面](#如何在浏览器里打开界面)
+- [如何确认 Docker 重建已生效](#如何确认-docker-重建已生效)
 - [访问不了？先检查这几项](#访问不了先检查这几项)
 - [可选：Nginx 反向代理（绑定域名 / 80 端口）](#可选nginx-反向代理绑定域名--80-端口)
 - [安全建议](#安全建议)
@@ -142,6 +143,31 @@ http://your-domain.com:8000
 
 ---
 
+## 如何确认 Docker 重建已生效
+
+WebUI 现在会在“系统设置”页展示只读的“版本信息”卡片，包含：
+
+- `WebUI 版本`
+- `构建标识`
+- `构建时间`
+
+如果 `apps/dsa-web/package.json` 里的版本号仍是占位值 `0.0.0`，页面会自动回退展示本次前端构建生成的 `构建标识`，避免你误把占位版本当成真实发布版本。
+
+当你重新执行 `docker-compose -f ./docker/docker-compose.yml up -d --build`，或者单独重新执行前端 `npm run build` 后，可以刷新浏览器并进入“系统设置”，优先确认“构建时间”是否已经变化；若变化，通常就说明当前加载的静态资源已经切换到最新构建。
+
+在确认本地前端打包链路时，建议执行以下命令用于本次改动的最小验证闭环：
+
+```bash
+cd apps/dsa-web
+npm ci
+npm run lint
+npm run build
+```
+
+其中 `build` 成功后，`static` 下生成的 `index.html`/JS/CSS 资源会包含本次构建时间与构建版本信息；刷新后在“版本信息”卡片中应能见到变化。
+
+---
+
 ## 访问不了？先检查这几项
 
 ### 1. 安全组 / 防火墙没有放行端口
@@ -233,7 +259,7 @@ sudo systemctl reload nginx
 配置成功后，直接用 `http://your-domain.com` 访问即可，不需要带端口号。
 
 > **使用 Nginx 后的注意事项**：
-> - 如果你开启了 Web 登录认证（`ADMIN_AUTH_ENABLED=true`），建议在 `.env` 中把 `TRUST_X_FORWARDED_FOR=true` 一并打开，否则系统可能无法正确识别真实 IP。
+> - 如果你开启了 Web 登录认证（`ADMIN_AUTH_ENABLED=true`），建议在 `.env` 中把 `TRUST_X_FORWARDED_FOR=true` 一并打开，否则系统可能无法正确识别真实 IP。该选项适用于**单层可信反向代理**（Nginx → App）部署；如果使用多级代理或 CDN（CDN → Nginx → App），登录限流的 key 可能退化为边缘代理 IP 而非真实客户端 IP，需根据实际拓扑评估。
 > - 如需 HTTPS，可以用 [Certbot](https://certbot.eff.org/) 自动申请免费的 Let's Encrypt 证书。
 
 ---
