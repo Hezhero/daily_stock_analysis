@@ -171,6 +171,8 @@ The system will:
 - Send analysis reports to all configured channels
 - Save reports locally
 
+> Resume fetch and `--dry-run` data-existence checks now resolve the "latest reusable trading day" from each market's local timezone and trading calendar. Weekends and holidays reuse the most recent trading day, intraday runs reuse the last completed trading day, and after market close the run skips only if the current trading day's data is already stored. See [Full Guide](full-guide_EN.md) for the exact rules.
+
 ---
 
 ### Option 2: Local Deployment

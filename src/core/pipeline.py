@@ -17,7 +17,7 @@ import time
 import uuid
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional, Tuple
 
 import pandas as pd
@@ -39,7 +39,12 @@ from src.search_service import SearchService
 from src.services.social_sentiment_service import SocialSentimentService
 from src.enums import ReportType
 from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult
-from src.core.trading_calendar import get_market_for_stock, is_market_open
+from src.core.trading_calendar import (
+    get_effective_trading_date,
+    get_market_for_stock,
+    get_market_now,
+    is_market_open,
+)
 from data_provider.us_index_mapping import is_us_stock_code
 from bot.models import BotMessage
 
@@ -135,19 +140,21 @@ class StockAnalysisPipeline:
     def fetch_and_save_stock_data(
         self, 
         code: str,
-        force_refresh: bool = False
+        force_refresh: bool = False,
+        current_time: Optional[datetime] = None,
     ) -> Tuple[bool, Optional[str]]:
         """
         获取并保存单只股票数据
         
         断点续传逻辑：
-        1. 检查数据库是否已有今日数据
+        1. 检查数据库是否已有最新可复用交易日数据
         2. 如果有且不强制刷新，则跳过网络请求
         3. 否则从数据源获取并保存
         
         Args:
             code: 股票代码
             force_refresh: 是否强制刷新（忽略本地缓存）
+            current_time: 本轮运行冻结的参考时间，用于统一断点续传目标交易日判断
             
         Returns:
             Tuple[是否成功, 错误信息]
@@ -157,16 +164,15 @@ class StockAnalysisPipeline:
             # 首先获取股票名称
             stock_name = self.fetcher_manager.get_stock_name(code, allow_realtime=False)
 
-            today = date.today()
-            # 注意：这里用自然日 date.today() 做“断点续传”判断。
-            # 若在周末/节假日/非交易日运行，或机器时区不在中国，可能出现：
-            # - 数据库已有最新交易日数据但仍会重复拉取（has_today_data 返回 False）
-            # - 或在跨日/时区偏移时误判“今日已有数据”
-            # 该行为目前保留（按需求不改逻辑），但如需更严谨可改为“最新交易日/数据源最新日期”判断。
-            
-            # 断点续传检查：如果今日数据已存在，跳过
-            if not force_refresh and self.db.has_today_data(code, today):
-                logger.info(f"{stock_name}({code}) 今日数据已存在，跳过获取（断点续传）")
+            target_date = self._resolve_resume_target_date(
+                code, current_time=current_time
+            )
+
+            # 断点续传检查：如果最新可复用交易日的数据已存在，则跳过
+            if not force_refresh and self.db.has_today_data(code, target_date):
+                logger.info(
+                    f"{stock_name}({code}) {target_date} 数据已存在，跳过获取（断点续传）"
+                )
                 return True, None
 
             # 从数据源获取数据
@@ -295,7 +301,8 @@ class StockAnalysisPipeline:
             # Step 3: 趋势分析（基于交易理念）— 在 Agent 分支之前执行，供两条路径共用
             trend_result: Optional[TrendAnalysisResult] = None
             try:
-                end_date = date.today()
+                _mkt = get_market_for_stock(normalize_stock_code(code))
+                end_date = get_market_now(_mkt).date()
                 start_date = end_date - timedelta(days=89)  # ~60 trading days for MA60
                 historical_bars = self.db.get_data_range(code, start_date, end_date)
                 if historical_bars:
@@ -379,10 +386,13 @@ class StockAnalysisPipeline:
 
             if context is None:
                 logger.warning(f"{stock_name}({code}) 无法获取历史行情数据，将仅基于新闻和实时行情分析")
+                _mkt_date = get_market_now(
+                    get_market_for_stock(normalize_stock_code(code))
+                ).date()
                 context = {
                     'code': code,
                     'stock_name': stock_name,
-                    'date': date.today().isoformat(),
+                    'date': _mkt_date.isoformat(),
                     'data_missing': True,
                     'today': {},
                     'yesterday': {}
@@ -566,7 +576,9 @@ class StockAnalysisPipeline:
                 enhanced['ma_status'] = self._compute_ma_status(
                     price, trend_result.ma5, trend_result.ma10, trend_result.ma20
                 )
-                enhanced['date'] = date.today().isoformat()
+                enhanced['date'] = get_market_now(
+                    get_market_for_stock(normalize_stock_code(enhanced.get('code', '')))
+                ).date().isoformat()
                 if yesterday_close is not None:
                     try:
                         yc = float(yesterday_close)
@@ -950,7 +962,8 @@ class StockAnalysisPipeline:
         if not enable_realtime_tech:
             return df
         market = get_market_for_stock(code)
-        if market and not is_market_open(market, date.today()):
+        market_today = get_market_now(market).date()
+        if market and not is_market_open(market, market_today):
             return df
 
         last_val = df['date'].max()
@@ -968,7 +981,7 @@ class StockAnalysisPipeline:
         amt = getattr(realtime_quote, 'amount', None)
         pct = getattr(realtime_quote, 'change_pct', None)
 
-        if last_date >= date.today():
+        if last_date >= market_today:
             # Update last row with realtime close (copy to avoid mutating caller's df)
             df = df.copy()
             idx = df.index[-1]
@@ -989,7 +1002,7 @@ class StockAnalysisPipeline:
             # Append virtual today row
             new_row = {
                 'code': code,
-                'date': date.today(),
+                'date': market_today,
                 'open': open_p,
                 'high': high_p,
                 'low': low_p,
@@ -1018,6 +1031,16 @@ class StockAnalysisPipeline:
             "realtime_quote_raw": self._safe_to_dict(realtime_quote),
             "chip_distribution_raw": self._safe_to_dict(chip_data),
         }
+
+    @staticmethod
+    def _resolve_resume_target_date(
+        code: str, current_time: Optional[datetime] = None
+    ) -> date:
+        """
+        Resolve the trading date used by checkpoint/resume checks.
+        """
+        market = get_market_for_stock(normalize_stock_code(code))
+        return get_effective_trading_date(market, current_time=current_time)
 
     @staticmethod
     def _safe_to_dict(value: Any) -> Optional[Dict[str, Any]]:
@@ -1092,6 +1115,7 @@ class StockAnalysisPipeline:
         single_stock_notify: bool = False,
         report_type: ReportType = ReportType.SIMPLE,
         analysis_query_id: Optional[str] = None,
+        current_time: Optional[datetime] = None,
     ) -> Optional[AnalysisResult]:
         """
         处理单只股票的完整流程
@@ -1110,6 +1134,7 @@ class StockAnalysisPipeline:
             skip_analysis: 是否跳过 AI 分析
             single_stock_notify: 是否启用单股推送模式（每分析完一只立即推送）
             report_type: 报告类型枚举（从配置读取，Issue #119）
+            current_time: 本轮运行冻结的参考时间，用于统一断点续传目标交易日判断
 
         Returns:
             AnalysisResult 或 None
@@ -1118,7 +1143,9 @@ class StockAnalysisPipeline:
         
         try:
             # Step 1: 获取并保存数据
-            success, error = self.fetch_and_save_stock_data(code)
+            success, error = self.fetch_and_save_stock_data(
+                code, current_time=current_time
+            )
             
             if not success:
                 logger.warning(f"[{code}] 数据获取失败: {error}")
@@ -1197,6 +1224,9 @@ class StockAnalysisPipeline:
         logger.info(f"===== 开始分析 {len(stock_codes)} 只股票 =====")
         logger.info(f"股票列表: {', '.join(stock_codes)}")
         logger.info(f"并发数: {self.max_workers}, 模式: {'仅获取数据' if dry_run else '完整分析'}")
+
+        # 冻结本轮运行的统一参考时间，避免跨市场收盘边界时同批股票使用不同目标交易日。
+        resume_reference_time = datetime.now(timezone.utc)
         
         # === 批量预取实时行情（优化：避免每只股票都触发全量拉取）===
         # 只有股票数量 >= 5 时才进行预取，少量股票直接逐个查询更高效
@@ -1243,6 +1273,7 @@ class StockAnalysisPipeline:
                     single_stock_notify=False,
                     report_type=report_type,  # Issue #119: 传递报告类型
                     analysis_query_id=uuid.uuid4().hex,
+                    current_time=resume_reference_time,
                 ): code
                 for code in stock_codes
             }
@@ -1278,8 +1309,17 @@ class StockAnalysisPipeline:
         
         # dry-run 模式下，数据获取成功即视为成功
         if dry_run:
-            # 检查哪些股票的数据今天已存在
-            success_count = sum(1 for code in stock_codes if self.db.has_today_data(code))
+            # 检查哪些股票的最新可复用交易日数据已存在
+            success_count = sum(
+                1
+                for code in stock_codes
+                if self.db.has_today_data(
+                    code,
+                    self._resolve_resume_target_date(
+                        code, current_time=resume_reference_time
+                    ),
+                )
+            )
             fail_count = len(stock_codes) - success_count
         else:
             success_count = len(results)
