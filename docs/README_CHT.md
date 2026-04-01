@@ -102,6 +102,7 @@
 | `DISCORD_WEBHOOK_URL` | Discord Webhook URL | 可選 |
 | `DISCORD_BOT_TOKEN` | Discord Bot Token（與 Webhook 二選一） | 可選 |
 | `DISCORD_MAIN_CHANNEL_ID` | Discord Channel ID（使用 Bot 時需要） | 可選 |
+| `DISCORD_INTERACTIONS_PUBLIC_KEY` | Discord Public Key（僅接收入站 Interaction/Webhook 回調並進行簽名校驗時需要） | 可選 |
 | `SLACK_BOT_TOKEN` | Slack Bot Token（推薦，支援圖片上傳；同時配置時優先於 Webhook） | 可選 |
 | `SLACK_CHANNEL_ID` | Slack Channel ID（使用 Bot 時需要） | 可選 |
 | `SLACK_WEBHOOK_URL` | Slack Incoming Webhook URL（僅文字，不支援圖片） | 可選 |
@@ -153,6 +154,8 @@
 #### 5. 完成！
 
 默認每個工作日 **18:00（北京時間）** 自動執行
+
+> 斷點續傳與 `--dry-run` 的資料存在性判斷，現在會按股票所屬市場的本地時區與交易日曆解析「最新可復用交易日」；週末 / 節假日會復用最近交易日，交易日盤中會復用上一個已完成交易日，盤後若當日資料已落庫則可直接跳過。詳細規則見 [完整配置指南](full-guide.md)。
 
 ### 方式二：本地運行 / Docker 部署
 
@@ -219,7 +222,7 @@
 - 📝 **配置管理** - 查看/修改自選股列表
 - 🚀 **快速分析** - 通過 API 接口觸發分析
 - 📊 **實時進度** - 分析任務狀態實時更新，支持多任務並行
-- 🤖 **Agent 策略對話** - 啟用 `AGENT_MODE=true` 後可在 `/chat` 進行多輪問答
+- 🤖 **Agent 策略對話** - 啟用 `AGENT_MODE=true` 後可使用 `/ask`、`/chat`、`/history`、`/strategies`、`/research` 進行問答、查歷史、查看策略與深度研究
 - 📈 **回測驗證** - 評估歷史分析準確率，查詢方向勝率與模擬收益
 
 ### API 接口
@@ -311,15 +314,9 @@ daily_stock_analysis/
 
 ## ☕ 支持項目
 
-<div align="center">
-  <a href="https://ko-fi.com/mumu157" target="_blank">
-    <img src="https://storage.ko-fi.com/cdn/kofi3.png?v=3" alt="Buy Me a Coffee at ko-fi.com" style="height: 40px !important;">
-  </a>
-</div>
-
-| 支付寶 (Alipay) | 微信支付 (WeChat) | Ko-fi |
+| 支付寶 (Alipay) | 微信支付 (WeChat) | 小紅書 |
 | :---: | :---: | :---: |
-| <img src="../sources/alipay.jpg" width="200" alt="Alipay"> | <img src="../sources/wechatpay.jpg" width="200" alt="WeChat Pay"> | <a href="https://ko-fi.com/mumu157" target="_blank"><img src="../sources/ko-fi.png" width="200" alt="Ko-fi"></a> |
+| <img src="../sources/alipay.jpg" width="200" alt="Alipay"> | <img src="../sources/wechatpay.jpg" width="200" alt="WeChat Pay"> | <img src="../sources/xiaohongshu.png" width="200" alt="小紅書"> |
 
 ## 貢獻
 
