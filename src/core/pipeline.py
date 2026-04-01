@@ -1513,9 +1513,10 @@ class StockAnalysisPipeline:
                             code_to_emails: Dict[str, Optional[List[str]]] = {}
                             for r in results:
                                 if r.code not in code_to_emails:
+                                    canonical = normalize_stock_code(r.code)
                                     emails = []
                                     for stocks, emails_list in stock_email_groups:
-                                        if r.code in stocks:
+                                        if canonical in stocks:
                                             emails.extend(emails_list)
                                     code_to_emails[r.code] = list(dict.fromkeys(emails)) if emails else None
                             emails_to_results: Dict[Optional[Tuple], List] = defaultdict(list)
