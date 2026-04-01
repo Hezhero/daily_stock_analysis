@@ -149,7 +149,7 @@ class StockAnalysisPipeline:
         stock_name = code
         try:
             # 首先获取股票名称
-            stock_name = self.fetcher_manager.get_stock_name(code)
+            stock_name = self.fetcher_manager.get_stock_name(code, allow_realtime=False)
 
             today = date.today()
             # 注意：这里用自然日 date.today() 做“断点续传”判断。
@@ -202,27 +202,30 @@ class StockAnalysisPipeline:
             AnalysisResult 或 None（如果分析失败）
         """
         try:
-            # 获取股票名称（优先从实时行情获取真实名称）
-            stock_name = self.fetcher_manager.get_stock_name(code)
+            # 获取股票名称（先走轻量名称路径，后续若 realtime_quote 有 name 再覆盖）
+            stock_name = self.fetcher_manager.get_stock_name(code, allow_realtime=False)
 
             # Step 1: 获取实时行情（量比、换手率等）- 使用统一入口，自动故障切换
             realtime_quote = None
             try:
-                realtime_quote = self.fetcher_manager.get_realtime_quote(code)
-                if realtime_quote:
-                    # 使用实时行情返回的真实股票名称
-                    if realtime_quote.name:
-                        stock_name = realtime_quote.name
-                    # 兼容不同数据源的字段（有些数据源可能没有 volume_ratio）
-                    volume_ratio = getattr(realtime_quote, 'volume_ratio', None)
-                    turnover_rate = getattr(realtime_quote, 'turnover_rate', None)
-                    logger.info(f"{stock_name}({code}) 实时行情: 价格={realtime_quote.price}, "
-                              f"量比={volume_ratio}, 换手率={turnover_rate}% "
-                              f"(来源: {realtime_quote.source.value if hasattr(realtime_quote, 'source') else 'unknown'})")
+                if self.config.enable_realtime_quote:
+                    realtime_quote = self.fetcher_manager.get_realtime_quote(code, log_final_failure=False)
+                    if realtime_quote:
+                        # 使用实时行情返回的真实股票名称
+                        if realtime_quote.name:
+                            stock_name = realtime_quote.name
+                        # 兼容不同数据源的字段（有些数据源可能没有 volume_ratio）
+                        volume_ratio = getattr(realtime_quote, 'volume_ratio', None)
+                        turnover_rate = getattr(realtime_quote, 'turnover_rate', None)
+                        logger.info(f"{stock_name}({code}) 实时行情: 价格={realtime_quote.price}, "
+                                  f"量比={volume_ratio}, 换手率={turnover_rate}% "
+                                  f"(来源: {realtime_quote.source.value if hasattr(realtime_quote, 'source') else 'unknown'})")
+                    else:
+                        logger.warning(f"{stock_name}({code}) 所有实时行情数据源均不可用，已降级为历史收盘价继续分析")
                 else:
-                    logger.info(f"{stock_name}({code}) 实时行情获取失败或已禁用，将使用历史数据进行分析")
+                    logger.info(f"{stock_name}({code}) 实时行情已禁用，使用历史收盘价继续分析")
             except Exception as e:
-                logger.warning(f"{stock_name}({code}) 获取实时行情失败: {e}")
+                logger.warning(f"{stock_name}({code}) 实时行情链路异常，已降级为历史收盘价继续分析: {e}")
 
             # 如果还是没有名称，使用代码作为名称
             if not stock_name:
