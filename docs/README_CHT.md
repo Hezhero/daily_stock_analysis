@@ -102,6 +102,7 @@
 | `DISCORD_WEBHOOK_URL` | Discord Webhook URL | 可選 |
 | `DISCORD_BOT_TOKEN` | Discord Bot Token（與 Webhook 二選一） | 可選 |
 | `DISCORD_MAIN_CHANNEL_ID` | Discord Channel ID（使用 Bot 時需要） | 可選 |
+| `DISCORD_INTERACTIONS_PUBLIC_KEY` | Discord Public Key（僅接收入站 Interaction/Webhook 回調並進行簽名校驗時需要） | 可選 |
 | `SLACK_BOT_TOKEN` | Slack Bot Token（推薦，支援圖片上傳；同時配置時優先於 Webhook） | 可選 |
 | `SLACK_CHANNEL_ID` | Slack Channel ID（使用 Bot 時需要） | 可選 |
 | `SLACK_WEBHOOK_URL` | Slack Incoming Webhook URL（僅文字，不支援圖片） | 可選 |

@@ -54,6 +54,7 @@ def _make_config(**kwargs) -> Config:
         discord_bot_token=None,
         discord_main_channel_id=None,
         discord_webhook_url=None,
+        discord_interactions_public_key=None,
         llm_channels=[],
         litellm_config_path=None,
         gemini_api_key=None,
@@ -495,6 +496,24 @@ class TestEnvAliasCompatibility:
             config = Config._load_from_env()
 
         assert config.discord_main_channel_id == "main-channel"
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_discord_interactions_public_key_is_loaded(
+        self,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ):
+        with patch.dict(
+            "os.environ",
+            {
+                "DISCORD_INTERACTIONS_PUBLIC_KEY": "abcdef123456",
+            },
+            clear=True,
+        ):
+            config = Config._load_from_env()
+
+        assert config.discord_interactions_public_key == "abcdef123456"
 
 
 # ---------------------------------------------------------------------------

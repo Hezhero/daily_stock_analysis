@@ -569,6 +569,7 @@ class Config:
     discord_bot_token: Optional[str] = None  # Discord Bot Token
     discord_main_channel_id: Optional[str] = None  # Discord 主频道 ID
     discord_webhook_url: Optional[str] = None  # Discord Webhook URL
+    discord_interactions_public_key: Optional[str] = None  # Discord Interaction 入站验签公钥
 
     # Slack 通知配置
     slack_webhook_url: Optional[str] = None  # Slack Incoming Webhook URL
@@ -1193,6 +1194,7 @@ class Config:
                 or os.getenv('DISCORD_CHANNEL_ID')
             ),
             discord_webhook_url=os.getenv('DISCORD_WEBHOOK_URL'),
+            discord_interactions_public_key=os.getenv('DISCORD_INTERACTIONS_PUBLIC_KEY'),
             slack_webhook_url=os.getenv('SLACK_WEBHOOK_URL'),
             slack_bot_token=os.getenv('SLACK_BOT_TOKEN'),
             slack_channel_id=os.getenv('SLACK_CHANNEL_ID'),
