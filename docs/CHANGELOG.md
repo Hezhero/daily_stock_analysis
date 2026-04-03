@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] SSE 任务流断开时 CancelledError 被静默吞掉问题 — 修复 SSE 流中断时异常未向上抛出导致故障无日志可查的问题，现在正确 re-raise CancelledError（fixes #967）
 - [修复] Agent SSE 流清理阶段静默吞掉后台执行器异常 — 流结束时后台任务异常现在正确记录并上报，避免错误无法感知（fixes #969）
 - [文档] FAQ 补充 Ollama `OllamaException / APIConnectionError` 连接失败排障条目（Q12c），覆盖服务未启动、URL 配置错误、模型前缀缺失、模型未下载、远程防火墙等 5 个检查点
+- [修复] 技能加载异常被静默吞没问题 — 在 ask.py、skills/aggregator.py、skills/router.py 的静默 except 块补充 logger.warning 日志，确保技能列表为空时有日志可查（fixes #970）
 
 ## [3.12.0] - 2026-04-01
 
