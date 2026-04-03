@@ -84,7 +84,7 @@ def load_data(start: str, end: str) -> pd.DataFrame:
         WHERE date BETWEEN %s AND %s
           AND trade_status = '1'
           AND is_st = '0'
-          AND code ~ '^(sh\.6|sh\.688|sh\.8|sh\.4|sz\.0|sz\.2|sz\.3(?!9)|bj\.8)'
+          AND code ~ '^(sh\.6(?!88)|sh\.8|sh\.4|sz\.0|sz\.2|sz\.3(?!9))'
         ORDER BY code, date
         """,
         conn,
