@@ -153,9 +153,17 @@ class AgentOrchestrator:
         )
 
     def _prepare_agent(self, agent: Any) -> Any:
-        """Apply orchestrator-level runtime settings to a child agent."""
+        """Apply orchestrator-level runtime settings to a child agent.
+
+        The orchestrator-level ``max_steps`` acts as a **ceiling** — it will
+        never *increase* the per-agent limit that each specialised agent
+        already defines.  This prevents a global ``AGENT_MAX_STEPS=10``
+        from inflating a decision agent (designed for 3 steps) to 10 steps,
+        which is the primary cause of excessive LLM calls and quota
+        exhaustion in multi-agent pipelines.
+        """
         if hasattr(agent, "max_steps"):
-            agent.max_steps = self.max_steps
+            agent.max_steps = min(agent.max_steps, self.max_steps)
         return agent
 
     def _callable_accepts_timeout_kwarg(self, func: Any) -> Optional[bool]:

@@ -500,12 +500,25 @@ class TestOrchestratorModes(unittest.TestCase):
         self.assertEqual(orch.mode, "standard")
 
     def test_chain_agents_inherit_orchestrator_max_steps(self):
+        """Orchestrator max_steps acts as a *ceiling*, not a hard override.
+
+        Each agent keeps ``min(own_default, orchestrator_limit)`` so that
+        specialised agents with lower defaults are not inflated.
+        """
         orch = self._make_orchestrator("full")
         orch.max_steps = 9
-        ctx = AgentContext(query="test", stock_code="600519")
-        chain = orch._build_agent_chain(ctx)
-        self.assertTrue(chain)
-        self.assertTrue(all(agent.max_steps == 9 for agent in chain))
+        high_limit_chain = orch._build_agent_chain(AgentContext(query="test", stock_code="600519"))
+        self.assertEqual(
+            {agent.agent_name: agent.max_steps for agent in high_limit_chain},
+            {"technical": 6, "intel": 4, "risk": 4, "decision": 3},
+        )
+
+        orch.max_steps = 5
+        low_limit_chain = orch._build_agent_chain(AgentContext(query="test", stock_code="600519"))
+        self.assertEqual(
+            {agent.agent_name: agent.max_steps for agent in low_limit_chain},
+            {"technical": 5, "intel": 4, "risk": 4, "decision": 3},
+        )
 
     def test_build_context_from_dict(self):
         orch = self._make_orchestrator()
