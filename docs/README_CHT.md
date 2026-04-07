@@ -55,7 +55,7 @@
 |------|------|
 | AI 模型 | Gemini（免費）、OpenAI 兼容、DeepSeek、通義千問、Claude、Ollama |
 | 行情數據 | AkShare、Tushare、Pytdx、Baostock、YFinance、[Longbridge](https://open.longbridge.com/)（美股/港股首選數據源） |
-| 新聞搜索 | Tavily、SerpAPI、Bocha、Brave、MiniMax |
+| 新聞搜索 | Tavily、Anspire、SerpAPI、Bocha、Brave、MiniMax |
 
 > **長橋優先策略（僅美／港股）**：在已設定 `LONGBRIDGE_APP_KEY` / `LONGBRIDGE_APP_SECRET` / `LONGBRIDGE_ACCESS_TOKEN` 的前提下，美股與港股的 **日線** 與 **即時行情** 由 **Longbridge 優先**；長橋失敗或欄位不足時再由 **YFinance／AkShare** 兜底或合併補欄。**未設定長橋憑證時不會呼叫 Longbridge**，美／港股仍以 YFinance／AkShare 為主（與未整合長橋前一致）。**美股大盤指數**始終以 YFinance 優先（長橋不提供指數行情）。**A 股**路由不變。詳見 `.env.example` 與 [完整指南](./full-guide.md)。
 
@@ -134,6 +134,7 @@
 |------------|------|:----:|
 | `STOCK_LIST` | 自選股代碼，如 `600519,hk00700,AAPL,TSLA` | ✅ |
 | `TAVILY_API_KEYS` | [Tavily](https://tavily.com/) 搜索 API（新聞搜索） | 推薦 |
+| `ANSPIRE_API_KEYS` | [Anspire AI Search](https://aisearch.anspire.cn/) 針對中文內容特別優化（可有效增強A股分析效果） | 可選 |
 | `MINIMAX_API_KEYS` | [MiniMax](https://platform.minimaxi.com/) Coding Plan Web Search（結構化搜索結果） | 可選 |
 | `BOCHA_API_KEYS` | [博查搜索](https://open.bocha.cn/) Web Search API（中文搜索優化，支持AI摘要，多個key用逗號分隔） | 可選 |
 | `BRAVE_API_KEYS` | [Brave Search](https://brave.com/search/api/) API（隱私優先，美股優化，多個key用逗號分隔） | 可選 |
