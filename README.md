@@ -75,6 +75,8 @@
 
 > **长桥优先策略（仅美/港股）**：在配置 `LONGBRIDGE_APP_KEY` / `LONGBRIDGE_APP_SECRET` / `LONGBRIDGE_ACCESS_TOKEN` 的前提下，美股与港股的 **日线 K 线** 与 **实时行情** 由 **Longbridge 优先拉取**；若长桥失败或部分字段缺失，再由 **YFinance（美股）/ AkShare（港股）** 兜底或合并补全字段。**未配置长桥凭据时不会调用 Longbridge**，美股/港股仍以 YFinance / AkShare 为主数据源（与未集成长桥前的行为一致）。**美股大盘指数**（如 SPX）始终以 YFinance 优先（长桥不提供指数行情）。**A 股**路由不变，仍为 Efinance → AkShare → Tushare → Pytdx → Baostock。详见 `.env.example` 与 [完整指南](docs/full-guide.md) 中长桥说明。
 
+> **tushare增加港股查询能力**：在配置`TUSHARE_TOKEN` 的前提下，并且具有港股日线查询权限时，用户在首页输入港股代码后提交查询能够得到正常的分析结果。如果用户不具有港股查询权限时，和未改动前一样会得到错误的信息。
+
 ### 内置交易纪律
 
 | 规则 | 说明 |
