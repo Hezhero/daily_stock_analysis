@@ -130,14 +130,47 @@ def get_all_stock_list():
         logger.info(f"成功获取{len(stock_list)}只A股股票列表")
         return stock_list
     except Exception as e:
-        logger.error(f"获取股票列表失败: {e}")
+        logger.warning(f"akshare获取股票列表失败: {e}，尝试从数据库降级获取")
+
+    # 降级方案：从数据库获取股票列表
+    try:
+        with psycopg2.connect(**postgresql_config) as conn:
+            with conn.cursor() as cur:
+                # 从 baostock_daily_history 获取不重复的股票代码
+                cur.execute("""
+                    SELECT DISTINCT code, 
+                           REPLACE(REPLACE(REPLACE(code, 'sh.', ''), 'sz.', ''), 'bj.', '') as plain_code
+                    FROM baostock_daily_history 
+                    WHERE code LIKE 'sh.%' OR code LIKE 'sz.%' OR code LIKE 'bj.%'
+                """)
+                rows = cur.fetchall()
+                # 从股票代码推断交易所
+                stock_list = []
+                for row in rows:
+                    code_with_exchange = row[0]  # e.g. "sh.600519"
+                    plain = row[1]                # e.g. "600519"
+                    if code_with_exchange.startswith('sh.') and plain.startswith(('600', '601', '603', '605', '688')):
+                        name = plain  # 降级模式没有名称，用代码代替
+                        stock_list.append({'code': 'sh.' + plain, 'name': name})
+                    elif code_with_exchange.startswith('sz.') and plain.startswith(('000', '001', '002', '003', '300')):
+                        name = plain
+                        stock_list.append({'code': 'sz.' + plain, 'name': name})
+                    elif code_with_exchange.startswith('bj.') and plain.startswith(('8', '4')):
+                        name = plain
+                        stock_list.append({'code': 'bj.' + plain, 'name': name})
+                logger.info(f"从数据库成功获取{len(stock_list)}只A股股票列表（降级模式）")
+                return stock_list
+    except Exception as e2:
+        logger.error(f"数据库降级获取股票列表也失败: {e2}")
         return []
 
 
 def fetch_institution_data(stock_code):
     """获取指定股票的机构参与度数据"""
     try:
-        df = ak.stock_comment_detail_zlkp_jgcyd_em(symbol=stock_code)
+        # 去除交易所前缀（如 sh. sz. bj.），akshare 需要纯代码
+        plain_code = stock_code.replace('sh.', '').replace('sz.', '').replace('bj.', '')
+        df = ak.stock_comment_detail_zlkp_jgcyd_em(symbol=plain_code)
         return df
     except Exception as e:
         logger.warning(f"获取股票{stock_code}的机构参与度数据失败: {e}")

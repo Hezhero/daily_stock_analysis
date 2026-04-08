@@ -55,7 +55,29 @@ def get_latest_stock_names():
         return result
 
     except Exception as e:
-        logger.error(f"获取股票名称列表时出错: {str(e)}")
+        logger.warning(f"akshare获取股票名称列表失败: {e}，尝试从数据库降级获取")
+
+    # 降级方案：从 baostock_daily_history 获取股票列表
+    try:
+        with psycopg2.connect(**postgresql_config) as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT DISTINCT code,
+                           REPLACE(REPLACE(REPLACE(code, 'sh.', ''), 'sz.', ''), 'bj.', '') as plain_code
+                    FROM baostock_daily_history
+                    WHERE code LIKE 'sh.%' OR code LIKE 'sz.%' OR code LIKE 'bj.%'
+                """)
+                rows = cur.fetchall()
+                result = []
+                for row in rows:
+                    code_with_exchange = row[0]
+                    plain = row[1]
+                    # 降级模式没有名称，用代码代替
+                    result.append({'code': code_with_exchange, 'name': plain})
+                logger.info(f"从数据库降级获取{len(result)}只股票名称")
+                return result
+    except Exception as e2:
+        logger.error(f"数据库降级获取也失败: {e2}")
         return None
 
 
