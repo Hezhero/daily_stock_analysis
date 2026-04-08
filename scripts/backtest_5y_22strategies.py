@@ -362,6 +362,38 @@ def sig_one_yang_three_yin(df):
     rise = (df["pct_chg"] > 0) & (df["close"] > df.groupby("code")["close"].shift(4))
     return yang & three_shrink & rise
 
+def sig_box_oscillation(df):
+    """箱体震荡策略：价格在布林带中轨附近 + RSI 适中 + 缩量整理"""
+    boll_mid = df["boll_mid"]
+    price_near_mid = (df["close"] - boll_mid).abs() / boll_mid < 0.02
+    rsi_ok = (df["rsi6"] > 30) & (df["rsi6"] < 70)
+    vol_shrink = df["volume"] < df["vol_ma20"] * 0.8
+    trend_up = df["close"] > df["ma20"]
+    return price_near_mid & rsi_ok & vol_shrink & trend_up
+
+def sig_wave_theory(df):
+    """波浪理论策略：第3浪突破确认 - 放量突破20日高点 + RSI 强势"""
+    high_20p = df.groupby("code")["high_20d_max"].shift(1)
+    breakout = df["close"] > high_20p
+    vol_surge = df["volume"] > df["vol_ma5"] * 1.5
+    rsi_strong = (df["rsi6"] > 45) & (df["rsi6"] < 75)
+    macd_bull = df["macd_hist"] > 0
+    price_above_ma20 = df["close"] > df["ma20"]
+    score = breakout.astype(int) * 4 + vol_surge.astype(int) * 3 + rsi_strong.astype(int) * 2 + macd_bull.astype(int) * 2 + price_above_ma20.astype(int)
+    return score >= 8
+
+def sig_chan_theory(df):
+    """缠论策略：底背驰信号 - 价格创新低但MACD未创新低"""
+    pc = df.groupby("code")["close"].shift(1)
+    new_low = df["close"] < pc
+    dif = df["macd_dif"]
+    difp = df.groupby("code")["macd_dif"].shift(1)
+    macd_not_new_low = dif >= difp
+    vol_ok = df["volume"] > df["vol_ma5"]
+    rsi_oversold = df["rsi6"] < 50
+    close_above_open = df["close"] > df["open"]
+    return new_low & macd_not_new_low & vol_ok & rsi_oversold & close_above_open
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # 策略注册表
@@ -387,6 +419,10 @@ STRATEGIES = {
     "dragon_head":           sig_dragon_head,
     "emotion_cycle":         sig_emotion_cycle,
     "bottom_volume":         sig_bottom_volume,
+    "one_yang_three_yin":    sig_one_yang_three_yin,
+    "box_oscillation":       sig_box_oscillation,
+    "wave_theory":           sig_wave_theory,
+    "chan_theory":           sig_chan_theory,
 }
 
 
