@@ -40,6 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [改进] TushareFetcher `_normalize_data` 对港股（`hk_daily`）不再对 `vol`/`amount` 做 A 股手→股、千元→元 的缩放，与 Tushare 港股字段语义一致。
 - [测试] 补充 `TushareFetcher._normalize_data` 港股与 A 股/ETF 单位处理的单元测试。
 - [新功能] 集成 Anspire Search 作为可选语义搜索后端; 配置 `ANSPIRE_*` 可使用Anspire Search获取实时行情及新闻资讯，未配置时行为与此前一致。Anspire Search请使用 `tests/test_anspire_search.py`（手动脚本）。
+- [修复] GitHub Actions `daily_analysis.yml` 未注入 `REPORT_LANGUAGE` 环境变量，导致用户在 Secrets/Variables 中配置后不生效（fixes #1013）
+- [修复] `GET /api/v1/analysis/status/{task_id}` 从数据库回填已完成任务时缺少 `current_price` / `change_pct`，导致首页报告股票名旁不显示实时价格（fixes #983）
 
 ## [3.12.0] - 2026-04-01
 

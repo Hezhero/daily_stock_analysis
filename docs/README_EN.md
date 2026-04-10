@@ -125,7 +125,7 @@ Go to your forked repo → `Settings` → `Secrets and variables` → `Actions` 
 | `CUSTOM_WEBHOOK_BEARER_TOKEN` | Bearer token for custom webhooks (if required) | Optional |
 | `SINGLE_STOCK_NOTIFY` | Send notification immediately after each stock | Optional |
 | `REPORT_TYPE` | `simple`, `full`, or `brief` (Docker recommended: `full`) | Optional |
-| `REPORT_LANGUAGE` | Report output language: `zh` (default Chinese) / `en` (English); affects prompt instructions, Markdown templates, notification fallbacks, and fixed labels in the Web report view | Optional |
+| `REPORT_LANGUAGE` | Report output language: `zh` (default Chinese) / `en` (English); affects prompt instructions, Markdown templates, notification fallbacks, and fixed labels in the Web report view. The bundled `daily_analysis.yml` already maps this variable, so setting it in Actions Secrets/Variables works out of the box | Optional |
 | `ANALYSIS_DELAY` | Delay between stocks and market review (seconds) | Optional |
 
 > Note: Configure at least one channel; multiple channels will all receive notifications.
