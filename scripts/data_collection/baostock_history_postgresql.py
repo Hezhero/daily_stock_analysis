@@ -10,11 +10,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
+import threading
 import psycopg2.sql as sql
 import backoff
 import pandas as pd
 import psycopg2
 import warnings
+import psycopg2.pool
 
 # 加载环境变量
 load_dotenv()
@@ -81,8 +83,8 @@ class DatabaseManager:
         """初始化连接池"""
         if cls._pool is None:
             cls._pool = psycopg2.pool.ThreadedConnectionPool(
-                minconnections=min_connections,
-                maxconnections=max_connections,
+                min_connections,
+                max_connections,
                 **postgresql_config
             )
             logger.info(f"数据库连接池初始化成功 (min={min_connections}, max={max_connections})")
@@ -124,23 +126,16 @@ class DatabaseManager:
 
 
 class BaoStockManager:
-    """BaoStock API 管理器（支持多线程）"""
-
-    _is_logged_in = False
+    """BaoStock API 管理器（每线程独立会话）"""
 
     @classmethod
     def login(cls):
-        """执行登录（单次调用，会话全局复用）"""
-        if cls._is_logged_in:
-            logger.debug("BaoStock 已经登录，复用现有会话")
-            return
-
+        """每线程独立登录，避免多线程共享会话竞争"""
         max_retries = 3
         retry_count = 0
 
         while retry_count < max_retries:
             try:
-                logger.info("登录 BaoStock")
                 login_result = bs.login()
                 if login_result.error_code != '0':
                     logger.error(f"BaoStock 登录失败: {login_result.error_msg}")
@@ -148,29 +143,24 @@ class BaoStockManager:
                     if retry_count < max_retries:
                         time.sleep(2 ** retry_count)
                         continue
-                    raise Exception(f"BaoStock 登录失败超过最大重试次数: {login_result.error_msg}")
-
-                logger.info("BaoStock 登录成功")
-                cls._is_logged_in = True
+                    raise Exception(f"BaoStock 登录失败: {login_result.error_msg}")
+                logger.debug("BaoStock 线程登录成功")
                 return
-
             except Exception as e:
-                logger.error(f"BaoStock 登录失败: {e}")
+                logger.error(f"BaoStock 登录异常: {e}")
                 retry_count += 1
                 if retry_count < max_retries:
                     time.sleep(2 ** retry_count)
                     continue
-                raise Exception(f"BaoStock 登录失败超过最大重试次数: {e}")
+                raise
 
     @classmethod
     def logout(cls):
-        """执行登出（非阻塞，BaoStock不需要必须登出）"""
-        if cls._is_logged_in:
-            try:
-                bs.logout()
-            except Exception:
-                pass
-            cls._is_logged_in = False
+        """登出当前线程会话"""
+        try:
+            bs.logout()
+        except Exception:
+            pass
 
 
 class DataFormatter:
@@ -434,6 +424,63 @@ class DateManager:
     """日期管理类"""
 
     @staticmethod
+    def batch_get_latest_dates(conn, codes):
+        """批量获取多只股票的最新日期（一次DB查询替代多次）
+
+        Args:
+            conn: 数据库连接
+            codes: 股票代码列表
+
+        Returns:
+            dict: {code: latest_date}，不存在或查不到的股票不在字典中
+        """
+        if not codes:
+            return {}
+
+        placeholders = ','.join(['%s'] * len(codes))
+        query = f"""
+            SELECT code, MAX(date) as latest_date
+            FROM baostock_daily_history
+            WHERE code IN ({placeholders})
+            GROUP BY code
+        """
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(query, tuple(codes))
+                return {row[0]: row[1] for row in cursor.fetchall()}
+        except Exception as e:
+            logger.error(f"批量获取股票最新日期失败: {e}")
+            return {}
+
+    @staticmethod
+    def get_date_range_fast(conn, code, start_date, end_date, stock_latest_dates=None):
+        """获取有效的日期范围（使用预查询结果快速判断）
+
+        Args:
+            conn: 数据库连接
+            code: 股票代码
+            start_date: 用户指定的开始日期，可以为None
+            end_date: 用户指定的结束日期，可以为None
+            stock_latest_dates: 股票最新日期字典 {code: latest_date}
+
+        Returns:
+            tuple: (start_date, end_date) 有效的日期范围，如果没有有效范围则返回 (None, None)
+        """
+        end = end_date or datetime.now().date()
+
+        # 使用预查询结果快速判断
+        if stock_latest_dates and code in stock_latest_dates:
+            latest_date = stock_latest_dates[code]
+            if latest_date:
+                start = latest_date + timedelta(days=1)
+                if start > end:
+                    return None, None
+                return start, end
+
+        # 回退到数据库查询（仅首次或预查询未命中时）
+        return DateManager.get_date_range(conn, code, start_date, end_date)
+
+    @staticmethod
     def get_date_range(conn, code, start_date, end_date):
         """获取有效的日期范围
 
@@ -482,12 +529,13 @@ class DateManager:
         return start, end
 
 
-def process_single_stock(args, row):
+def process_single_stock(args, row, stock_latest_dates=None):
     """处理单只股票的完整流程（用于并发执行）
 
     Args:
         args: 命令行参数
         row: 股票信息行
+        stock_latest_dates: 股票最新日期字典 {code: latest_date}，用于批量预查询
 
     Returns:
         tuple: (code, inserted_count, error_msg)
@@ -500,33 +548,38 @@ def process_single_stock(args, row):
     status = row.get('status', '')
 
     try:
-        logger.info(f"处理股票 {code}")
+        # 每线程独立登录 BaoStock
+        BaoStockManager.login()
+
+        logger.debug(f"处理股票 {code}")
 
         # 每个线程从连接池获取独立连接
         with DatabaseManager.get_connection() as conn:
-            # 获取有效的日期范围
-            start, end = DateManager.get_date_range(conn, code, args.start_date, args.end_date)
+            # 获取有效的日期范围（使用预查询结果）
+            start, end = DateManager.get_date_range_fast(
+                conn, code, args.start_date, args.end_date, stock_latest_dates
+            )
             if not start:
-                logger.info(f"股票 {code} 无需获取新数据，跳过")
+                logger.debug(f"股票 {code} 无需获取新数据，跳过")
                 return code, 0, None
 
             # 获取日线数据
-            logger.info(f"获取股票 {code} 的日线数据，日期范围: {start} 至 {end}")
             data = BaoStockAPI.get_daily_data(code, name, ipo_date, out_date, type, status, start, end)
 
             if data.empty:
-                logger.info(f"股票 {code} 在指定日期范围内没有数据")
+                logger.debug(f"股票 {code} 在指定日期范围内没有数据")
                 return code, 0, None
 
             # 将数据插入数据库
-            logger.info(f"将股票 {code} 的 {len(data)} 条数据插入数据库")
             inserted = DatabaseOperations.bulk_insert(conn, data, PERF_CONFIG['batch_size'])
-            logger.info(f"股票 {code} 成功插入 {inserted} 条数据")
+            logger.debug(f"股票 {code} 成功插入 {inserted} 条数据")
             return code, inserted, None
 
     except Exception as e:
         logger.error(f"处理股票 {code} 时出错: {e}")
         return code, 0, str(e)
+    finally:
+        BaoStockManager.logout()
 
 
 
@@ -655,36 +708,34 @@ class BaoStockAPI:
 def main(args):
     """简化版主流程"""
     try:
-
-        # 判断是否为交易日
-        # if not is_trading_day(datetime.now()):
-        #     logger.error("非交易日，程序退出")
-        #     return
-
         # 初始化
         DatabaseManager.check_connection()
 
-        # 初始化连接池（线程数 + 1 用于主线程）
+        # 初始化连接池
         max_workers = args.max_workers
         DatabaseManager.init_pool(min_connections=1, max_connections=max_workers + 5)
 
         with DatabaseManager.get_connection() as conn:
             DatabaseOperations.init_schema(conn)
 
-        # 登录 BaoStock（全局会话，线程池共享）
+        # 主线程登录获取股票列表
         BaoStockManager.login()
 
         # 获取股票列表
         if args.stock_codes:
-            stock_codes = args.stock_codes
-            # 当指定了特定股票代码时，需要获取这些股票的详细信息
             stock_list = BaoStockAPI.get_stock_list()
-            # 筛选出指定的股票
             stock_list = stock_list[stock_list['code'].isin(args.stock_codes)]
-            stock_codes = stock_list['code'].tolist()
         else:
             stock_list = BaoStockAPI.get_stock_list()
-            stock_codes = stock_list['code'].tolist()
+
+        stock_codes = stock_list['code'].tolist()
+        logger.info(f"获取到 {len(stock_codes)} 只股票")
+
+        # 批量预查询所有股票的最新日期（一次DB查询替代多次）
+        with DatabaseManager.get_connection() as conn:
+            logger.info("批量预查询股票最新日期...")
+            stock_latest_dates = DateManager.batch_get_latest_dates(conn, stock_codes)
+            logger.info(f"预查询完成，{len(stock_latest_dates)} 只股票已有数据")
 
         # 记录开始时间
         start_time = time.time()
@@ -697,9 +748,9 @@ def main(args):
         failed_stocks = []
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # 提交所有任务（不传conn，每个线程自己从池获取）
+            # 提交所有任务，每线程独立 BaoStock 会话
             future_to_row = {
-                executor.submit(process_single_stock, args, row): (i, row)
+                executor.submit(process_single_stock, args, row, stock_latest_dates): (i, row)
                 for i, row in stock_list.iterrows()
             }
 
@@ -722,7 +773,7 @@ def main(args):
 
         if failed_stocks:
             logger.warning(f"处理完成! 共插入 {total_records} 条数据, 耗时 {elapsed:.2f} 秒, 失败 {len(failed_stocks)} 只股票")
-            for code, err in failed_stocks[:10]:  # 只显示前10个
+            for code, err in failed_stocks[:10]:
                 logger.warning(f"  失败股票: {code}, 错误: {err}")
         else:
             logger.info(f"处理完成! 共插入 {total_records} 条数据, 耗时 {elapsed:.2f} 秒")
