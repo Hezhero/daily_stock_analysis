@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
+import threading
 import psycopg2.sql as sql
 import backoff
 import pandas as pd
@@ -81,8 +82,8 @@ class DatabaseManager:
         """初始化连接池"""
         if cls._pool is None:
             cls._pool = psycopg2.pool.ThreadedConnectionPool(
-                minconnections=min_connections,
-                maxconnections=max_connections,
+                min_connections,
+                max_connections,
                 **postgresql_config
             )
             logger.info(f"数据库连接池初始化成功 (min={min_connections}, max={max_connections})")
@@ -124,23 +125,16 @@ class DatabaseManager:
 
 
 class BaoStockManager:
-    """BaoStock API 管理器（支持多线程）"""
-
-    _is_logged_in = False
+    """BaoStock API 管理器（每线程独立会话）"""
 
     @classmethod
     def login(cls):
-        """执行登录（单次调用，会话全局复用）"""
-        if cls._is_logged_in:
-            logger.debug("BaoStock 已经登录，复用现有会话")
-            return
-
+        """每线程独立登录，避免多线程共享会话竞争"""
         max_retries = 3
         retry_count = 0
 
         while retry_count < max_retries:
             try:
-                logger.info("登录 BaoStock")
                 login_result = bs.login()
                 if login_result.error_code != '0':
                     logger.error(f"BaoStock 登录失败: {login_result.error_msg}")
@@ -148,29 +142,24 @@ class BaoStockManager:
                     if retry_count < max_retries:
                         time.sleep(2 ** retry_count)
                         continue
-                    raise Exception(f"BaoStock 登录失败超过最大重试次数: {login_result.error_msg}")
-
-                logger.info("BaoStock 登录成功")
-                cls._is_logged_in = True
+                    raise Exception(f"BaoStock 登录失败: {login_result.error_msg}")
+                logger.debug("BaoStock 线程登录成功")
                 return
-
             except Exception as e:
-                logger.error(f"BaoStock 登录失败: {e}")
+                logger.error(f"BaoStock 登录异常: {e}")
                 retry_count += 1
                 if retry_count < max_retries:
                     time.sleep(2 ** retry_count)
                     continue
-                raise Exception(f"BaoStock 登录失败超过最大重试次数: {e}")
+                raise
 
     @classmethod
     def logout(cls):
-        """执行登出（非阻塞，BaoStock不需要必须登出）"""
-        if cls._is_logged_in:
-            try:
-                bs.logout()
-            except Exception:
-                pass
-            cls._is_logged_in = False
+        """登出当前线程会话"""
+        try:
+            bs.logout()
+        except Exception:
+            pass
 
 
 class DataFormatter:
@@ -432,6 +421,63 @@ class DatabaseOperations:
 
 class DateManager:
     """日期管理类"""
+
+    @staticmethod
+    def batch_get_latest_dates(conn, codes):
+        """批量获取多只股票的最新日期（一次DB查询替代多次）
+
+        Args:
+            conn: 数据库连接
+            codes: 股票代码列表
+
+        Returns:
+            dict: {code: latest_date}，不存在或查不到的股票不在字典中
+        """
+        if not codes:
+            return {}
+
+        placeholders = ','.join(['%s'] * len(codes))
+        query = f"""
+            SELECT code, MAX(date) as latest_date
+            FROM baostock_daily_history_xr
+            WHERE code IN ({placeholders})
+            GROUP BY code
+        """
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(query, tuple(codes))
+                return {row[0]: row[1] for row in cursor.fetchall()}
+        except Exception as e:
+            logger.error(f"批量获取股票最新日期失败: {e}")
+            return {}
+
+    @staticmethod
+    def get_date_range_fast(conn, code, start_date, end_date, stock_latest_dates=None):
+        """获取有效的日期范围（使用预查询结果快速判断）
+
+        Args:
+            conn: 数据库连接
+            code: 股票代码
+            start_date: 用户指定的开始日期，可以为None
+            end_date: 用户指定的结束日期，可以为None
+            stock_latest_dates: 股票最新日期字典 {code: latest_date}
+
+        Returns:
+            tuple: (start_date, end_date) 有效的日期范围，如果没有有效范围则返回 (None, None)
+        """
+        end = end_date or datetime.now().date()
+
+        # 使用预查询结果快速判断
+        if stock_latest_dates and code in stock_latest_dates:
+            latest_date = stock_latest_dates[code]
+            if latest_date:
+                start = latest_date + timedelta(days=1)
+                if start > end:
+                    return None, None
+                return start, end
+
+        # 回退到数据库查询（仅首次或预查询未命中时）
+        return DateManager.get_date_range(conn, code, start_date, end_date)
 
     @staticmethod
     def get_date_range(conn, code, start_date, end_date):
