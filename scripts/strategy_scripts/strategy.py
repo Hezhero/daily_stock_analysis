@@ -846,7 +846,7 @@ class StockStrategyBacktest:
 # ----------------------------
 # 交易策略实现（使用注册器）
 # ----------------------------
-@StrategyRegistry.register("均线交叉策略")
+@StrategyRegistry.register("均线交叉策略", "5日均线上穿20日均线+成交量放大+MACD多头+RSI脱离超卖")
 def optimized_ma_crossover_strategy(df):
     """
     优化的移动平均线交叉策略
@@ -956,7 +956,7 @@ def optimized_ma_crossover_strategy(df):
 
     return df.groupby(df['code'], group_keys=False, as_index=False).apply(_apply_group)
 
-@StrategyRegistry.register("成交量突破策略")
+@StrategyRegistry.register("成交量突破策略", "成交量突破20日均值2倍标准差")
 def volume_breakout_strategy(df):
     """成交量突破策略"""
 
@@ -1049,7 +1049,7 @@ def multi_ma_resonance_strategy(df):
         group['boll_width'] = upper - lower
         group['boll_just_opened'] = (
                 (group['boll_width'] > group['boll_width'].shift(1)) &  # 今日比昨日宽
-                (group['boll_width'].shift(1) < group['boll_width'].shift(2))  # 昨日比前日窄
+                (group['boll_width'].shift(1) >= group['boll_width'].shift(2))  # 昨日大于等于前日（不是收缩）
         )
 
         # 5. 计算RSI三线
@@ -1316,34 +1316,23 @@ def limit_up_pullback_strategy(df):
         in_pullback_range = (group['low'] >= group['pullback_low']) & (group['high'] <= group['pullback_high'])
         group['in_pullback_zone'] = has_valid_limit_up & in_pullback_range & group['is_shrinking_volume']
 
-        # 7. 计数回调至区间的次数（仅在有效涨停后计数）
-        group['pullback_count'] = 0
-        pullback_counter = 0
-        last_limit_up_idx = None
+        # 7. 计数回调至区间的次数（仅在有效涨停后计数）- 向量化版本
+        # 标记涨停事件：每次新的涨停重置计数
+        group['_limit_up'] = group['valid_limit_up']
+        group['_limit_group'] = group['_limit_up'].cumsum()
 
-        for i in range(len(group)):
-            # 遇到新的有效涨停，重置计数器
-            if group['valid_limit_up'].iloc[i]:
-                pullback_counter = 0
-                last_limit_up_idx = i
-                continue
+        # 标记「首次进入回调区间」
+        in_pullback = group['in_pullback_zone'].astype(int)
+        entered_pullback = (in_pullback == 1) & (in_pullback.shift(1, fill_value=0) == 0)
 
-            # 如果没有有效涨停记录，不计数
-            if last_limit_up_idx is None:
-                continue
+        # 每个涨停分组内，累计回调次数（纯向量化）
+        group['pullback_count'] = entered_pullback.astype(int).groupby(group['_limit_group']).cumsum()
 
-            # 只对有效涨停后的交易日进行计数
-            if i <= last_limit_up_idx:
-                continue
+        # 涨停当天自身的计数器强制设为 0（对齐原逻辑）
+        group.loc[group['_limit_up'], 'pullback_count'] = 0
 
-            # 进入回调区间且缩量，计数+1（跨天连续回调只算一次）
-            current_in = group['in_pullback_zone'].iloc[i]
-            prev_in = group['in_pullback_zone'].iloc[i - 1] if i > 0 else False
-
-            if current_in and not prev_in:
-                pullback_counter += 1
-
-            group.iloc[i, group.columns.get_loc('pullback_count')] = pullback_counter
+        # 清理临时列
+        group.drop(columns=['_limit_up', '_limit_group'], inplace=True)
 
         # 8. 放量上涨条件 (成交量大于5日均量1.5倍，且收盘价上涨)
         group['vol_ma5'] = group['volume'].rolling(window=5, min_periods=1).mean()
@@ -1653,8 +1642,8 @@ def main():
             if args.export_candidates_json:
                 backtest.export_today_matches_json(today_matches, latest_date, args.export_candidates_json)
 
-                # === 新增：调用 /opt/daily_stock_analysis 完成候选增强打分 ===
-                enhancer_script = '/opt/daily_stock_analysis/scripts/candidate_enhancer.py'
+                # === 新增：调用候选增强打分脚本 ===
+                enhancer_script = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'candidate_enhancer.py')
                 if os.path.exists(enhancer_script):
                     try:
                         # 计算输出路径，和输入同一个目录，替换文件名后缀
