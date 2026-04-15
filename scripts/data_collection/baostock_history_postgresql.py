@@ -18,6 +18,11 @@ import psycopg2
 import warnings
 import psycopg2.pool
 
+# BaoStock 并发限制信号量（限制同时连接的线程数）
+BAOSTOCK_SEMAPHORE = threading.Semaphore(10)
+# BaoStock 全局锁（保护底层 TCP 连接，baostock 非线程安全）
+BAOSTOCK_LOCK = threading.Lock()
+
 # 加载环境变量
 load_dotenv()
 
@@ -62,14 +67,14 @@ postgresql_config = {
 # 重试配置
 RETRY_CONFIG = {
     'db_connection': {'max_tries': 5, 'base': 2, 'factor': 1, 'max_value': 30},
-    'stock_data': {'max_tries': 3, 'base': 2, 'factor': 1, 'max_value': 10}
+    'stock_data': {'max_tries': 3, 'base': 2, 'factor': 2, 'max_value': 30}
 }
 
 # 性能配置
 PERF_CONFIG = {
     'batch_size': 5000,
     'commit_size': 10000,
-    'max_workers': 20
+    'max_workers': 10
 }
 
 
@@ -548,14 +553,8 @@ def process_single_stock(args, row, stock_latest_dates=None):
     status = row.get('status', '')
 
     try:
-        # 每线程独立登录 BaoStock
-        BaoStockManager.login()
-
-        logger.debug(f"处理股票 {code}")
-
-        # 每个线程从连接池获取独立连接
+        # 获取日期范围（数据库操作，可在信号量外完成）
         with DatabaseManager.get_connection() as conn:
-            # 获取有效的日期范围（使用预查询结果）
             start, end = DateManager.get_date_range_fast(
                 conn, code, args.start_date, args.end_date, stock_latest_dates
             )
@@ -563,23 +562,33 @@ def process_single_stock(args, row, stock_latest_dates=None):
                 logger.debug(f"股票 {code} 无需获取新数据，跳过")
                 return code, 0, None
 
-            # 获取日线数据
-            data = BaoStockAPI.get_daily_data(code, name, ipo_date, out_date, type, status, start, end)
+        # 获取 BaoStock 信号量许可（限制并发数）
+        BAOSTOCK_SEMAPHORE.acquire()
+        try:
+            # 全局锁保护 BaoStock 底层连接（线程安全）
+            with BAOSTOCK_LOCK:
+                BaoStockManager.login()
+                try:
+                    logger.debug(f"处理股票 {code}")
+                    data = BaoStockAPI.get_daily_data(code, name, ipo_date, out_date, type, status, start, end)
+                finally:
+                    BaoStockManager.logout()
 
             if data.empty:
                 logger.debug(f"股票 {code} 在指定日期范围内没有数据")
                 return code, 0, None
 
-            # 将数据插入数据库
-            inserted = DatabaseOperations.bulk_insert(conn, data, PERF_CONFIG['batch_size'])
-            logger.debug(f"股票 {code} 成功插入 {inserted} 条数据")
-            return code, inserted, None
+            # 插入数据库（独立于 BaoStock 操作）
+            with DatabaseManager.get_connection() as conn:
+                inserted = DatabaseOperations.bulk_insert(conn, data, PERF_CONFIG['batch_size'])
+                logger.debug(f"股票 {code} 成功插入 {inserted} 条数据")
+                return code, inserted, None
+        finally:
+            BAOSTOCK_SEMAPHORE.release()
 
     except Exception as e:
         logger.error(f"处理股票 {code} 时出错: {e}")
         return code, 0, str(e)
-    finally:
-        BaoStockManager.logout()
 
 
 
@@ -661,7 +670,7 @@ class BaoStockAPI:
                 if rs.error_code != '0':
                     logger.error(f"{code} 请求失败: {rs.error_msg}")
                     retry_count += 1
-                    time.sleep(1 * retry_count)
+                    time.sleep(2 ** retry_count)
                     continue
 
                 # 处理结果
@@ -695,7 +704,7 @@ class BaoStockAPI:
             except Exception as e:
                 logger.error(f"API调用出错: {e}")
                 retry_count += 1
-                time.sleep(1 * retry_count)
+                time.sleep(2 ** retry_count)
 
         # 如果所有重试都失败，返回空 DataFrame
         logger.error(f"{code} 获取数据失败，超过最大重试次数")
