@@ -119,8 +119,6 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     for w in [5, 10, 20]:
         df[f"vol_ma{w}"] = g["volume"].transform(lambda x: x.rolling(w, min_periods=1).mean())
 
-    df["vol_ma20"] = g["volume"].transform(lambda x: x.rolling(20, min_periods=1).mean())
-
     # ══ 预计算共享指标（策略间共用） ══
     # 成交量20日标准差（用于 vol_surge 等策略）
     df["vol_std_20"] = g["volume"].transform(lambda x: x.rolling(20, min_periods=1).std())
@@ -208,13 +206,13 @@ def sig_wonderful_9_turn(df):
     close = df["close"]
     close_4d = df["close_4d_ago"]
     # 连续9天
-    streak = close.groupby(df["code"]).transform(lambda x: (x < x.shift(4)).rolling(9).min().astype(bool))
+    streak = close.groupby(df["code"]).transform(lambda x: (x < x.shift(4)).rolling(9).all())
     mp = df.groupby("code")["macd_hist"].shift(1)
     m20p = df.groupby("code")["ma20"].shift(1)
     m60p = df.groupby("code")["ma60"].shift(1)
     score = (streak.astype(int) * 4 +
              (df["rsi6"] < 35).astype(int) * 3 +
-             ((df["macd_hist"] < 0) & (df["macd_hist"] > mp)).astype(int) * 3 +
+             ((df["macd_hist"] > 0) & (df["macd_hist"] < mp)).astype(int) * 3 +
              (df["volume"] > df["vol_ma5"] * 1.2).astype(int) * 2 +
              ((df["ma20"] > m60p) & (df["ma20"] > m20p) & (df["ma60"] > m60p)).astype(int) * 2 +
              (close >= df["ma20"] * 0.98).astype(int) * 2 +
@@ -358,7 +356,7 @@ def sig_one_yang_three_yin(df):
     yv = df.groupby("code")["volume"].shift(4)
     # vol[i] < vol[i-4] * 0.7 for each of 3 consecutive days
     vol_small = df["volume"] < yv * 0.7
-    three_shrink = vol_small.groupby(df["code"]).transform(lambda x: x.rolling(3, min_periods=3).min())
+    three_shrink = vol_small.groupby(df["code"]).transform(lambda x: x.rolling(3, min_periods=3).all())
     rise = (df["pct_chg"] > 0) & (df["close"] > df.groupby("code")["close"].shift(4))
     return yang & three_shrink & rise
 
@@ -669,18 +667,14 @@ def validate_week(df_week, top_results, top_n=5):
             # 计算每只股票的收益率：卖出价/买入价-1
             rets = []
             matched_stocks = df_week.loc[mask, ["code", "name"]].drop_duplicates()
-            for _, row in matched_stocks.iterrows():
-                code = row["code"]
-                buy_row = df_week[(df_week["code"] == code) & (df_week["date"] == buy_date)]
-                sell_row = df_week[(df_week["code"] == code) & (df_week["date"] == sell_date)]
-                if not buy_row.empty and not sell_row.empty:
-                    buy_price = buy_row.iloc[0]["open"]
-                    sell_price = sell_row.iloc[0]["close"]
-                    if buy_price > 0:
-                        ret = sell_price / buy_price - 1
-                        rets.append(ret)
-
-            rets = np.array(rets) if rets else np.array([])
+            # 向量化版本：使用 merge 替代 iterrows
+            buy_prices = df_week.loc[df_week["date"] == buy_date, ["code", "open"]].rename(columns={"open": "buy_price"})
+            sell_prices = df_week.loc[df_week["date"] == sell_date, ["code", "close"]].rename(columns={"close": "sell_price"})
+            merged_df = matched_stocks[["code"]].merge(buy_prices, on="code", how="left") \
+                                               .merge(sell_prices, on="code", how="left")
+            valid_df = merged_df.dropna(subset=["buy_price", "sell_price"])
+            valid_df = valid_df[valid_df["buy_price"] > 0]
+            rets = (valid_df["sell_price"] / valid_df["buy_price"] - 1).values if len(valid_df) > 0 else np.array([])
 
             if len(rets) > 0:
                 wr = (rets > 0).sum() / len(rets) * 100
@@ -911,6 +905,10 @@ STRATEGY_NAMES_CN = {
     "dragon_head": "龙头股策略",
     "emotion_cycle": "情绪周期策略",
     "bottom_volume": "底部放量策略",
+    "one_yang_three_yin": "一阳三阴策略",
+    "box_oscillation": "箱体震荡策略",
+    "wave_theory": "波浪理论策略",
+    "chan_theory": "缠论策略",
 }
 
 
