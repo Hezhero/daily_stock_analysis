@@ -1049,7 +1049,7 @@ def multi_ma_resonance_strategy(df):
         group['boll_width'] = upper - lower
         group['boll_just_opened'] = (
                 (group['boll_width'] > group['boll_width'].shift(1)) &  # 今日比昨日宽
-                (group['boll_width'].shift(1) < group['boll_width'].shift(2))  # 昨日比前日窄
+                (group['boll_width'].shift(1) < group['boll_width'].shift(2))  # 昨日比前日窄 此处表明刚开口
         )
 
         # 5. 计算RSI三线
