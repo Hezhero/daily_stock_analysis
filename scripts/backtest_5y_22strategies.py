@@ -19,6 +19,7 @@ import time
 import gc
 import ssl
 import smtplib
+from urllib.parse import quote_plus
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -64,43 +65,48 @@ logger = logging.getLogger("backtest")
 # ═══════════════════════════════════════════════════════════════════════
 
 def load_data(start: str, end: str) -> pd.DataFrame:
-    """直接使用 psycopg2 加载数据"""
+    """使用 SQLAlchemy connectable 加载 PostgreSQL 数据"""
     t0 = time.time()
-    import psycopg2
+    from sqlalchemy import create_engine
 
     logger.info(f"加载数据 {start} ~ {end} (PostgreSQL) ...")
-    conn = psycopg2.connect(
-        host=os.environ.get('PG_HOST', '127.0.0.1'),
-        port=int(os.environ.get('PG_PORT', 5431)),
-        database=os.environ.get('PG_DATABASE', 'baostock'),
-        user=os.environ.get('PG_USER', 'root'),
-        password=os.environ.get('PG_PASSWORD')
-    )
-    #
-    df = pd.read_sql(
-        """
-        SELECT code, name, date, open, high, low, close,
-               volume, amount, pct_chg, turn, pe_ttm, pb_mrq
-        FROM baostock_daily_history
-        WHERE date BETWEEN %s AND %s
-          AND trade_status = '1'
-          AND is_st = '0'
-          -- 过滤规则：
-        --   sh.6(?!88)  沪市688科创板
-        --   sh.8        沪市8开头（历史遗留代码，部分ETF）
-        --   sh.4        沪市4开头（ETF、债券等）
-        --   sz.0        深市0开头（主板）
-        --   sz.2        深市2开头（创业板）
-        --   sz.3(?!9)   深市39开头
-        -- 目的：排除科创板(688)和北交所(bj)，聚焦主板和创业板
-        AND code ~ '^(sh\.6(?!88)|sh\.8|sh\.4|sz\.0|sz\.2|sz\.3(?!9))'
-        ORDER BY code, date
-        """,
-        conn,
-        params=(start, end),
-        parse_dates=["date"],
-    )
-    conn.close()
+    host = os.environ.get('PG_HOST', '127.0.0.1')
+    port = int(os.environ.get('PG_PORT', 5431))
+    database = os.environ.get('PG_DATABASE', 'baostock')
+    user = os.environ.get('PG_USER', 'root')
+    password = os.environ.get('PG_PASSWORD', '')
+    quoted_user = quote_plus(user)
+    quoted_password = quote_plus(password)
+    engine = create_engine(f"postgresql+psycopg2://{quoted_user}:{quoted_password}@{host}:{port}/{database}")
+
+    try:
+        with engine.connect() as conn:
+            df = pd.read_sql(
+                r"""
+                SELECT code, name, date, open, high, low, close,
+                       volume, amount, pct_chg, turn, pe_ttm, pb_mrq
+                FROM baostock_daily_history_xr
+                WHERE date BETWEEN %s AND %s
+                  AND trade_status = '1'
+                  AND is_st = '0'
+                  AND adjust_flag = '3'  -- 使用不复权原始数据，后续通过 BaoStock 复权因子自行计算前复权价格
+                  -- 过滤规则：
+                --   sh.6(?!88)  沪市688科创板
+                --   sh.8        沪市8开头（历史遗留代码，部分ETF）
+                --   sh.4        沪市4开头（ETF、债券等）
+                --   sz.0        深市0开头（主板）
+                --   sz.2        深市2开头（创业板）
+                --   sz.3(?!9)   深市39开头
+                -- 目的：排除科创板(688)和北交所(bj)，聚焦主板和创业板
+                AND code ~ '^(sh\.6(?!88)|sh\.8|sh\.4|sz\.0|sz\.2|sz\.3(?!9))'
+                ORDER BY code, date
+                """,
+                conn,
+                params=(start, end),
+                parse_dates=["date"],
+            )
+    finally:
+        engine.dispose()
 
     for col in ["open", "high", "low", "close", "volume", "amount",
                 "pct_chg", "turn", "pe_ttm", "pb_mrq"]:
@@ -108,6 +114,84 @@ def load_data(start: str, end: str) -> pd.DataFrame:
 
     logger.info(f"总计 {len(df):,} 行 × {df['code'].nunique()} 股，耗时 {time.time()-t0:.1f}s")
     return df
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 复权因子获取与前复权价格计算
+# ═══════════════════════════════════════════════════════════════════════
+
+def get_forward_adjust_factors(codes: List[str], start: str, end: str) -> pd.DataFrame:
+    """
+    通过 baostock query_adjust_factor 获取前复权因子
+    返回 DataFrame: code, dividOperateDate, foreAdjustFactor
+    """
+    import baostock as bs
+
+    login_result = bs.login()
+    if login_result.error_code != '0':
+        raise RuntimeError(f"BaoStock 登录失败: {login_result.error_msg}")
+
+    all_factors = []
+
+    try:
+        for code in codes:
+            try:
+                rs_factor = bs.query_adjust_factor(code=code, start_date=start, end_date=end)
+                while (rs_factor.error_code == '0') & rs_factor.next():
+                    row = rs_factor.get_row_data()
+                    all_factors.append({
+                        "code": row[0],
+                        "dividOperateDate": row[1],
+                        "foreAdjustFactor": float(row[2]) if row[2] else 1.0,
+                    })
+            except Exception as e:
+                logger.warning(f"获取 {code} 前复权因子失败: {e}")
+                continue
+    finally:
+        bs.logout()
+
+    if not all_factors:
+        return pd.DataFrame(columns=["code", "dividOperateDate", "foreAdjustFactor"])
+
+    df_factor = pd.DataFrame(all_factors)
+    df_factor["dividOperateDate"] = pd.to_datetime(df_factor["dividOperateDate"])
+    return df_factor
+
+
+def apply_forward_adjustment(df: pd.DataFrame, df_factor: pd.DataFrame) -> pd.DataFrame:
+    """
+    基于复权因子将不复权价格转换为前复权价格
+    前复权价格 = 不复权价格 × 当日 foreAdjustFactor
+    """
+    df = df.sort_values(["code", "date"]).reset_index(drop=True)
+    adjusted_rows = []
+
+    for code, stock_df in df.groupby("code", sort=False):
+        stock_df = stock_df.sort_values("date").copy()
+        factor_df = df_factor[df_factor["code"] == code][["dividOperateDate", "foreAdjustFactor"]].sort_values("dividOperateDate")
+
+        if factor_df.empty:
+            stock_df["adjust_factor"] = 1.0
+        else:
+            stock_df = pd.merge_asof(
+                stock_df,
+                factor_df,
+                left_on="date",
+                right_on="dividOperateDate",
+                direction="backward",
+            )
+            stock_df["adjust_factor"] = stock_df["foreAdjustFactor"].fillna(1.0)
+            stock_df.drop(columns=["dividOperateDate", "foreAdjustFactor"], inplace=True)
+
+        for col in ["open", "high", "low", "close"]:
+            stock_df[col] = stock_df[col] * stock_df["adjust_factor"]
+
+        stock_df["pre_close"] = stock_df["close"].shift(1)
+        stock_df["pct_chg"] = (stock_df["close"] / stock_df["pre_close"] - 1) * 100
+        stock_df.drop(columns=["adjust_factor"], inplace=True)
+        adjusted_rows.append(stock_df)
+
+    return pd.concat(adjusted_rows, ignore_index=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -127,7 +211,6 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     # ── 成交量移动平均 ──
     for w in [5, 10, 20]:
         df[f"vol_ma{w}"] = g["volume"].transform(lambda x: x.rolling(w, min_periods=1).mean())
-
 
     # ══ 预计算共享指标（策略间共用） ══
     # 成交量20日标准差（用于 vol_surge 等策略）
@@ -216,7 +299,9 @@ def sig_wonderful_9_turn(df):
     close = df["close"]
     close_4d = df["close_4d_ago"]
     # 连续9天
-    streak = close.groupby(df["code"]).transform(lambda x: (x < x.shift(4)).rolling(9).all())
+    streak = close.groupby(df["code"]).transform(
+        lambda x: (x < x.shift(4)).rolling(9, min_periods=9).min().fillna(0).astype(bool)
+    )
     mp = df.groupby("code")["macd_hist"].shift(1)
     m20p = df.groupby("code")["ma20"].shift(1)
     m60p = df.groupby("code")["ma60"].shift(1)
@@ -241,7 +326,8 @@ def sig_limit_up_pullback(df):
     pct = df["pct_chg"]
     hi = df["high"].where(pct >= 9.5).groupby(df["code"]).ffill().fillna(0)
     vl = df["volume"].where(pct >= 9.5).groupby(df["code"]).ffill().fillna(0.1)
-    score = (pct.shift(1).fillna(0) >= 9.5).astype(int) * 2 + \
+    pct_prev = df.groupby("code")["pct_chg"].shift(1).fillna(0)
+    score = (pct_prev >= 9.5).astype(int) * 2 + \
             (df["volume"] / vl.replace(0, 0.1) < 0.5).astype(int) * 3 + \
             (df["close"] >= hi * 0.97).astype(int) * 3 + \
             (df["volume"] > df["vol_ma5"] * 1.5).astype(int) * 4 + \
@@ -277,7 +363,7 @@ def sig_limitup_resonance(df):
     pct = df["pct_chg"]
     m20p = df.groupby("code")["ma20"].shift(1)
     r6p = df.groupby("code")["rsi6"].shift(1)
-    limit_prev = pct.shift(1).fillna(0) >= 9.5
+    limit_prev = df.groupby("code")["pct_chg"].shift(1).fillna(0) >= 9.5
     return (limit_prev &
             (df["ma20"] > m20p) &
             (df["close"] >= df["ma20"] * 0.97) &
@@ -362,12 +448,15 @@ def sig_bottom_volume(df):
     return (df["volume"] <= df["vol_60d_min"]) & (df["rsi6"] < 40) & (df["close"] > df["open"])
 
 def sig_one_yang_three_yin(df):
-    yang = df.groupby("code")["pct_chg"].shift(4) > 3
-    yv = df.groupby("code")["volume"].shift(4)
-    # vol[i] < vol[i-4] * 0.7 for each of 3 consecutive days
-    vol_small = df["volume"] < yv * 0.7
-    three_shrink = vol_small.groupby(df["code"]).transform(lambda x: x.rolling(3, min_periods=3).all())
-    rise = (df["pct_chg"] > 0) & (df["close"] > df.groupby("code")["close"].shift(4))
+    grouped = df.groupby("code")
+    yang = grouped["pct_chg"].shift(4) > 3
+    base_volume = grouped["volume"].shift(4)
+    three_shrink = (
+        (grouped["volume"].shift(3) < base_volume * 0.7) &
+        (grouped["volume"].shift(2) < base_volume * 0.7) &
+        (grouped["volume"].shift(1) < base_volume * 0.7)
+    )
+    rise = (df["pct_chg"] > 0) & (df["close"] > grouped["close"].shift(4))
     return yang & three_shrink & rise
 
 def sig_box_oscillation(df):
@@ -381,8 +470,7 @@ def sig_box_oscillation(df):
 
 def sig_wave_theory(df):
     """波浪理论策略：第3浪突破确认 - 放量突破20日高点 + RSI 强势"""
-    high_20p = df.groupby("code")["high_20d_max"].shift(1)
-    breakout = df["close"] > high_20p
+    breakout = df["close"] > df["high_20d_max"]
     vol_surge = df["volume"] > df["vol_ma5"] * 1.5
     rsi_strong = (df["rsi6"] > 45) & (df["rsi6"] < 75)
     macd_bull = df["macd_hist"] > 0
@@ -655,7 +743,6 @@ def validate_week(df_week, top_results, top_n=5):
     val = []
     logger.info(f"5日验证 {df_week['date'].min().date()} ~ {df_week['date'].max().date()}")
 
-    # 获取统一买卖日期
     all_dates = sorted(df_week["date"].unique())
     if len(all_dates) < 5:
         logger.warning("验证区间不足5个交易日")
@@ -663,33 +750,27 @@ def validate_week(df_week, top_results, top_n=5):
 
     buy_date = all_dates[-5]
     sell_date = all_dates[-1]
+    df_buy_day = df_week[df_week["date"] == buy_date].copy()
 
     for name in top_names:
         try:
             sig = STRATEGIES[name](df_week)
-            mask = sig.values
-            n = mask.sum()
+            matched_rows = df_week.loc[sig.values].copy()
+            matched_stocks = matched_rows.loc[matched_rows["date"] == buy_date, ["code", "name"]].drop_duplicates()
+            n = len(matched_stocks)
 
             if n == 0:
                 val.append({"strategy": name, "week_trades": 0, "week_win_rate": 0, "week_avg_ret": 0})
                 continue
 
-            # 计算每只股票的收益率：卖出价/买入价-1（向量化版本）
-            matched_stocks = df_week.loc[mask, ["code", "name"]].drop_duplicates()
-
-            # 1. 提取买入日和卖出日的价格
             buy_prices = df_week.loc[df_week["date"] == buy_date, ["code", "open"]].rename(columns={"open": "buy_price"})
             sell_prices = df_week.loc[df_week["date"] == sell_date, ["code", "close"]].rename(columns={"close": "sell_price"})
 
-            # 2. 与 matched_stocks 进行合并
-            merged_df = matched_stocks[["code"]].merge(buy_prices, on="code", how="left") \
-                                               .merge(sell_prices, on="code", how="left")
+            merged_df = matched_stocks[["code", "name"]].merge(buy_prices, on="code", how="left") \
+                                                   .merge(sell_prices, on="code", how="left")
 
-            # 3. 过滤条件：买卖价格均存在且买入价大于 0
             valid_df = merged_df.dropna(subset=["buy_price", "sell_price"])
             valid_df = valid_df[valid_df["buy_price"] > 0]
-
-            # 4. 向量化计算收益率
             rets = (valid_df["sell_price"] / valid_df["buy_price"] - 1).values
 
             if len(rets) > 0:
@@ -699,13 +780,14 @@ def validate_week(df_week, top_results, top_n=5):
                 wr = 0.0
                 avg_r = 0.0
 
-            # 获取信号详情
-            sigs_df = df_week.loc[mask, ["code", "name", "date", "close", "pct_chg"]].head(8)
+            sigs_df = matched_rows.loc[matched_rows["date"] == buy_date, ["code", "name", "date", "close", "pct_chg"]].head(8)
             sigs_out = sigs_df.to_dict("records")
 
             val.append({
-                "strategy": name, "week_trades": int(n),
-                "week_win_rate": round(wr, 2), "week_avg_ret": round(avg_r, 2),
+                "strategy": name,
+                "week_trades": int(n),
+                "week_win_rate": round(wr, 2),
+                "week_avg_ret": round(avg_r, 2),
                 "week_signals": sigs_out,
             })
         except Exception as e:
@@ -866,18 +948,97 @@ def get_top_stocks_by_win_rate(df_week, results, top_n=10):
     return stock_list[:top_n]
 
 
-def get_unique_strategies_from_top_stocks(top_stocks):
+def get_unique_strategies_from_results(results, top_n=10):
     """
-    从胜率前10股票中提取去重后的策略列表
+    从回测结果前 N 名中提取去重后的策略列表
     """
-    unique_strategies = set()
-    for stock in top_stocks:
-        for strategy in stock.get("matched_strategies", []):
-            unique_strategies.add(strategy)
-    return sorted(list(unique_strategies))
+    return [r["strategy"] for r in results[:top_n] if r.get("total_trades", 0) > 0]
 
 
-# 策略原因描述映射
+def get_next_day_recommendations(df_latest, top_stocks_or_results, results=None, top_n=10):
+    """
+    基于回测结果前10策略，在最新交易日数据中找出下个交易日推荐买的股票
+    返回每只股票的推荐理由
+    """
+    strategy_results = results if results is not None else top_stocks_or_results
+    unique_strategies = get_unique_strategies_from_results(strategy_results, top_n=top_n)
+    logger.info(f"回测前{top_n}策略: {unique_strategies}")
+
+    strategy_win_rate = {r["strategy"]: r.get("win_rate", 0) for r in strategy_results}
+
+    if df_latest is None or df_latest.empty:
+        logger.warning("没有最新数据可用于推荐")
+        return [], []
+
+    latest_date = df_latest["date"].max()
+    logger.info(f"最新交易日: {latest_date.date()}, 股票数: {(df_latest['date'] == latest_date).sum()}")
+
+    recommendations = []
+    stock_strategy_scores: Dict[str, dict] = {}
+
+    for strategy_name in unique_strategies:
+        try:
+            sig = STRATEGIES[strategy_name](df_latest)
+            latest_mask = sig.values & (df_latest["date"] == latest_date).values
+            if latest_mask.sum() == 0:
+                continue
+
+            matched = df_latest.loc[latest_mask, ["code", "name", "close", "pct_chg", "volume", "ma5", "ma20", "rsi6"]]
+            win_rate = strategy_win_rate.get(strategy_name, 0)
+
+            for _, row in matched.iterrows():
+                code = row["code"]
+                if code not in stock_strategy_scores:
+                    stock_strategy_scores[code] = {
+                        "code": code,
+                        "name": row["name"],
+                        "close": row["close"],
+                        "pct_chg": row["pct_chg"],
+                        "volume": row["volume"],
+                        "rsi6": row["rsi6"],
+                        "matched_strategies": [],
+                        "win_rates": [],
+                        "total_score": 0,
+                    }
+                stock_strategy_scores[code]["matched_strategies"].append(strategy_name)
+                stock_strategy_scores[code]["win_rates"].append(win_rate)
+                stock_strategy_scores[code]["total_score"] += win_rate
+
+        except Exception as e:
+            logger.error(f"策略 {strategy_name} 应用失败: {e}")
+            continue
+
+    for code, info in stock_strategy_scores.items():
+        if not info["matched_strategies"]:
+            continue
+
+        avg_win_rate = sum(info["win_rates"]) / len(info["win_rates"])
+
+        reasons = []
+        for strat in info["matched_strategies"]:
+            reason = STRATEGY_REASONS.get(strat, strat)
+            reasons.append(reason)
+
+        strategy_resonance = len(info["matched_strategies"])
+
+        recommendations.append({
+            "code": code,
+            "name": info["name"],
+            "close": info["close"],
+            "pct_chg": info["pct_chg"],
+            "rsi6": info["rsi6"],
+            "matched_strategies": info["matched_strategies"],
+            "avg_win_rate": round(avg_win_rate, 2),
+            "strategy_count": strategy_resonance,
+            "total_score": round(info["total_score"], 2),
+            "reasons": reasons,
+        })
+
+    recommendations.sort(key=lambda x: (x["strategy_count"], x["avg_win_rate"]), reverse=True)
+
+    return recommendations[:top_n], unique_strategies
+
+
 STRATEGY_REASONS = {
     "ma_crossover": "均线金叉（5日均线上穿20日均线）+ 成交量放大 + MACD多头",
     "volume_surge_std": "成交量突破20日均值2倍标准差，放量上涨确认",
@@ -904,6 +1065,7 @@ STRATEGY_REASONS = {
     "chan_theory": "缠论策略（底背驰信号）",
 }
 
+
 # 策略中文名称映射
 STRATEGY_NAMES_CN = {
     "ma_crossover": "均线交叉策略",
@@ -925,100 +1087,13 @@ STRATEGY_NAMES_CN = {
     "dragon_head": "龙头股策略",
     "emotion_cycle": "情绪周期策略",
     "bottom_volume": "底部放量策略",
+    "one_yang_three_yin": "一阳三阴策略",
+    "box_oscillation": "箱体震荡策略",
+    "wave_theory": "波浪理论策略",
+    "chan_theory": "缠论策略",
 }
 
 
-def get_next_day_recommendations(df_latest, top_stocks, results, top_n=10):
-    """
-    基于胜率前10股票匹配的策略，在最新交易日数据中找出下个交易日推荐买的股票
-    返回每只股票的推荐理由
-    """
-    # 1. 获取去重后的策略列表
-    unique_strategies = get_unique_strategies_from_top_stocks(top_stocks)
-    logger.info(f"胜率前10股票涉及去重策略: {unique_strategies}")
-
-    # 2. 获取策略与胜率的映射
-    strategy_win_rate = {r["strategy"]: r.get("win_rate", 0) for r in results}
-
-    # 3. 获取最新交易日
-    if df_latest is None or df_latest.empty:
-        logger.warning("没有最新数据可用于推荐")
-        return [], []
-
-    latest_date = df_latest["date"].max()
-    df_today = df_latest[df_latest["date"] == latest_date].copy()
-    logger.info(f"最新交易日: {latest_date.date()}, 股票数: {len(df_today)}")
-
-    # 4. 收集每只股票的推荐信息
-    recommendations = []
-    stock_strategy_scores: Dict[str, dict] = {}
-
-    for strategy_name in unique_strategies:
-        try:
-            sig = STRATEGIES[strategy_name](df_today)
-            mask = sig.values
-            if mask.sum() == 0:
-                continue
-
-            matched = df_today.loc[mask, ["code", "name", "close", "pct_chg", "volume", "ma5", "ma20", "rsi6"]]
-            win_rate = strategy_win_rate.get(strategy_name, 0)
-
-            for _, row in matched.iterrows():
-                code = row["code"]
-                if code not in stock_strategy_scores:
-                    stock_strategy_scores[code] = {
-                        "code": code,
-                        "name": row["name"],
-                        "close": row["close"],
-                        "pct_chg": row["pct_chg"],
-                        "volume": row["volume"],
-                        "rsi6": row["rsi6"],
-                        "matched_strategies": [],
-                        "win_rates": [],
-                        "total_score": 0,
-                    }
-                stock_strategy_scores[code]["matched_strategies"].append(strategy_name)
-                stock_strategy_scores[code]["win_rates"].append(win_rate)
-                stock_strategy_scores[code]["total_score"] += win_rate
-
-        except Exception as e:
-            logger.error(f"策略 {strategy_name} 应用失败: {e}")
-            continue
-
-    # 5. 构建推荐列表
-    for code, info in stock_strategy_scores.items():
-        if not info["matched_strategies"]:
-            continue
-
-        # 计算平均胜率
-        avg_win_rate = sum(info["win_rates"]) / len(info["win_rates"])
-
-        # 生成推荐理由
-        reasons = []
-        for strat in info["matched_strategies"]:
-            reason = STRATEGY_REASONS.get(strat, strat)
-            reasons.append(reason)
-
-        # 策略共振得分
-        strategy_resonance = len(info["matched_strategies"])
-
-        recommendations.append({
-            "code": code,
-            "name": info["name"],
-            "close": info["close"],
-            "pct_chg": info["pct_chg"],
-            "rsi6": info["rsi6"],
-            "matched_strategies": info["matched_strategies"],
-            "avg_win_rate": round(avg_win_rate, 2),
-            "strategy_count": strategy_resonance,
-            "total_score": round(info["total_score"], 2),
-            "reasons": reasons,
-        })
-
-    # 6. 按综合得分排序
-    recommendations.sort(key=lambda x: (x["strategy_count"], x["avg_win_rate"]), reverse=True)
-
-    return recommendations[:top_n], unique_strategies
 
 
 def send_backtest_email(top_stocks, results, recommendations, unique_strategies, validate_start_date, validate_end_date, backtest_start_date, backtest_end_date):
@@ -1190,6 +1265,15 @@ def main():
 
     # 加载数据（从5年前到今天）
     df_all = load_data(five_years_ago, today_str)
+
+    # 获取复权因子并计算前复权价格
+    logger.info("获取复权因子并计算前复权价格...")
+    codes = df_all["code"].unique().tolist()
+    logger.info(f"共 {len(codes)} 只股票需要获取复权因子...")
+    df_factors = get_forward_adjust_factors(codes, five_years_ago, today_str)
+    logger.info(f"获取到 {len(df_factors)} 条复权因子记录")
+    df_all = apply_forward_adjustment(df_all, df_factors)
+
     df_all = compute_indicators(df_all)
 
     # 获取所有交易日并排序
@@ -1228,8 +1312,8 @@ def main():
     top_stocks = get_top_stocks_by_win_rate(df_week, results, top_n=10)
     logger.info(f"5日验证胜率前10股票: {len(top_stocks)} 只")
 
-    # 下个交易日推荐（基于胜率前10策略）
-    recommendations, unique_strategies = get_next_day_recommendations(df_week, top_stocks, results, top_n=10)
+    # 下个交易日推荐（基于回测前10策略）
+    recommendations, unique_strategies = get_next_day_recommendations(df_week, results, top_n=10)
     if recommendations:
         logger.info(f"下交易日推荐股票 {len(recommendations)} 只:")
         for rec in recommendations:
