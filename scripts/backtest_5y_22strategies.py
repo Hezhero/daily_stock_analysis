@@ -19,6 +19,8 @@ import time
 import gc
 import ssl
 import smtplib
+import hashlib
+from pathlib import Path
 from urllib.parse import quote_plus
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.mime.multipart import MIMEMultipart
@@ -41,6 +43,15 @@ INITIAL_CAPITAL = 1000000.0
 TOP_N_VALIDATE = 5
 HOLDING_PERIODS = [1, 3, 5, 10]
 VALIDATE_DAYS = 5  # 验证区间交易日数量
+MARKET_CACHE_VERSION = "v1"
+MARKET_FILTER_VERSION = "main-board-and-chinext-v1"
+MARKET_COLUMNS_VERSION = "ohlcv-basic-v1"
+ADJUSTMENT_LOGIC_VERSION = "v1"
+INDICATOR_CACHE_VERSION = "v1"
+FLOAT_PRECISION_VERSION = "float32-v1"
+BASE_DIR = Path(__file__).resolve().parents[1]
+CACHE_DIR = BASE_DIR / "cache"
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # 邮件配置
@@ -60,6 +71,58 @@ logging.basicConfig(
 )
 logger = logging.getLogger("backtest")
 
+
+def get_cache_dir(name: str) -> Path:
+    cache_dir = CACHE_DIR / name
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
+
+
+def build_market_cache_key(start: str, end: str) -> str:
+    raw_key = "|".join([
+        MARKET_CACHE_VERSION,
+        MARKET_FILTER_VERSION,
+        MARKET_COLUMNS_VERSION,
+        "baostock_daily_history_xr",
+        start,
+        end,
+    ])
+    return hashlib.md5(raw_key.encode("utf-8")).hexdigest()
+
+
+def get_market_cache_path(start: str, end: str) -> Path:
+    return get_cache_dir("market_data") / f"{build_market_cache_key(start, end)}.parquet"
+
+
+def convert_market_numeric_columns_to_float32(df: pd.DataFrame) -> pd.DataFrame:
+    float_columns = [
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "amount",
+        "pct_chg",
+        "turn",
+        "pe_ttm",
+        "pb_mrq",
+    ]
+    converted = df.copy()
+    for col in float_columns:
+        if col in converted.columns:
+            converted[col] = converted[col].astype("float32")
+    return converted
+
+
+def load_or_build_market_data_cache(start: str, end: str) -> pd.DataFrame:
+    cache_path = get_market_cache_path(start, end)
+    if cache_path.exists():
+        return pd.read_parquet(cache_path)
+    market_data = load_data(start, end)
+    market_data = convert_market_numeric_columns_to_float32(market_data)
+    market_data.to_parquet(cache_path, index=False)
+    return market_data
+
 # ═══════════════════════════════════════════════════════════════════════
 # 数据加载（DuckDB）
 # ═══════════════════════════════════════════════════════════════════════
@@ -67,18 +130,9 @@ logger = logging.getLogger("backtest")
 def load_data(start: str, end: str) -> pd.DataFrame:
     """使用 SQLAlchemy connectable 加载 PostgreSQL 数据"""
     t0 = time.time()
-    from sqlalchemy import create_engine
+    engine = get_postgres_engine()
 
     logger.info(f"加载数据 {start} ~ {end} (PostgreSQL) ...")
-    host = os.environ.get('PG_HOST', '127.0.0.1')
-    port = int(os.environ.get('PG_PORT', 5431))
-    database = os.environ.get('PG_DATABASE', 'baostock')
-    user = os.environ.get('PG_USER', 'root')
-    password = os.environ.get('PG_PASSWORD', '')
-    quoted_user = quote_plus(user)
-    quoted_password = quote_plus(password)
-    engine = create_engine(f"postgresql+psycopg2://{quoted_user}:{quoted_password}@{host}:{port}/{database}")
-
     try:
         with engine.connect() as conn:
             df = pd.read_sql(
@@ -120,7 +174,94 @@ def load_data(start: str, end: str) -> pd.DataFrame:
 # 复权因子获取与前复权价格计算
 # ═══════════════════════════════════════════════════════════════════════
 
-def get_forward_adjust_factors(codes: List[str], start: str, end: str) -> pd.DataFrame:
+
+def get_postgres_engine():
+    from sqlalchemy import create_engine
+
+    host = os.environ.get('PG_HOST', '127.0.0.1')
+    port = int(os.environ.get('PG_PORT', 5431))
+    database = os.environ.get('PG_DATABASE', 'baostock')
+    user = os.environ.get('PG_USER', 'root')
+    password = os.environ.get('PG_PASSWORD', '')
+    quoted_user = quote_plus(user)
+    quoted_password = quote_plus(password)
+    return create_engine(f"postgresql+psycopg2://{quoted_user}:{quoted_password}@{host}:{port}/{database}")
+
+
+def empty_adjust_factor_frame() -> pd.DataFrame:
+    return pd.DataFrame(columns=["code", "dividOperateDate", "foreAdjustFactor"])
+
+
+def load_adjust_factor_cache_from_db(codes: List[str], start: str, end: str) -> pd.DataFrame:
+    if not codes:
+        return empty_adjust_factor_frame()
+
+    from sqlalchemy import bindparam, text
+
+    engine = get_postgres_engine()
+    query = text(
+        """
+        SELECT code,
+               divid_operate_date AS "dividOperateDate",
+               fore_adjust_factor AS "foreAdjustFactor"
+        FROM adjust_factor_cache
+        WHERE code IN :codes
+          AND divid_operate_date BETWEEN :start AND :end
+        ORDER BY code, divid_operate_date
+        """
+    ).bindparams(bindparam("codes", expanding=True))
+
+    try:
+        with engine.connect() as conn:
+            df_factor = pd.read_sql(
+                query,
+                conn,
+                params={"codes": codes, "start": start, "end": end},
+                parse_dates=["dividOperateDate"],
+            )
+    finally:
+        engine.dispose()
+
+    if df_factor.empty:
+        return empty_adjust_factor_frame()
+    return df_factor
+
+
+def upsert_adjust_factor_cache(df_factor: pd.DataFrame) -> None:
+    if df_factor.empty:
+        return
+
+    from sqlalchemy import text
+
+    records = [
+        {
+            "code": row["code"],
+            "divid_operate_date": pd.Timestamp(row["dividOperateDate"]).date(),
+            "fore_adjust_factor": float(row["foreAdjustFactor"]),
+        }
+        for row in df_factor[["code", "dividOperateDate", "foreAdjustFactor"]].to_dict("records")
+    ]
+
+    engine = get_postgres_engine()
+    statement = text(
+        """
+        INSERT INTO adjust_factor_cache (code, divid_operate_date, fore_adjust_factor)
+        VALUES (:code, :divid_operate_date, :fore_adjust_factor)
+        ON CONFLICT (code, divid_operate_date)
+        DO UPDATE SET
+            fore_adjust_factor = EXCLUDED.fore_adjust_factor,
+            updated_at = CURRENT_TIMESTAMP
+        """
+    )
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(statement, records)
+    finally:
+        engine.dispose()
+
+
+def fetch_adjust_factors_from_baostock(codes: List[str], start: str, end: str) -> pd.DataFrame:
     """
     通过 baostock query_adjust_factor 获取前复权因子
     返回 DataFrame: code, dividOperateDate, foreAdjustFactor
@@ -151,11 +292,38 @@ def get_forward_adjust_factors(codes: List[str], start: str, end: str) -> pd.Dat
         bs.logout()
 
     if not all_factors:
-        return pd.DataFrame(columns=["code", "dividOperateDate", "foreAdjustFactor"])
+        return empty_adjust_factor_frame()
 
     df_factor = pd.DataFrame(all_factors)
     df_factor["dividOperateDate"] = pd.to_datetime(df_factor["dividOperateDate"])
     return df_factor
+
+
+def load_or_fill_adjust_factor_cache(codes: List[str], start: str, end: str) -> pd.DataFrame:
+    if not codes:
+        return empty_adjust_factor_frame()
+
+    cached_df = load_adjust_factor_cache_from_db(codes, start, end)
+    start_ts = pd.Timestamp(start)
+    end_ts = pd.Timestamp(end)
+    covered_codes = set()
+
+    if not cached_df.empty:
+        coverage = cached_df.groupby("code", sort=False)["dividOperateDate"].agg(["min", "max"])
+        covered_codes = {
+            code
+            for code, row in coverage.iterrows()
+            if row["min"] <= start_ts and row["max"] >= end_ts
+        }
+
+    missing_codes = [code for code in codes if code not in covered_codes]
+
+    if not missing_codes:
+        return cached_df
+
+    fetched_df = fetch_adjust_factors_from_baostock(missing_codes, start, end)
+    upsert_adjust_factor_cache(fetched_df)
+    return load_adjust_factor_cache_from_db(codes, start, end)
 
 
 def apply_forward_adjustment(df: pd.DataFrame, df_factor: pd.DataFrame) -> pd.DataFrame:
@@ -197,6 +365,32 @@ def apply_forward_adjustment(df: pd.DataFrame, df_factor: pd.DataFrame) -> pd.Da
 # ═══════════════════════════════════════════════════════════════════════
 # 技术指标（向量化 + 预计算共享指标）
 # ═══════════════════════════════════════════════════════════════════════
+
+
+def build_indicator_cache_key(market_cache_key: str) -> str:
+    raw_key = "|".join([
+        market_cache_key,
+        ADJUSTMENT_LOGIC_VERSION,
+        INDICATOR_CACHE_VERSION,
+    ])
+    return hashlib.md5(raw_key.encode("utf-8")).hexdigest()
+
+
+
+def get_indicator_cache_path(market_cache_key: str) -> Path:
+    return get_cache_dir("indicators") / f"{build_indicator_cache_key(market_cache_key)}.parquet"
+
+
+
+def load_or_build_indicator_cache(df_adjusted: pd.DataFrame, market_cache_key: str) -> pd.DataFrame:
+    cache_path = get_indicator_cache_path(market_cache_key)
+    if cache_path.exists():
+        return pd.read_parquet(cache_path)
+    indicator_df = compute_indicators(df_adjusted)
+    indicator_df.to_parquet(cache_path, index=False)
+    return indicator_df
+
+
 
 def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     t0 = time.time()
@@ -700,14 +894,27 @@ def _backtest_single(name: str, df: pd.DataFrame) -> Dict:
         return {"strategy": name, "error": str(e), "time_s": round(time.time()-t0, 1)}
 
 
+def resolve_max_workers() -> int:
+    raw_value = os.environ.get("BACKTEST_MAX_WORKERS")
+    if raw_value is None:
+        return 1
+
+    try:
+        parsed = int(raw_value)
+    except ValueError:
+        logger.warning("BACKTEST_MAX_WORKERS=%s 不是有效整数，回退到 1", raw_value)
+        return 1
+
+    return max(parsed, 1)
+
+
 def run_backtests(df_bt: pd.DataFrame) -> List[Dict]:
     """
     并行回测所有策略（ThreadPoolExecutor，向量化操作释放GIL）
     """
     t0 = time.time()
     n_strategies = len(STRATEGIES)
-    import os
-    n_workers = min(os.cpu_count() or 8, n_strategies)
+    n_workers = min(resolve_max_workers(), n_strategies)
     logger.info(f"并行回测 {n_strategies} 策略（{n_workers} threads）...")
 
     strategy_names = list(STRATEGIES.keys())
@@ -1248,9 +1455,10 @@ def send_backtest_email(top_stocks, results, recommendations, unique_strategies,
 # 主函数
 # ═══════════════════════════════════════════════════════════════════════
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser()
-    args = parser.parse_args()
+    parser.add_argument("--skip-email", action="store_true", help="跳过邮件发送")
+    args = parser.parse_args(argv)
 
     # 计算回测和验证日期
     # 加载足够回测的数据（从数据库取5年前至今的数据）
@@ -1261,20 +1469,25 @@ def main():
     logger.info("22 策略 5 年回测 + 最近5日验证")
     logger.info(f"Numba加速: {'启用' if _HAS_NUMBA else '未安装（pip install numba）'}")
     logger.info(f"CPU核心: {os.cpu_count()}")
+    logger.info(f"回测线程数: {resolve_max_workers()}")
     logger.info("=" * 60)
 
-    # 加载数据（从5年前到今天）
-    df_all = load_data(five_years_ago, today_str)
+    df_market = load_or_build_market_data_cache(five_years_ago, today_str)
 
-    # 获取复权因子并计算前复权价格
     logger.info("获取复权因子并计算前复权价格...")
-    codes = df_all["code"].unique().tolist()
+    codes = df_market["code"].unique().tolist()
     logger.info(f"共 {len(codes)} 只股票需要获取复权因子...")
-    df_factors = get_forward_adjust_factors(codes, five_years_ago, today_str)
-    logger.info(f"获取到 {len(df_factors)} 条复权因子记录")
-    df_all = apply_forward_adjustment(df_all, df_factors)
+    df_factor = load_or_fill_adjust_factor_cache(codes, five_years_ago, today_str)
+    logger.info(f"获取到 {len(df_factor)} 条复权因子记录")
+    df_adjusted = apply_forward_adjustment(df_market, df_factor)
+    del df_market
+    del df_factor
+    gc.collect()
 
-    df_all = compute_indicators(df_all)
+    market_cache_key = build_market_cache_key(five_years_ago, today_str)
+    df_all = load_or_build_indicator_cache(df_adjusted, market_cache_key)
+    del df_adjusted
+    gc.collect()
 
     # 获取所有交易日并排序
     all_dates = sorted(df_all["date"].unique())
@@ -1322,7 +1535,9 @@ def main():
                 logger.info(f"    - {reason}")
 
     # 发送邮件
-    if top_stocks:
+    if args.skip_email:
+        logger.info("已指定 --skip-email，跳过邮件发送")
+    elif top_stocks:
         send_backtest_email(top_stocks, results, recommendations, unique_strategies, validate_start_date, validate_end_date, backtest_start_date, backtest_end_date)
     else:
         logger.warning("没有找到符合条件的股票，跳过邮件发送")
