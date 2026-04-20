@@ -42,6 +42,15 @@ TOP_N_VALIDATE = 5
 HOLDING_PERIODS = [1, 3, 5, 10]
 VALIDATE_DAYS = 5  # 验证区间交易日数量
 
+# ─── 策略阈值常量 ────────────────────────────────────────────────────
+LIMIT_UP_PCT = 9.5           # 涨停阈值(%)
+CLOSE_MA20_THRESHOLD = 0.97   # 收盘价相对MA20阈值
+VOL_BREAKOUT_MULTIPLIER = 1.2  # 成交量放大倍数
+BOLL_MID_THRESHOLD = 0.02     # 布林带中轨偏离阈值
+RSI_OVERSOLD = 35            # RSI超卖阈值
+RSI_OVERBOUGHT = 70           # RSI超买阈值
+MA_SUPPORT_RATIO = 0.98       # 均线支撑比率
+
 # ═══════════════════════════════════════════════════════════════════════
 # 邮件配置
 # ═══════════════════════════════════════════════════════════════════════
@@ -299,9 +308,7 @@ def sig_wonderful_9_turn(df):
     close = df["close"]
     close_4d = df["close_4d_ago"]
     # 连续9天
-    streak = close.groupby(df["code"]).transform(
-        lambda x: (x < x.shift(4)).rolling(9, min_periods=9).min().fillna(0).astype(bool)
-    )
+    streak = close.groupby(df["code"]).transform(lambda x: (x < x.shift(4)).rolling(9).all())
     mp = df.groupby("code")["macd_hist"].shift(1)
     m20p = df.groupby("code")["ma20"].shift(1)
     m60p = df.groupby("code")["ma60"].shift(1)
@@ -448,15 +455,12 @@ def sig_bottom_volume(df):
     return (df["volume"] <= df["vol_60d_min"]) & (df["rsi6"] < 40) & (df["close"] > df["open"])
 
 def sig_one_yang_three_yin(df):
-    grouped = df.groupby("code")
-    yang = grouped["pct_chg"].shift(4) > 3
-    base_volume = grouped["volume"].shift(4)
-    three_shrink = (
-        (grouped["volume"].shift(3) < base_volume * 0.7) &
-        (grouped["volume"].shift(2) < base_volume * 0.7) &
-        (grouped["volume"].shift(1) < base_volume * 0.7)
-    )
-    rise = (df["pct_chg"] > 0) & (df["close"] > grouped["close"].shift(4))
+    yang = df.groupby("code")["pct_chg"].shift(4) > 3
+    yv = df.groupby("code")["volume"].shift(4)
+    # vol[i] < vol[i-4] * 0.7 for each of 3 consecutive days
+    vol_small = df["volume"] < yv * 0.7
+    three_shrink = vol_small.groupby(df["code"]).transform(lambda x: x.rolling(3, min_periods=3).all())
+    rise = (df["pct_chg"] > 0) & (df["close"] > df.groupby("code")["close"].shift(4))
     return yang & three_shrink & rise
 
 def sig_box_oscillation(df):
@@ -763,15 +767,17 @@ def validate_week(df_week, top_results, top_n=5):
                 val.append({"strategy": name, "week_trades": 0, "week_win_rate": 0, "week_avg_ret": 0})
                 continue
 
+            # 计算每只股票的收益率：卖出价/买入价-1
+            rets = []
+            matched_stocks = df_week.loc[mask, ["code", "name"]].drop_duplicates()
+            # 向量化版本：使用 merge 替代 iterrows
             buy_prices = df_week.loc[df_week["date"] == buy_date, ["code", "open"]].rename(columns={"open": "buy_price"})
             sell_prices = df_week.loc[df_week["date"] == sell_date, ["code", "close"]].rename(columns={"close": "sell_price"})
-
-            merged_df = matched_stocks[["code", "name"]].merge(buy_prices, on="code", how="left") \
-                                                   .merge(sell_prices, on="code", how="left")
-
+            merged_df = matched_stocks[["code"]].merge(buy_prices, on="code", how="left") \
+                                               .merge(sell_prices, on="code", how="left")
             valid_df = merged_df.dropna(subset=["buy_price", "sell_price"])
             valid_df = valid_df[valid_df["buy_price"] > 0]
-            rets = (valid_df["sell_price"] / valid_df["buy_price"] - 1).values
+            rets = (valid_df["sell_price"] / valid_df["buy_price"] - 1).values if len(valid_df) > 0 else np.array([])
 
             if len(rets) > 0:
                 wr = (rets > 0).sum() / len(rets) * 100
@@ -955,7 +961,35 @@ def get_unique_strategies_from_results(results, top_n=10):
     return [r["strategy"] for r in results[:top_n] if r.get("total_trades", 0) > 0]
 
 
-def get_next_day_recommendations(df_latest, top_stocks_or_results, results=None, top_n=10):
+# 策略中文名称映射
+STRATEGY_NAMES_CN = {
+    "ma_crossover": "均线交叉策略",
+    "volume_surge_std": "成交量突破策略",
+    "wonderful_9_turn": "神奇九转策略",
+    "n_pattern": "N字反包策略",
+    "limit_up_pullback": "涨停回调策略",
+    "stable_then_limitup": "连续平稳后涨停策略",
+    "monthly_macd_20ma": "MACD月线金叉+20日线策略",
+    "low_position_limitup": "低位涨停换手率策略",
+    "limitup_resonance": "涨停回调量价共振策略",
+    "bullish_engulfing": "孕阳线策略",
+    "multi_ma_resonance": "多均线共振策略",
+    "ensemble": "多策略 Ensemble 策略",
+    "volume_breakout": "成交量突破策略",
+    "bull_trend": "牛市趋势策略",
+    "ma_golden_cross": "均线黄金交叉策略",
+    "shrink_pullback": "缩量回调策略",
+    "dragon_head": "龙头股策略",
+    "emotion_cycle": "情绪周期策略",
+    "bottom_volume": "底部放量策略",
+    "one_yang_three_yin": "一阳三阴策略",
+    "box_oscillation": "箱体震荡策略",
+    "wave_theory": "波浪理论策略",
+    "chan_theory": "缠论策略",
+}
+
+
+def get_next_day_recommendations(df_latest, top_stocks, results, top_n=10):
     """
     基于回测结果前10策略，在最新交易日数据中找出下个交易日推荐买的股票
     返回每只股票的推荐理由
