@@ -336,7 +336,9 @@ def apply_forward_adjustment(df: pd.DataFrame, df_factor: pd.DataFrame) -> pd.Da
 
     for code, stock_df in df.groupby("code", sort=False):
         stock_df = stock_df.sort_values("date").copy()
-        factor_df = df_factor[df_factor["code"] == code][["dividOperateDate", "foreAdjustFactor"]].sort_values("dividOperateDate")
+        stock_df["date"] = pd.to_datetime(stock_df["date"]).astype("datetime64[ns]")
+        factor_df = df_factor[df_factor["code"] == code][["dividOperateDate", "foreAdjustFactor"]].sort_values("dividOperateDate").copy()
+        factor_df["dividOperateDate"] = pd.to_datetime(factor_df["dividOperateDate"]).astype("datetime64[ns]")
 
         if factor_df.empty:
             stock_df["adjust_factor"] = 1.0
