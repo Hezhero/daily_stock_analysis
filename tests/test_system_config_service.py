@@ -5,6 +5,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from tests.litellm_stub import ensure_litellm_stub
@@ -631,6 +632,96 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertTrue(payload["success"])
         self.assertEqual(payload["resolved_protocol"], "ollama")
         self.assertEqual(payload["resolved_model"], "ollama/llama3")
+
+    @patch("litellm.completion")
+    def test_test_llm_channel_normalizes_kimi_temperature(self, mock_completion) -> None:
+        mock_completion.return_value = type(
+            "MockResponse",
+            (),
+            {
+                "choices": [type("Choice", (), {"message": type("Message", (), {"content": "OK"})()})()],
+            },
+        )()
+
+        payload = self.service.test_llm_channel(
+            name="primary",
+            protocol="openai",
+            base_url="https://api.moonshot.cn/v1",
+            api_key="sk-test-value",
+            models=["kimi-k2.6"],
+        )
+
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["resolved_model"], "openai/kimi-k2.6")
+        self.assertEqual(mock_completion.call_args.kwargs["temperature"], 1.0)
+
+    def test_update_switching_to_kimi_does_not_rewrite_saved_llm_temperature(self) -> None:
+        self._rewrite_env(
+            "LITELLM_MODEL=openai/gpt-4o-mini",
+            "LLM_TEMPERATURE=0.42",
+        )
+
+        response = self.service.update(
+            config_version=self.manager.get_config_version(),
+            items=[{"key": "LITELLM_MODEL", "value": "openai/kimi-k2.6"}],
+            reload_now=False,
+        )
+
+        self.assertTrue(response["success"])
+        current_map = self.manager.read_config_map()
+        self.assertEqual(current_map["LITELLM_MODEL"], "openai/kimi-k2.6")
+        self.assertEqual(current_map["LLM_TEMPERATURE"], "0.42")
+
+    @patch("litellm.completion")
+    def test_test_llm_channel_does_not_persist_normalized_kimi_temperature(self, mock_completion) -> None:
+        self._rewrite_env("LLM_TEMPERATURE=0.42")
+        mock_completion.return_value = type(
+            "MockResponse",
+            (),
+            {
+                "choices": [type("Choice", (), {"message": type("Message", (), {"content": "OK"})()})()],
+            },
+        )()
+
+        payload = self.service.test_llm_channel(
+            name="primary",
+            protocol="openai",
+            base_url="https://api.moonshot.cn/v1",
+            api_key="sk-test-value",
+            models=["kimi-k2.6"],
+        )
+
+        self.assertTrue(payload["success"])
+        self.assertEqual(mock_completion.call_args.kwargs["temperature"], 1.0)
+        self.assertEqual(self.manager.read_config_map()["LLM_TEMPERATURE"], "0.42")
+
+    @patch("litellm.completion")
+    @patch("src.services.system_config_service.Config._load_from_env")
+    def test_test_llm_channel_uses_runtime_temperature_for_non_kimi_models(
+        self,
+        mock_load_config,
+        mock_completion,
+    ) -> None:
+        mock_load_config.return_value = SimpleNamespace(llm_temperature=0.42)
+        mock_completion.return_value = type(
+            "MockResponse",
+            (),
+            {
+                "choices": [type("Choice", (), {"message": type("Message", (), {"content": "OK"})()})()],
+            },
+        )()
+
+        payload = self.service.test_llm_channel(
+            name="primary",
+            protocol="openai",
+            base_url="https://api.example.com/v1",
+            api_key="sk-test-value",
+            models=["gpt-4o-mini"],
+        )
+
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["resolved_model"], "openai/gpt-4o-mini")
+        self.assertEqual(mock_completion.call_args.kwargs["temperature"], 0.42)
 
     @patch("src.services.system_config_service.requests.get")
     def test_discover_llm_channel_models_returns_deduped_ids(self, mock_get) -> None:

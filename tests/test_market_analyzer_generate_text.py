@@ -141,6 +141,124 @@ class TestAnalyzerGenerateText:
         assert dispatch_calls[0]["stream"] is True
         assert "stream" not in dispatch_calls[1]
 
+    def test_call_litellm_normalizes_kimi_k26_temperature(self):
+        analyzer = self._make_analyzer()
+        analyzer._config_override = SimpleNamespace(
+            litellm_model="openai/kimi-k2.6",
+            litellm_fallback_models=[],
+            llm_model_list=[],
+        )
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+        )
+
+        with patch.object(analyzer, "_dispatch_litellm_completion", return_value=response) as mock_dispatch:
+            text, model_used, usage = analyzer._call_litellm(
+                "prompt",
+                {"max_tokens": 128, "temperature": 0.2},
+            )
+
+        assert text == "ok"
+        assert model_used == "openai/kimi-k2.6"
+        assert usage == {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        call_kwargs = mock_dispatch.call_args.args[1]
+        assert call_kwargs["temperature"] == 1.0
+
+    def test_call_litellm_normalizes_kimi_k26_temperature_for_yaml_alias(self):
+        analyzer = self._make_analyzer()
+        analyzer._config_override = SimpleNamespace(
+            litellm_model="kimi_router",
+            litellm_fallback_models=[],
+            llm_model_list=[
+                {
+                    "model_name": "kimi_router",
+                    "litellm_params": {"model": "openai/kimi-k2.6"},
+                }
+            ],
+        )
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+        )
+
+        with patch.object(analyzer, "_dispatch_litellm_completion", return_value=response) as mock_dispatch:
+            text, model_used, usage = analyzer._call_litellm(
+                "prompt",
+                {"max_tokens": 128, "temperature": 0.2},
+            )
+
+        assert text == "ok"
+        assert model_used == "kimi_router"
+        assert usage == {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        call_kwargs = mock_dispatch.call_args.args[1]
+        assert call_kwargs["temperature"] == 1.0
+
+    def test_call_litellm_normalizes_kimi_k26_temperature_for_non_thinking_yaml_alias(self):
+        analyzer = self._make_analyzer()
+        analyzer._config_override = SimpleNamespace(
+            litellm_model="kimi_router",
+            litellm_fallback_models=[],
+            llm_model_list=[
+                {
+                    "model_name": "kimi_router",
+                    "litellm_params": {
+                        "model": "openai/kimi-k2.6",
+                        "extra_body": {"thinking": {"type": "disabled"}},
+                    },
+                }
+            ],
+        )
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+        )
+
+        with patch.object(analyzer, "_dispatch_litellm_completion", return_value=response) as mock_dispatch:
+            text, model_used, usage = analyzer._call_litellm(
+                "prompt",
+                {"max_tokens": 128, "temperature": 0.2},
+            )
+
+        assert text == "ok"
+        assert model_used == "kimi_router"
+        assert usage == {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        call_kwargs = mock_dispatch.call_args.args[1]
+        assert call_kwargs["temperature"] == 0.6
+
+    def test_call_litellm_keeps_user_temperature_for_non_kimi_fallback(self):
+        analyzer = self._make_analyzer()
+        analyzer._config_override = SimpleNamespace(
+            litellm_model="openai/kimi-k2.6",
+            litellm_fallback_models=["openai/gpt-4o-mini"],
+            llm_model_list=[],
+        )
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="fallback ok"))],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+        )
+        temperatures = []
+
+        def fake_dispatch(model, call_kwargs, **kwargs):
+            temperatures.append((model, call_kwargs["temperature"]))
+            if model == "openai/kimi-k2.6":
+                raise RuntimeError("primary failed")
+            return response
+
+        with patch.object(analyzer, "_dispatch_litellm_completion", side_effect=fake_dispatch):
+            text, model_used, usage = analyzer._call_litellm(
+                "prompt",
+                {"max_tokens": 128, "temperature": 0.2},
+            )
+
+        assert text == "fallback ok"
+        assert model_used == "openai/gpt-4o-mini"
+        assert usage == {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        assert temperatures == [
+            ("openai/kimi-k2.6", 1.0),
+            ("openai/gpt-4o-mini", 0.2),
+        ]
+
     def test_call_litellm_stream_falls_back_to_non_stream_after_partial_and_falls_back_model(self):
         analyzer = self._make_analyzer()
         analyzer._config_override = SimpleNamespace(
