@@ -23,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] GitHub Actions 每日分析工作流补齐 `LLM_CHANNELS`、多 Key 与常用 `LLM_<NAME>_*` 渠道变量透传，避免本地可用的多模型配置在云端定时任务中失效（Fixes #1063, #872）
 - [文档] 修正 `feishu_sender.py` 中飞书自定义机器人 Webhook 消息格式示例为 interactive card JSON，并补充飞书自动化 Webhook 触发器配置教程（参数 JSON 与 `card.elements[0].text.content` 字段映射）。
 - [修复] 历史报告详情接口修正 `change_pct` 取值：使用 `is None` 判断避免把 0.0（平盘）当作缺失值丢弃，移除错误的 `change_60d` 兜底，并在 `enhanced_context.realtime` 缺涨跌幅时回退到 `realtime_quote_raw.change_pct` / `pct_chg`，避免历史详情页“不显示涨跌幅” (Fixes #1084)
+- [文档] 优化根 README 结构，保留功能特性、技术栈、快速开始、推送效果、Web、Agent、赞助商和新闻源链接入口，将细配置、交易纪律和基本面语义收口到完整指南，并将 Docker 徽章指向官方镜像页
+- [文档] 同步英文与繁中 README 的精简入口结构，并补齐完整指南中的 LLM 用量 API 与持仓管理说明
+- [文档] 调整 AI 协作与 PR 模板中的 README 维护规则，明确 README 非必要不更新，细节优先进入专题文档
 
 ## [3.13.0] - 2026-04-21
 
