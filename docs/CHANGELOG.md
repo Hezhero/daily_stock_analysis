@@ -27,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [文档] 优化根 README 结构，保留功能特性、技术栈、快速开始、推送效果、Web、Agent、赞助商和新闻源链接入口，将细配置、交易纪律和基本面语义收口到完整指南，并将 Docker 徽章指向官方镜像页
 - [文档] 同步英文与繁中 README 的精简入口结构，并补齐完整指南中的 LLM 用量 API 与持仓管理说明
 - [文档] 调整 AI 协作与 PR 模板中的 README 维护规则，明确 README 非必要不更新，细节优先进入专题文档
+- [修复] 桌面端打包链路新增 `scripts/check_static_assets.py` 静态资源一致性检查，并在 `build-backend(.ps1|-macos.sh)` 的源 `static/` 与 PyInstaller 产物里各跑一次；同时在后端启动时校验 `index.html` 引用的 `/assets/*.js`/`*.css` 是否真实存在，发现错配时直接在 `logs/desktop.log` 打印明确错误，避免重现 Release 包打开后白屏（Refs #1064 / #1065 / #1050）
+- [改进] 后端 `/assets/*` 由显式路由托管，资源缺失时返回与请求扩展名匹配的 `text/javascript` / `text/css` 404，而不是被默认 JSON 错误响应误导排查（Refs #1064）
 
 ## [3.13.0] - 2026-04-21
 
