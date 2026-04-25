@@ -40,7 +40,8 @@ LITELLM_MODEL=openai/deepseek-ai/DeepSeek-V3
 # Fill in the API Key requested from the official DeepSeek platform
 DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxx
 ```
-*Note: Only this single line is needed. The system will automatically detect and default to the DeepSeek model.*
+*Compatibility note: with only this line, the system still defaults to `deepseek/deepseek-chat` and logs a migration warning.*
+`deepseek-chat` / `deepseek-reasoner` still work for compatibility with old configs, but DeepSeek marks them deprecated after 2026/07/24. New configs should migrate through the Web quick channel or explicitly set `LITELLM_MODEL=deepseek/deepseek-v4-flash` for `deepseek-v4-flash` / `deepseek-v4-pro`.
 
 ### Example 3: Using the Free Gemini API
 ```env
@@ -81,9 +82,9 @@ If you prefer modifying files, configuring this in the `.env` file is also very 
 LLM_CHANNELS=deepseek,aihubmix
 
 # 2. Channel 1: Configure Official DeepSeek
-LLM_DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
+LLM_DEEPSEEK_BASE_URL=https://api.deepseek.com
 LLM_DEEPSEEK_API_KEY=sk-1111111111111
-LLM_DEEPSEEK_MODELS=deepseek-chat,deepseek-reasoner
+LLM_DEEPSEEK_MODELS=deepseek-v4-flash,deepseek-v4-pro
 
 # 3. Channel 2: Configure a common relay/proxy API
 LLM_AIHUBMIX_BASE_URL=https://api.aihubmix.com/v1
@@ -92,9 +93,9 @@ LLM_AIHUBMIX_MODELS=gpt-4o-mini,claude-3-5-sonnet
 
 # 4. [Key Step] Specify the primary model and fallback list
 # Set your primary model:
-LITELLM_MODEL=deepseek/deepseek-chat
+LITELLM_MODEL=deepseek/deepseek-v4-flash
 # Optional: set an Agent-only primary model (empty = inherit the primary model)
-AGENT_LITELLM_MODEL=deepseek/deepseek-reasoner
+AGENT_LITELLM_MODEL=deepseek/deepseek-v4-pro
 # If the primary model crashes, try these fallbacks sequentially:
 LITELLM_FALLBACK_MODELS=openai/gpt-4o-mini,anthropic/claude-3-5-sonnet
 ```
@@ -118,6 +119,7 @@ LITELLM_MODEL=ollama/qwen3:8b
 - The Web settings page now keeps that value unchanged in Primary, Agent Primary, Fallback, and Vision selectors instead of rewriting it to `openai/minimax/<model-name>`.
 
 > **Critical Warning**: If you enable `LLM_CHANNELS`, any standard `DEEPSEEK_API_KEY` or `OPENAI_API_KEY` declared independently will be **completely ignored**. **Use only one mode** to prevent configuration conflicts.
+> **Docker note**: If `LITELLM_MODEL`, `LLM_CHANNELS`, `LLM_DEEPSEEK_MODELS`, or related variables are explicitly passed through `docker compose environment:` or `docker run -e`, they will override the `.env` written by the Web settings page after a container restart. Update the deployment environment at the same time.
 
 ---
 
@@ -138,8 +140,8 @@ Example `litellm_config.yaml`:
 model_list:
   - model_name: my-smart-model
     litellm_params:
-      model: openai/deepseek-chat
-      api_base: https://api.deepseek.com/v1
+      model: deepseek/deepseek-v4-flash
+      api_base: https://api.deepseek.com
       api_key: "os.environ/MY_CUSTOM_SECRET_KEY"  # Fetch from environment vars for security
 
   # Ollama local model (no api_key needed)
@@ -199,4 +201,4 @@ Afraid you got the config wrong? Type the following commands in your terminal to
 | **Spins endlessly, eventually hits Timeout/ConnectionRefused** | You are using restricted APIs (like Google/OpenAI) in a blocked region without a proxy, or your cloud server lacks external internet access. | Highly recommend using **official regional APIs** (like DeepSeek) or **OpenAI-compatible relay platforms**. Third-party platforms bypass these network constraints. |
 | **Ollama returns 404, `Could not get model info`, or `api/generate/api/show`** | Using `OPENAI_BASE_URL` for Ollama makes the system concatenate URLs incorrectly | Use `OLLAMA_API_BASE=http://localhost:11434` or channel mode (`LLM_CHANNELS=ollama` + `LLM_OLLAMA_BASE_URL`) instead |
 
-*Veteran's Tip: If you enable **Agent Mode (Deep-thinking & web-search)**, experience shows you should use an advanced reasoning model like `deepseek-reasoner`. Trying to save money by using weak mini-models for agents will likely result in infinite loops or missed objectives.*
+*Veteran's Tip: If you enable **Agent Mode (Deep-thinking & web-search)**, experience shows you should use a stronger model like `deepseek-v4-pro`. Trying to save money by using weak mini-models for agents will likely result in infinite loops or missed objectives.*

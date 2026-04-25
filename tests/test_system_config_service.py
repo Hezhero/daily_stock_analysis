@@ -292,6 +292,21 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertFalse(validation["valid"])
         self.assertTrue(any(issue["key"] == "LITELLM_MODEL" and issue["code"] == "unknown_model" for issue in validation["issues"]))
 
+    def test_validate_accepts_deepseek_v4_primary_model_for_channel(self) -> None:
+        validation = self.service.validate(
+            items=[
+                {"key": "LLM_CHANNELS", "value": "deepseek"},
+                {"key": "LLM_DEEPSEEK_PROTOCOL", "value": "deepseek"},
+                {"key": "LLM_DEEPSEEK_BASE_URL", "value": "https://api.deepseek.com"},
+                {"key": "LLM_DEEPSEEK_API_KEY", "value": "sk-test-value"},
+                {"key": "LLM_DEEPSEEK_MODELS", "value": "deepseek-v4-flash,deepseek-v4-pro"},
+                {"key": "LITELLM_MODEL", "value": "deepseek/deepseek-v4-flash"},
+            ]
+        )
+
+        self.assertTrue(validation["valid"], validation["issues"])
+        self.assertEqual(validation["issues"], [])
+
     def test_validate_reports_unknown_agent_primary_model_for_channels(self) -> None:
         validation = self.service.validate(
             items=[
@@ -701,6 +716,11 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         )
 
         self.assertEqual(models_url, "https://example.com/v1/models")
+
+    def test_build_llm_models_url_supports_deepseek_root_base_url(self) -> None:
+        models_url = SystemConfigService._build_llm_models_url("https://api.deepseek.com")
+
+        self.assertEqual(models_url, "https://api.deepseek.com/models")
 
     def test_validate_reports_invalid_event_rule_semantics(self) -> None:
         validation = self.service.validate(items=[{

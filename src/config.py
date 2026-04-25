@@ -934,6 +934,7 @@ class Config:
 
         # LITELLM_MODEL: explicit config takes precedence; else infer from available keys
         litellm_model = os.getenv('LITELLM_MODEL', '').strip()
+        inferred_legacy_deepseek_model = False
         if not litellm_model:
             _gemini_model_name = os.getenv('GEMINI_MODEL', 'gemini-3-flash-preview').strip()
             _anthropic_model_name = os.getenv('ANTHROPIC_MODEL', 'claude-3-5-sonnet-20241022').strip()
@@ -944,6 +945,7 @@ class Config:
                 litellm_model = f'anthropic/{_anthropic_model_name}'
             elif deepseek_api_keys:
                 litellm_model = 'deepseek/deepseek-chat'
+                inferred_legacy_deepseek_model = True
             elif openai_api_keys:
                 # For openai-compatible models, add prefix only if not already prefixed
                 if '/' not in _openai_model_name:
@@ -996,6 +998,17 @@ class Config:
             )
             if llm_model_list:
                 llm_models_source = "legacy_env"
+
+        if (
+            inferred_legacy_deepseek_model
+            and llm_models_source == "legacy_env"
+            and litellm_model == 'deepseek/deepseek-chat'
+        ):
+            logger.warning(
+                "Deprecation warning:\n"
+                "deepseek-chat will be deprecated on 2026-07-24,\n"
+                "please migrate to deepseek-v4-flash."
+            )
 
         # Auto-infer LITELLM_MODEL from channels when not explicitly set
         if not litellm_model and llm_channels:

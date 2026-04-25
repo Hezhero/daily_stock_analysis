@@ -136,6 +136,104 @@ class LLMChannelConfigTestCase(unittest.TestCase):
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    @patch("src.config.logger.warning")
+    def test_deepseek_key_defaults_to_legacy_chat_model_with_deprecation_warning(
+        self,
+        mock_warning,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        env = {
+            "DEEPSEEK_API_KEY": "sk-test-value",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.litellm_model, "deepseek/deepseek-chat")
+        mock_warning.assert_called_once_with(
+            "Deprecation warning:\n"
+            "deepseek-chat will be deprecated on 2026-07-24,\n"
+            "please migrate to deepseek-v4-flash."
+        )
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    @patch("src.config.logger.warning")
+    def test_explicit_deepseek_litellm_model_is_preserved(
+        self,
+        mock_warning,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        env = {
+            "DEEPSEEK_API_KEY": "sk-test-value",
+            "LITELLM_MODEL": "deepseek/deepseek-chat",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.litellm_model, "deepseek/deepseek-chat")
+        mock_warning.assert_not_called()
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    @patch("src.config.logger.warning")
+    def test_deepseek_key_does_not_warn_when_channels_take_precedence(
+        self,
+        mock_warning,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        env = {
+            "DEEPSEEK_API_KEY": "sk-test-value",
+            "LLM_CHANNELS": "primary",
+            "LLM_PRIMARY_PROTOCOL": "deepseek",
+            "LLM_PRIMARY_API_KEY": "sk-channel-value",
+            "LLM_PRIMARY_MODELS": "deepseek-v4-flash",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.llm_models_source, "llm_channels")
+        mock_warning.assert_not_called()
+
+    @patch("src.config.setup_env")
+    @patch.object(
+        Config,
+        "_parse_litellm_yaml",
+        return_value=[
+            {
+                "model_name": "primary",
+                "litellm_params": {
+                    "model": "deepseek/deepseek-v4-flash",
+                    "api_key": "sk-yaml-value",
+                },
+            }
+        ],
+    )
+    @patch("src.config.logger.warning")
+    def test_deepseek_key_does_not_warn_when_litellm_yaml_takes_precedence(
+        self,
+        mock_warning,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        env = {
+            "DEEPSEEK_API_KEY": "sk-test-value",
+            "LITELLM_CONFIG": "/tmp/litellm.yaml",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.llm_models_source, "litellm_config")
+        mock_warning.assert_not_called()
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
     def test_llm_temperature_prefers_unified_setting_when_present(self, _mock_parse_yaml, _mock_setup_env) -> None:
         env = {
             "GEMINI_API_KEY": "secret-key-value",

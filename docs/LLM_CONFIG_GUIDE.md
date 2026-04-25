@@ -40,7 +40,8 @@ LITELLM_MODEL=openai/deepseek-ai/DeepSeek-V3
 # 填入你在 DeepSeek 官方平台申请的 API Key
 DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxx
 ```
-*提示：仅需这一行，系统会自动识别并默认使用 DeepSeek 模型。*
+*兼容提示：仅填这一行时，系统仍会默认使用 `deepseek/deepseek-chat` 并在日志提示迁移。*
+`deepseek-chat` / `deepseek-reasoner` 仍可用于兼容旧配置，但 DeepSeek 官方已标记为 2026/07/24 后废弃；新配置建议通过 Web 快速渠道或显式 `LITELLM_MODEL=deepseek/deepseek-v4-flash` 迁移到 `deepseek-v4-flash` / `deepseek-v4-pro`。
 
 ### 示例 3：使用 Gemini 免费 API
 ```env
@@ -81,9 +82,9 @@ LITELLM_MODEL=ollama/qwen3:8b
 LLM_CHANNELS=deepseek,aihubmix
 
 # 2. 渠道一：配置 DeepSeek 官方
-LLM_DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
+LLM_DEEPSEEK_BASE_URL=https://api.deepseek.com
 LLM_DEEPSEEK_API_KEY=sk-1111111111111
-LLM_DEEPSEEK_MODELS=deepseek-chat,deepseek-reasoner
+LLM_DEEPSEEK_MODELS=deepseek-v4-flash,deepseek-v4-pro
 
 # 3. 渠道二：配置一个常用的聚合中转 API
 LLM_AIHUBMIX_BASE_URL=https://api.aihubmix.com/v1
@@ -92,9 +93,9 @@ LLM_AIHUBMIX_MODELS=gpt-4o-mini,claude-3-5-sonnet
 
 # 4. 【关键】指定主模型和备用模型列表
 # 平时首选用 deepseek 这款模型：
-LITELLM_MODEL=deepseek/deepseek-chat
+LITELLM_MODEL=deepseek/deepseek-v4-flash
 # 可选：Agent 问股单独指定主模型（留空则继承主模型）
-AGENT_LITELLM_MODEL=deepseek/deepseek-reasoner
+AGENT_LITELLM_MODEL=deepseek/deepseek-v4-pro
 # 主模型崩了立刻挨个尝试下面这俩备用模型：
 LITELLM_FALLBACK_MODELS=openai/gpt-4o-mini,anthropic/claude-3-5-sonnet
 ```
@@ -118,6 +119,7 @@ LITELLM_MODEL=ollama/qwen3:8b
 - Web 设置页里的主模型、Agent 主模型、Fallback、Vision 下拉会保留这个值原样展示，不会再错误改写成 `openai/minimax/<模型名>`。
 
 > **致命避坑说明**：如果你启用了 `LLM_CHANNELS`，那么你直接写在外面的 `DEEPSEEK_API_KEY` 或 `OPENAI_API_KEY` 将**全部失效（系统一律无视）**！二者**选其一即可**，千万不要既写了新手模式又写了渠道模式结果产生冲突。
+> **Docker 注意**：如果你在 `docker compose environment:` 或 `docker run -e` 中显式传入 `LITELLM_MODEL`、`LLM_CHANNELS`、`LLM_DEEPSEEK_MODELS` 等变量，容器重启后这些环境变量会覆盖 Web 设置页写入的 `.env`，需要同步修改部署配置。
 
 ---
 
@@ -140,8 +142,8 @@ LITELLM_MODEL=ollama/qwen3:8b
 model_list:
   - model_name: my-smart-model
     litellm_params:
-      model: openai/deepseek-chat
-      api_base: https://api.deepseek.com/v1
+      model: deepseek/deepseek-v4-flash
+      api_base: https://api.deepseek.com
       api_key: "os.environ/MY_CUSTOM_SECRET_KEY"  # 从环境变量读取 Key，安全防泄漏
 
   # Ollama 本地模型（无需 api_key）
@@ -215,4 +217,4 @@ VISION_PROVIDER_PRIORITY=gemini,anthropic,openai
 | **转圈转不停，最后报 Timeout / ConnectionRefused 等** | 1. 在国内使用国外原版（像 Google、OpenAI），没开代理被墙了。<br>2. 你买的云服务器压根不能出境。 | 非常推荐使用**国内官方**（如DeepSeek、阿里）或者各种**兼容 OpenAI 的聚合中转接口**。因为中转站把网络问题帮你解决好了。 |
 | **Ollama 报 404、`Could not get model info` 或 `api/generate/api/show`** | 误用 `OPENAI_BASE_URL` 配置 Ollama，系统会错误拼接 URL | 改用 `OLLAMA_API_BASE=http://localhost:11434` 或渠道模式（`LLM_CHANNELS=ollama` + `LLM_OLLAMA_BASE_URL`） |
 
-*进阶老手的叮嘱：如果你开启了 **Agent (深度思考网络搜索问股) 模式**，这里有个经验之谈，推荐选用如 `deepseek-reasoner` 这种自带强悍逻辑推导和思考机制的大模型。如果为了省钱用小微模型跑 Agent，它逻辑能力大概率跟不上，不仅达不到预期，还会白跑一堆空流程。*
+*进阶老手的叮嘱：如果你开启了 **Agent (深度思考网络搜索问股) 模式**，这里有个经验之谈，推荐选用如 `deepseek-v4-pro` 这种逻辑推导能力更强的大模型。如果为了省钱用小微模型跑 Agent，它逻辑能力大概率跟不上，不仅达不到预期，还会白跑一堆空流程。*

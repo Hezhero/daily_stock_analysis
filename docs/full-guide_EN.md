@@ -59,8 +59,8 @@ Go to your forked repo → `Settings` → `Secrets and variables` → `Actions` 
 |------------|------|:----:|
 | `GEMINI_API_KEY` | Get free key from [Google AI Studio](https://aistudio.google.com/) | ✅* |
 | `OPENAI_API_KEY` | OpenAI-compatible API Key (supports DeepSeek, Qwen, etc.) | Optional |
-| `OPENAI_BASE_URL` | OpenAI-compatible API endpoint (e.g., `https://api.deepseek.com/v1`) | Optional |
-| `OPENAI_MODEL` | Model name (e.g., `deepseek-chat`) | Optional |
+| `OPENAI_BASE_URL` | OpenAI-compatible API endpoint (e.g., `https://api.deepseek.com`) | Optional |
+| `OPENAI_MODEL` | Model name (e.g., `deepseek-v4-flash`) | Optional |
 
 > *Note: Configure at least one of `GEMINI_API_KEY` or `OPENAI_API_KEY`
 
@@ -750,9 +750,9 @@ GEMINI_MODEL=gemini-3-flash-preview
 
 # OpenAI compatible (backup)
 OPENAI_API_KEY=xxx
-OPENAI_BASE_URL=https://api.deepseek.com/v1
-OPENAI_MODEL=deepseek-chat
-# Thinking mode: deepseek-reasoner, deepseek-r1, qwq auto-detected; deepseek-chat enabled by model name
+OPENAI_BASE_URL=https://api.deepseek.com
+OPENAI_MODEL=deepseek-v4-flash
+# deepseek-chat / deepseek-reasoner remain compatible, but DeepSeek marks them deprecated after 2026/07/24
 ```
 
 ### Advanced Model Routing (Powered by LiteLLM)
