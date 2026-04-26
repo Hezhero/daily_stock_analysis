@@ -1,24 +1,14 @@
 # -*- coding: utf-8 -*-
-"""
-Shared test helper to ensure imports work when litellm is unavailable.
-"""
+"""Shared test helper to keep litellm imports lightweight in unit tests."""
 
-import importlib.util
 import sys
 import types
 
 
 def ensure_litellm_stub() -> None:
-    """Install a minimal litellm stub only when litellm is unavailable."""
+    """Install a minimal litellm stub unless a test already provided one."""
     if "litellm" in sys.modules:
         return
-
-    try:
-        if importlib.util.find_spec("litellm") is not None:
-            return
-    except ValueError:
-        # A previously injected incomplete stub may leave __spec__ unset.
-        pass
 
     litellm_stub = types.ModuleType("litellm")
 
