@@ -1462,6 +1462,11 @@ def main(argv=None):
     parser.add_argument("--skip-email", action="store_true", help="跳过邮件发送")
     args = parser.parse_args(argv)
 
+    # 判断是否为交易日
+    if not args.force and not is_trading_day(datetime.now()):
+        logger.error("非交易日，程序退出（使用 --force 可强制运行）")
+        return
+
     # 计算回测和验证日期
     # 加载足够回测的数据（从数据库取5年前至今的数据）
     five_years_ago = (datetime.now() - pd.DateOffset(years=5)).strftime("%Y-%m-%d")
@@ -1546,6 +1551,49 @@ def main(argv=None):
 
     logger.info("完成")
 
+
+def is_trading_day(date):
+    """
+    判断指定日期是否为交易日
+
+    Args:
+        date (str or datetime): 日期，格式为'YYYY-MM-DD'
+
+    Returns:
+        bool: True表示是交易日，False表示非交易日
+    """
+    # 初始化baostock连接
+    lg = bs.login()
+    if lg.error_code != '0':
+        logger.warning("baostock未正确初始化，无法判断交易日")
+        return True  # 出错时默认返回True以保证程序继续运行
+
+    # 格式化日期
+    if isinstance(date, datetime):
+        date_str = date.strftime('%Y-%m-%d')
+    else:
+        date_str = str(date)
+
+    # 查询交易日
+    rs = bs.query_trade_dates(start_date=date_str, end_date=date_str)
+
+    # 处理查询结果
+    if rs.error_code != '0':
+        logger.warning(f"查询交易日失败: {rs.error_msg}")
+        return True  # 出错时默认返回True
+
+    # 获取查询结果
+    data_list = []
+    while (rs.error_code == '0') & rs.next():
+        data_list.append(rs.get_row_data())
+
+    if not data_list:
+        logger.warning(f"未获取到交易日数据: {date_str}")
+        return True  # 出错时默认返回True
+
+    # 判断是否为交易日
+    is_trading = data_list[0][1] == '1'  # 第二列是is_trading_day字段，'1'表示交易日
+    return is_trading
 
 if __name__ == "__main__":
     main()
