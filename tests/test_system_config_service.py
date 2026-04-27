@@ -5,7 +5,8 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from tests.litellm_stub import ensure_litellm_stub
 
@@ -177,6 +178,70 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertFalse(validation["valid"])
         self.assertTrue(any(issue["code"] == "invalid_type" for issue in validation["issues"]))
 
+    def test_validate_reports_invalid_feishu_webhook_url(self) -> None:
+        validation = self.service.validate(
+            items=[{"key": "FEISHU_WEBHOOK_URL", "value": "feishu-hook-without-scheme"}]
+        )
+        self.assertFalse(validation["valid"])
+        self.assertTrue(any(issue["code"] == "invalid_url" for issue in validation["issues"]))
+
+    def test_validate_warns_when_feishu_app_credentials_are_used_without_webhook(self) -> None:
+        validation = self.service.validate(
+            items=[
+                {"key": "FEISHU_APP_ID", "value": "cli_xxx"},
+                {"key": "FEISHU_APP_SECRET", "value": "secret_xxx"},
+            ]
+        )
+        self.assertTrue(validation["valid"])
+        self.assertTrue(
+            any(
+                issue["code"] == "feishu_mode_mismatch"
+                and issue["severity"] == "warning"
+                for issue in validation["issues"]
+            )
+        )
+
+    def test_validate_no_warning_when_feishu_cloud_doc_credentials_without_webhook(self) -> None:
+        validation = self.service.validate(
+            items=[
+                {"key": "FEISHU_APP_ID", "value": "cli_xxx"},
+                {"key": "FEISHU_APP_SECRET", "value": "secret_xxx"},
+                {"key": "FEISHU_FOLDER_TOKEN", "value": "folder_xxx"},
+            ]
+        )
+        self.assertTrue(validation["valid"])
+        self.assertFalse(
+            any(
+                issue["code"] == "feishu_mode_mismatch"
+                and issue["severity"] == "warning"
+                for issue in validation["issues"]
+            )
+        )
+
+    def test_validate_warns_when_only_folder_token_cleared_with_app_credentials(self) -> None:
+        """Clearing FEISHU_FOLDER_TOKEN while app credentials remain should trigger mismatch."""
+        old_version = self.manager.get_config_version()
+        self.service.update(
+            config_version=old_version,
+            items=[
+                {"key": "FEISHU_APP_ID", "value": "cli_xxx"},
+                {"key": "FEISHU_APP_SECRET", "value": "secret_xxx"},
+            ],
+        )
+        validation = self.service.validate(
+            items=[
+                {"key": "FEISHU_FOLDER_TOKEN", "value": ""},
+            ]
+        )
+        self.assertTrue(validation["valid"])
+        self.assertTrue(
+            any(
+                issue["code"] == "feishu_mode_mismatch"
+                and issue["severity"] == "warning"
+                for issue in validation["issues"]
+            )
+        )
+
     def test_update_persists_public_searxng_toggle(self) -> None:
         old_version = self.manager.get_config_version()
         response = self.service.update(
@@ -202,6 +267,18 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertFalse(validation["valid"])
         self.assertTrue(any(issue["code"] == "missing_api_key" for issue in validation["issues"]))
 
+    def test_validate_preserves_model_based_protocol_inference_for_ollama_channel(self) -> None:
+        validation = self.service.validate(
+            items=[
+                {"key": "LLM_CHANNELS", "value": "lab"},
+                {"key": "LLM_LAB_MODELS", "value": "ollama/llama3"},
+                {"key": "LLM_LAB_API_KEY", "value": ""},
+            ]
+        )
+
+        self.assertTrue(validation["valid"], validation["issues"])
+        self.assertEqual(validation["issues"], [])
+
     def test_validate_reports_unknown_primary_model_for_channels(self) -> None:
         validation = self.service.validate(
             items=[
@@ -215,6 +292,21 @@ class SystemConfigServiceTestCase(unittest.TestCase):
 
         self.assertFalse(validation["valid"])
         self.assertTrue(any(issue["key"] == "LITELLM_MODEL" and issue["code"] == "unknown_model" for issue in validation["issues"]))
+
+    def test_validate_accepts_deepseek_v4_primary_model_for_channel(self) -> None:
+        validation = self.service.validate(
+            items=[
+                {"key": "LLM_CHANNELS", "value": "deepseek"},
+                {"key": "LLM_DEEPSEEK_PROTOCOL", "value": "deepseek"},
+                {"key": "LLM_DEEPSEEK_BASE_URL", "value": "https://api.deepseek.com"},
+                {"key": "LLM_DEEPSEEK_API_KEY", "value": "sk-test-value"},
+                {"key": "LLM_DEEPSEEK_MODELS", "value": "deepseek-v4-flash,deepseek-v4-pro"},
+                {"key": "LITELLM_MODEL", "value": "deepseek/deepseek-v4-flash"},
+            ]
+        )
+
+        self.assertTrue(validation["valid"], validation["issues"])
+        self.assertEqual(validation["issues"], [])
 
     def test_validate_reports_unknown_agent_primary_model_for_channels(self) -> None:
         validation = self.service.validate(
@@ -404,6 +496,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
             items["AGENT_ORCHESTRATOR_MODE"]["schema"]["validation"]["enum"],
             ["quick", "standard", "full", "specialist", "strategy", "skill"],
         )
+
     @patch.object(
         Config,
         "_parse_litellm_yaml",
@@ -518,6 +611,208 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(payload["resolved_protocol"], "openai")
         self.assertEqual(payload["resolved_model"], "openai/deepseek-chat")
 
+    @patch("litellm.completion")
+    def test_test_llm_channel_allows_ollama_prefix_without_explicit_protocol(self, mock_completion) -> None:
+        mock_completion.return_value = type(
+            "MockResponse",
+            (),
+            {
+                "choices": [type("Choice", (), {"message": type("Message", (), {"content": "OK"})()})()],
+            },
+        )()
+
+        payload = self.service.test_llm_channel(
+            name="lab",
+            protocol="",
+            base_url="http://localhost:11434/v1",
+            api_key="",
+            models=["ollama/llama3"],
+        )
+
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["resolved_protocol"], "ollama")
+        self.assertEqual(payload["resolved_model"], "ollama/llama3")
+
+    @patch("litellm.completion")
+    def test_test_llm_channel_normalizes_kimi_temperature(self, mock_completion) -> None:
+        mock_completion.return_value = type(
+            "MockResponse",
+            (),
+            {
+                "choices": [type("Choice", (), {"message": type("Message", (), {"content": "OK"})()})()],
+            },
+        )()
+
+        payload = self.service.test_llm_channel(
+            name="primary",
+            protocol="openai",
+            base_url="https://api.moonshot.cn/v1",
+            api_key="sk-test-value",
+            models=["kimi-k2.6"],
+        )
+
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["resolved_model"], "openai/kimi-k2.6")
+        self.assertEqual(mock_completion.call_args.kwargs["temperature"], 1.0)
+
+    def test_update_switching_to_kimi_does_not_rewrite_saved_llm_temperature(self) -> None:
+        self._rewrite_env(
+            "LITELLM_MODEL=openai/gpt-4o-mini",
+            "LLM_TEMPERATURE=0.42",
+        )
+
+        response = self.service.update(
+            config_version=self.manager.get_config_version(),
+            items=[{"key": "LITELLM_MODEL", "value": "openai/kimi-k2.6"}],
+            reload_now=False,
+        )
+
+        self.assertTrue(response["success"])
+        current_map = self.manager.read_config_map()
+        self.assertEqual(current_map["LITELLM_MODEL"], "openai/kimi-k2.6")
+        self.assertEqual(current_map["LLM_TEMPERATURE"], "0.42")
+
+    @patch("litellm.completion")
+    def test_test_llm_channel_does_not_persist_normalized_kimi_temperature(self, mock_completion) -> None:
+        self._rewrite_env("LLM_TEMPERATURE=0.42")
+        mock_completion.return_value = type(
+            "MockResponse",
+            (),
+            {
+                "choices": [type("Choice", (), {"message": type("Message", (), {"content": "OK"})()})()],
+            },
+        )()
+
+        payload = self.service.test_llm_channel(
+            name="primary",
+            protocol="openai",
+            base_url="https://api.moonshot.cn/v1",
+            api_key="sk-test-value",
+            models=["kimi-k2.6"],
+        )
+
+        self.assertTrue(payload["success"])
+        self.assertEqual(mock_completion.call_args.kwargs["temperature"], 1.0)
+        self.assertEqual(self.manager.read_config_map()["LLM_TEMPERATURE"], "0.42")
+
+    @patch("litellm.completion")
+    @patch("src.services.system_config_service.Config._load_from_env")
+    def test_test_llm_channel_uses_runtime_temperature_for_non_kimi_models(
+        self,
+        mock_load_config,
+        mock_completion,
+    ) -> None:
+        mock_load_config.return_value = SimpleNamespace(llm_temperature=0.42)
+        mock_completion.return_value = type(
+            "MockResponse",
+            (),
+            {
+                "choices": [type("Choice", (), {"message": type("Message", (), {"content": "OK"})()})()],
+            },
+        )()
+
+        payload = self.service.test_llm_channel(
+            name="primary",
+            protocol="openai",
+            base_url="https://api.example.com/v1",
+            api_key="sk-test-value",
+            models=["gpt-4o-mini"],
+        )
+
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["resolved_model"], "openai/gpt-4o-mini")
+        self.assertEqual(mock_completion.call_args.kwargs["temperature"], 0.42)
+
+    @patch("src.services.system_config_service.requests.get")
+    def test_discover_llm_channel_models_returns_deduped_ids(self, mock_get) -> None:
+        mock_response = Mock()
+        mock_response.ok = True
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "data": [
+                {"id": "qwen-plus"},
+                {"id": "qwen-plus"},
+                {"id": "qwen-turbo"},
+            ]
+        }
+        mock_get.return_value = mock_response
+
+        payload = self.service.discover_llm_channel_models(
+            name="dashscope",
+            protocol="openai",
+            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            api_key="sk-test-value",
+        )
+
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["resolved_protocol"], "openai")
+        self.assertEqual(payload["models"], ["qwen-plus", "qwen-turbo"])
+        mock_get.assert_called_once()
+        self.assertEqual(
+            mock_get.call_args.args[0],
+            "https://dashscope.aliyuncs.com/compatible-mode/v1/models",
+        )
+        self.assertEqual(
+            mock_get.call_args.kwargs["headers"]["Authorization"],
+            "Bearer sk-test-value",
+        )
+        self.assertFalse(mock_get.call_args.kwargs["allow_redirects"])
+
+    @patch("src.services.system_config_service.requests.get")
+    def test_discover_llm_channel_models_rejects_redirect_responses(self, mock_get) -> None:
+        mock_response = Mock()
+        mock_response.ok = True
+        mock_response.status_code = 302
+        mock_get.return_value = mock_response
+
+        payload = self.service.discover_llm_channel_models(
+            name="dashscope",
+            protocol="openai",
+            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            api_key="sk-test-value",
+        )
+
+        self.assertFalse(payload["success"])
+        self.assertEqual(payload["message"], "Model discovery request was redirected")
+        self.assertIn("Redirect responses are not allowed", payload["error"])
+        self.assertFalse(mock_get.call_args.kwargs["allow_redirects"])
+
+    def test_discover_llm_channel_models_requires_base_url(self) -> None:
+        payload = self.service.discover_llm_channel_models(
+            name="primary",
+            protocol="openai",
+            base_url="",
+            api_key="sk-test-value",
+        )
+
+        self.assertFalse(payload["success"])
+        self.assertIn("base URL", payload["error"])
+        self.assertEqual(payload["models"], [])
+
+    def test_discover_llm_channel_models_rejects_unsupported_protocol(self) -> None:
+        payload = self.service.discover_llm_channel_models(
+            name="gemini",
+            protocol="gemini",
+            base_url="https://example.com/v1",
+            api_key="sk-test-value",
+        )
+
+        self.assertFalse(payload["success"])
+        self.assertEqual(payload["resolved_protocol"], "gemini")
+        self.assertIn("does not support /models discovery yet", payload["error"])
+
+    def test_build_llm_models_url_strips_query_and_fragment(self) -> None:
+        models_url = SystemConfigService._build_llm_models_url(
+            "https://example.com/v1/chat/completions?api-version=1#frag"
+        )
+
+        self.assertEqual(models_url, "https://example.com/v1/models")
+
+    def test_build_llm_models_url_supports_deepseek_root_base_url(self) -> None:
+        models_url = SystemConfigService._build_llm_models_url("https://api.deepseek.com")
+
+        self.assertEqual(models_url, "https://api.deepseek.com/models")
+
     def test_validate_reports_invalid_event_rule_semantics(self) -> None:
         validation = self.service.validate(items=[{
             "key": "AGENT_EVENT_ALERT_RULES_JSON",
@@ -626,6 +921,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertIn("不会自动重建 scheduler", schedule_warning)
         self.assertIn("以 schedule 模式重新启动后生效", schedule_warning)
         self.assertNotIn("它属于启动期单次运行配置", schedule_warning)
+
 
     def test_validate_rejects_comma_only_api_key(self) -> None:
         """Whitespace/comma-only api_key must fail validation (P2: parsed-segment check)."""

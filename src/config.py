@@ -50,6 +50,21 @@ class ConfigIssue:
 _MANAGED_LITELLM_KEY_PROVIDERS = {"gemini", "vertex_ai", "anthropic", "openai", "deepseek"}
 SUPPORTED_LLM_CHANNEL_PROTOCOLS = ("openai", "anthropic", "gemini", "vertex_ai", "deepseek", "ollama")
 _FALSEY_ENV_VALUES = {"0", "false", "no", "off"}
+# Kimi K2.6 is consumed through Moonshot's OpenAI-compatible API in this
+# repository. Official references:
+# - https://platform.kimi.ai/docs/guide/kimi-k2-6-quickstart
+# - https://platform.moonshot.ai/docs/guide/compatibility#parameters-differences-in-request-body
+# - https://huggingface.co/moonshotai/Kimi-K2.6
+# - https://docs.litellm.ai/docs/providers/openai_compatible
+# Only the strict Kimi K2.6 family is normalized here; other models and
+# fallbacks continue using the configured runtime temperature.
+_FIXED_TEMPERATURE_LITELLM_MODELS: Dict[str, Dict[str, float]] = {
+    "kimi-k2.6": {
+        "thinking": 1.0,
+        "non_thinking": 0.6,
+    },
+}
+AGENT_MAX_STEPS_DEFAULT = 10
 NEWS_STRATEGY_WINDOWS: Dict[str, int] = {
     "ultra_short": 1,
     "short": 3,
@@ -291,8 +306,148 @@ def get_configured_llm_models(model_list: List[Dict[str, Any]]) -> List[str]:
     return models
 
 
+def resolve_litellm_wire_model(
+    model: str,
+    model_list: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    """Resolve a router alias to its underlying LiteLLM wire model."""
+    normalized_model = (model or "").strip()
+    if not normalized_model or not model_list:
+        return normalized_model
+
+    model_entry = _resolve_litellm_model_list_entry(normalized_model, model_list)
+    if not model_entry:
+        return normalized_model
+
+    params = model_entry.get("litellm_params", {}) or {}
+    wire_model = str(params.get("model") or "").strip()
+    if wire_model:
+        return wire_model
+    return normalized_model
+
+
+def _resolve_litellm_model_list_entry(
+    model: str,
+    model_list: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Return the Router model_list entry matching the configured alias."""
+    normalized_model = (model or "").strip()
+    if not normalized_model or not model_list:
+        return None
+
+    for entry in model_list:
+        model_name = str(entry.get("model_name") or "").strip()
+        if not model_name:
+            params = entry.get("litellm_params", {}) or {}
+            model_name = str(params.get("model") or "").strip()
+        if model_name == normalized_model:
+            return entry
+    return None
+
+
+def _extract_thinking_config(payload: Optional[Dict[str, Any]]) -> Any:
+    """Extract a thinking-mode flag from LiteLLM-style request kwargs."""
+    if not isinstance(payload, dict):
+        return None
+    extra_body = payload.get("extra_body")
+    if isinstance(extra_body, dict) and "thinking" in extra_body:
+        return extra_body.get("thinking")
+    if "thinking" in payload:
+        return payload.get("thinking")
+    return None
+
+
+def _parse_thinking_enabled(value: Any) -> Optional[bool]:
+    """Parse thinking-mode config into True/False/unknown."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"enabled", "enable", "true", "1", "on", "thinking"}:
+            return True
+        if normalized in {"disabled", "disable", "false", "0", "off", "none", "non-thinking", "non_thinking"}:
+            return False
+        return None
+    if isinstance(value, dict):
+        if "enabled" in value:
+            return _parse_thinking_enabled(value.get("enabled"))
+        if "type" in value:
+            return _parse_thinking_enabled(value.get("type"))
+    return None
+
+
+def resolve_litellm_thinking_enabled(
+    model: str,
+    model_list: Optional[List[Dict[str, Any]]] = None,
+    request_overrides: Optional[Dict[str, Any]] = None,
+) -> Optional[bool]:
+    """Resolve whether the outgoing LiteLLM request explicitly enables thinking."""
+    thinking_config = None
+    model_entry = _resolve_litellm_model_list_entry(model, model_list)
+    if model_entry:
+        thinking_config = _extract_thinking_config(model_entry)
+        entry_params = model_entry.get("litellm_params", {}) or {}
+        entry_thinking_config = _extract_thinking_config(entry_params)
+        if entry_thinking_config is not None:
+            thinking_config = entry_thinking_config
+
+    override_thinking_config = _extract_thinking_config(request_overrides)
+    if override_thinking_config is not None:
+        thinking_config = override_thinking_config
+    return _parse_thinking_enabled(thinking_config)
+
+
+def get_fixed_litellm_temperature(
+    model: str,
+    model_list: Optional[List[Dict[str, Any]]] = None,
+    request_overrides: Optional[Dict[str, Any]] = None,
+) -> Optional[float]:
+    """Return a provider-mandated temperature for known strict models."""
+    normalized_model = resolve_litellm_wire_model(model, model_list).lower()
+    if not normalized_model:
+        return None
+    thinking_enabled = resolve_litellm_thinking_enabled(
+        model,
+        model_list=model_list,
+        request_overrides=request_overrides,
+    )
+    model_parts = [part for part in re.split(r"[/:\s]+", normalized_model) if part]
+    for model_name, temperatures in _FIXED_TEMPERATURE_LITELLM_MODELS.items():
+        if any(part == model_name or part.startswith(f"{model_name}-") for part in model_parts):
+            if thinking_enabled is False and temperatures.get("non_thinking") is not None:
+                return temperatures["non_thinking"]
+            if temperatures.get("thinking") is not None:
+                return temperatures["thinking"]
+            if temperatures.get("non_thinking") is not None:
+                return temperatures["non_thinking"]
+    return None
+
+
+def normalize_litellm_temperature(
+    model: str,
+    temperature: Optional[float],
+    *,
+    default: float = 0.7,
+    model_list: Optional[List[Dict[str, Any]]] = None,
+    request_overrides: Optional[Dict[str, Any]] = None,
+) -> float:
+    """Normalize temperature before sending a LiteLLM request."""
+    fixed_temperature = get_fixed_litellm_temperature(
+        model,
+        model_list=model_list,
+        request_overrides=request_overrides,
+    )
+    if fixed_temperature is not None:
+        return fixed_temperature
+    if temperature is None:
+        return default
+    return float(temperature)
+
+
 def resolve_unified_llm_temperature(model: str) -> float:
-    """Resolve the unified LLM temperature with backward-compatible fallbacks."""
+    """Resolve the raw unified LLM temperature with backward-compatible fallbacks."""
     llm_temperature_raw = os.getenv("LLM_TEMPERATURE")
     if llm_temperature_raw and llm_temperature_raw.strip():
         try:
@@ -438,6 +593,9 @@ class Config:
     # === 数据源 API Token ===
     tushare_token: Optional[str] = None
     tickflow_api_key: Optional[str] = None
+    longbridge_app_key: Optional[str] = None
+    longbridge_app_secret: Optional[str] = None
+    longbridge_access_token: Optional[str] = None
 
     # === AI 分析配置 ===
     # LiteLLM unified model config (provider/model format, e.g. gemini/gemini-2.5-flash)
@@ -495,6 +653,7 @@ class Config:
     vision_provider_priority: str = "gemini,anthropic,openai"
 
     # === 搜索引擎配置（支持多 Key 负载均衡）===
+    anspire_api_keys: List[str] = field(default_factory=list)  # Anspire Search API Keys
     bocha_api_keys: List[str] = field(default_factory=list)  # Bocha API Keys
     minimax_api_keys: List[str] = field(default_factory=list)  # MiniMax API Keys
     tavily_api_keys: List[str] = field(default_factory=list)  # Tavily API Keys
@@ -516,7 +675,7 @@ class Config:
     agent_litellm_model: str = ""  # Optional Agent-only primary model; empty inherits LITELLM_MODEL
     agent_mode: bool = False
     _agent_mode_explicit: bool = False  # True when AGENT_MODE was explicitly set in env
-    agent_max_steps: int = 10
+    agent_max_steps: int = AGENT_MAX_STEPS_DEFAULT
     agent_skills: List[str] = field(default_factory=list)
     agent_skill_dir: Optional[str] = None
     agent_nl_routing: bool = False  # Enable natural language routing in bot dispatcher
@@ -545,6 +704,8 @@ class Config:
     
     # 飞书 Webhook
     feishu_webhook_url: Optional[str] = None
+    feishu_webhook_secret: Optional[str] = None  # 自定义机器人签名密钥（可选）
+    feishu_webhook_keyword: Optional[str] = None  # 自定义机器人关键词（可选）
     
     # Telegram 配置（需要同时配置 Bot Token 和 Chat ID）
     telegram_bot_token: Optional[str] = None  # Bot Token（@BotFather 获取）
@@ -632,6 +793,10 @@ class Config:
 
     # === 数据库配置 ===
     database_path: str = "./data/stock_analysis.db"
+    sqlite_wal_enabled: bool = True
+    sqlite_busy_timeout_ms: int = 5000
+    sqlite_write_retry_max: int = 3
+    sqlite_write_retry_base_delay: float = 0.1
 
     # 是否保存分析上下文快照（用于历史回溯）
     save_context_snapshot: bool = True
@@ -934,6 +1099,7 @@ class Config:
 
         # LITELLM_MODEL: explicit config takes precedence; else infer from available keys
         litellm_model = os.getenv('LITELLM_MODEL', '').strip()
+        inferred_legacy_deepseek_model = False
         if not litellm_model:
             _gemini_model_name = os.getenv('GEMINI_MODEL', 'gemini-3-flash-preview').strip()
             _anthropic_model_name = os.getenv('ANTHROPIC_MODEL', 'claude-3-5-sonnet-20241022').strip()
@@ -944,6 +1110,7 @@ class Config:
                 litellm_model = f'anthropic/{_anthropic_model_name}'
             elif deepseek_api_keys:
                 litellm_model = 'deepseek/deepseek-chat'
+                inferred_legacy_deepseek_model = True
             elif openai_api_keys:
                 # For openai-compatible models, add prefix only if not already prefixed
                 if '/' not in _openai_model_name:
@@ -997,6 +1164,17 @@ class Config:
             if llm_model_list:
                 llm_models_source = "legacy_env"
 
+        if (
+            inferred_legacy_deepseek_model
+            and llm_models_source == "legacy_env"
+            and litellm_model == 'deepseek/deepseek-chat'
+        ):
+            logger.warning(
+                "Deprecation warning:\n"
+                "deepseek-chat will be deprecated on 2026-07-24,\n"
+                "please migrate to deepseek-v4-flash."
+            )
+
         # Auto-infer LITELLM_MODEL from channels when not explicitly set
         if not litellm_model and llm_channels:
             for _ch in llm_channels:
@@ -1021,6 +1199,10 @@ class Config:
         )
 
         # 解析搜索引擎 API Keys（支持多个 key，逗号分隔）
+        # Anspire Search
+        anspire_keys_str = os.getenv('ANSPIRE_API_KEYS', '')
+        anspire_api_keys = [k.strip() for k in anspire_keys_str.split(',') if k.strip()]
+
         bocha_keys_str = os.getenv('BOCHA_API_KEYS', '')
         bocha_api_keys = [k.strip() for k in bocha_keys_str.split(',') if k.strip()]
 
@@ -1108,6 +1290,9 @@ class Config:
             feishu_folder_token=os.getenv('FEISHU_FOLDER_TOKEN'),
             tushare_token=os.getenv('TUSHARE_TOKEN'),
             tickflow_api_key=os.getenv('TICKFLOW_API_KEY'),
+            longbridge_app_key=os.getenv('LONGBRIDGE_APP_KEY') or None,
+            longbridge_app_secret=os.getenv('LONGBRIDGE_APP_SECRET') or None,
+            longbridge_access_token=os.getenv('LONGBRIDGE_ACCESS_TOKEN') or None,
             litellm_model=litellm_model,
             litellm_fallback_models=litellm_fallback_models,
             llm_temperature=resolve_unified_llm_temperature(litellm_model),
@@ -1150,6 +1335,7 @@ class Config:
                 or ""
             ),
             vision_provider_priority=os.getenv('VISION_PROVIDER_PRIORITY', 'gemini,anthropic,openai'),
+            anspire_api_keys=anspire_api_keys,
             bocha_api_keys=bocha_api_keys,
             minimax_api_keys=minimax_api_keys,
             tavily_api_keys=tavily_api_keys,
@@ -1167,7 +1353,12 @@ class Config:
             agent_litellm_model=agent_litellm_model,
             agent_mode=os.getenv('AGENT_MODE', 'false').lower() == 'true',
             _agent_mode_explicit=os.getenv('AGENT_MODE') is not None,
-            agent_max_steps=parse_env_int(os.getenv('AGENT_MAX_STEPS'), 10, field_name='AGENT_MAX_STEPS', minimum=1),
+            agent_max_steps=parse_env_int(
+                os.getenv('AGENT_MAX_STEPS'),
+                AGENT_MAX_STEPS_DEFAULT,
+                field_name='AGENT_MAX_STEPS',
+                minimum=1,
+            ),
             agent_skills=[s.strip() for s in os.getenv('AGENT_SKILLS', '').split(',') if s.strip()],
             agent_skill_dir=os.getenv('AGENT_SKILL_DIR') or os.getenv('AGENT_STRATEGY_DIR'),
             agent_nl_routing=os.getenv('AGENT_NL_ROUTING', 'false').lower() == 'true',
@@ -1214,6 +1405,8 @@ class Config:
             candidate_enhancer_output_dir=os.getenv('CANDIDATE_ENHANCER_OUTPUT_DIR', './reports/candidate_enhancer'),
             wechat_webhook_url=os.getenv('WECHAT_WEBHOOK_URL'),
             feishu_webhook_url=os.getenv('FEISHU_WEBHOOK_URL'),
+            feishu_webhook_secret=os.getenv('FEISHU_WEBHOOK_SECRET'),
+            feishu_webhook_keyword=os.getenv('FEISHU_WEBHOOK_KEYWORD'),
             telegram_bot_token=os.getenv('TELEGRAM_BOT_TOKEN'),
             telegram_chat_id=os.getenv('TELEGRAM_CHAT_ID'),
             telegram_message_thread_id=os.getenv('TELEGRAM_MESSAGE_THREAD_ID'),
@@ -1271,6 +1464,25 @@ class Config:
             md2img_engine=cls._parse_md2img_engine(os.getenv('MD2IMG_ENGINE', 'wkhtmltoimage')),
             prefetch_realtime_quotes=os.getenv('PREFETCH_REALTIME_QUOTES', 'true').lower() == 'true',
             database_path=os.getenv('DATABASE_PATH', './data/stock_analysis.db'),
+            sqlite_wal_enabled=os.getenv('SQLITE_WAL_ENABLED', 'true').lower() == 'true',
+            sqlite_busy_timeout_ms=parse_env_int(
+                os.getenv('SQLITE_BUSY_TIMEOUT_MS'),
+                5000,
+                field_name='SQLITE_BUSY_TIMEOUT_MS',
+                minimum=0,
+            ),
+            sqlite_write_retry_max=parse_env_int(
+                os.getenv('SQLITE_WRITE_RETRY_MAX'),
+                3,
+                field_name='SQLITE_WRITE_RETRY_MAX',
+                minimum=0,
+            ),
+            sqlite_write_retry_base_delay=parse_env_float(
+                os.getenv('SQLITE_WRITE_RETRY_BASE_DELAY'),
+                0.1,
+                field_name='SQLITE_WRITE_RETRY_BASE_DELAY',
+                minimum=0.0,
+            ),
             save_context_snapshot=os.getenv('SAVE_CONTEXT_SNAPSHOT', 'true').lower() == 'true',
             backtest_enabled=os.getenv('BACKTEST_ENABLED', 'true').lower() == 'true',
             backtest_eval_window_days=parse_env_int(os.getenv('BACKTEST_EVAL_WINDOW_DAYS'), 10, field_name='BACKTEST_EVAL_WINDOW_DAYS', minimum=1),
@@ -1892,7 +2104,8 @@ class Config:
     def has_search_capability_enabled(self) -> bool:
         """Whether any search provider is configured or SearXNG fallback is enabled."""
         return bool(
-            self.bocha_api_keys
+            self.anspire_api_keys
+            or self.bocha_api_keys
             or self.minimax_api_keys
             or self.tavily_api_keys
             or self.brave_api_keys
@@ -2029,7 +2242,7 @@ class Config:
             issues.append(ConfigIssue(
                 severity="error",
                 message=(
-                    "未配置任何 LLM（LITELLM_CONFIG / LLM_CHANNELS / *_API_KEY），"
+                    "未配置任何可用的 AI 模型接入（高级模型路由配置 / 渠道 / API Key），"
                     "AI 分析功能将不可用"
                 ),
                 field="LITELLM_CONFIG",
@@ -2038,8 +2251,8 @@ class Config:
             issues.append(ConfigIssue(
                 severity="info",
                 message=(
-                    "LITELLM_MODEL 未配置，将自动从可用 API Key 推断模型。"
-                    "建议尽早配置 LITELLM_MODEL（格式如 gemini/gemini-2.5-flash）"
+                    "尚未明确指定主模型，系统将自动从可用 API Key 推断。"
+                    "建议尽早配置主模型（格式如 gemini/gemini-2.5-flash）"
                 ),
                 field="LITELLM_MODEL",
             ))
@@ -2073,7 +2286,7 @@ class Config:
                 issues.append(ConfigIssue(
                     severity="error",
                     message=(
-                        "LITELLM_MODEL 已配置，但当前渠道/配置文件中不存在该模型。"
+                        "已配置的主模型未出现在当前渠道或高级模型路由配置中。"
                         f" 当前可用模型：{', '.join(available_router_models[:6])}"
                     ),
                     field="LITELLM_MODEL",
@@ -2088,7 +2301,7 @@ class Config:
                 issues.append(ConfigIssue(
                     severity="error",
                     message=(
-                        "AGENT_LITELLM_MODEL 已配置，但当前渠道/配置文件中不存在该模型。"
+                        "已配置的 Agent 主模型未出现在当前渠道或高级模型路由配置中。"
                         f" 当前可用模型：{', '.join(available_router_models[:6])}"
                     ),
                     field="AGENT_LITELLM_MODEL",
@@ -2103,7 +2316,7 @@ class Config:
                 issues.append(ConfigIssue(
                     severity="warning",
                     message=(
-                        "LITELLM_FALLBACK_MODELS 中包含未在当前渠道声明的模型："
+                        "备选模型中包含未在当前渠道或高级模型路由配置中声明的模型："
                         f"{', '.join(invalid_fallbacks[:3])}"
                     ),
                     field="LITELLM_FALLBACK_MODELS",
@@ -2130,7 +2343,7 @@ class Config:
             issues.append(ConfigIssue(
                 severity="error",
                 message=(
-                    "AGENT_LITELLM_MODEL 已配置，但未找到可用的运行时来源"
+                    "已配置 Agent 主模型，但未找到可用的运行时来源"
                     "（启用渠道或匹配的 API Key）。"
                 ),
                 field="AGENT_LITELLM_MODEL",
@@ -2165,6 +2378,31 @@ class Config:
                 severity="warning",
                 message="未配置通知渠道，将不发送推送通知",
                 field="WECHAT_WEBHOOK_URL",
+            ))
+
+        has_feishu_app_id = bool((self.feishu_app_id or "").strip())
+        has_feishu_app_secret = bool((self.feishu_app_secret or "").strip())
+        has_feishu_app_credentials = has_feishu_app_id or has_feishu_app_secret
+        has_feishu_doc_token = bool((self.feishu_folder_token or "").strip())
+        has_feishu_full_cloud_doc_credentials = (
+            has_feishu_app_id
+            and has_feishu_app_secret
+            and has_feishu_doc_token
+        )
+        if (
+            has_feishu_app_credentials
+            and not has_feishu_full_cloud_doc_credentials
+            and not self.feishu_webhook_url
+            and not (self.feishu_stream_enabled and has_feishu_app_id and has_feishu_app_secret)
+        ):
+            issues.append(ConfigIssue(
+                severity="warning",
+                message=(
+                    "仅配置 FEISHU_APP_ID / FEISHU_APP_SECRET 不会开启飞书群 Webhook 推送；"
+                    "如需群消息通知，请配置 FEISHU_WEBHOOK_URL。若要使用应用机器人，请同时开启 "
+                    "FEISHU_STREAM_ENABLED 并完成应用发布与权限配置。"
+                ),
+                field="FEISHU_WEBHOOK_URL",
             ))
 
         # --- Deprecated field migration hints ---

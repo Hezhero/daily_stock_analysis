@@ -14,7 +14,12 @@ from tests.litellm_stub import ensure_litellm_stub
 ensure_litellm_stub()
 
 from api.v1.endpoints import system_config
-from api.v1.schemas.system_config import ImportSystemConfigRequest, TestLLMChannelRequest, UpdateSystemConfigRequest
+from api.v1.schemas.system_config import (
+    DiscoverLLMChannelModelsRequest,
+    ImportSystemConfigRequest,
+    TestLLMChannelRequest,
+    UpdateSystemConfigRequest,
+)
 from src.config import Config
 from src.core.config_manager import ConfigManager
 from src.services.system_config_service import SystemConfigService
@@ -284,6 +289,50 @@ class SystemConfigApiTestCase(unittest.TestCase):
         self.assertTrue(payload["success"])
         self.assertEqual(payload["resolved_model"], "openai/gpt-4o-mini")
         mock_test.assert_called_once()
+
+    def test_validate_returns_user_facing_model_message_without_internal_env_key_name(self) -> None:
+        validation = self.service.validate(
+            items=[
+                {"key": "LLM_CHANNELS", "value": "primary"},
+                {"key": "LLM_PRIMARY_PROTOCOL", "value": "openai"},
+                {"key": "LLM_PRIMARY_API_KEY", "value": "sk-test-value"},
+                {"key": "LLM_PRIMARY_MODELS", "value": "gpt-4o-mini"},
+                {"key": "LITELLM_MODEL", "value": "openai/gpt-4o"},
+            ]
+        )
+
+        self.assertFalse(validation["valid"])
+        issue = next(issue for issue in validation["issues"] if issue["key"] == "LITELLM_MODEL")
+        self.assertEqual(issue["code"], "unknown_model")
+        self.assertNotIn("LITELLM_MODEL", issue["message"])
+        self.assertIn("primary model", issue["message"].lower())
+
+    def test_discover_llm_channel_models_endpoint_returns_service_payload(self) -> None:
+        with patch.object(
+            self.service,
+            "discover_llm_channel_models",
+            return_value={
+                "success": True,
+                "message": "LLM channel model discovery succeeded",
+                "error": None,
+                "resolved_protocol": "openai",
+                "models": ["qwen-plus", "qwen-turbo"],
+                "latency_ms": 88,
+            },
+        ) as mock_discover:
+            payload = system_config.discover_llm_channel_models(
+                request=DiscoverLLMChannelModelsRequest(
+                    name="dashscope",
+                    protocol="openai",
+                    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+                    api_key="sk-test",
+                ),
+                service=self.service,
+            ).model_dump()
+
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["models"], ["qwen-plus", "qwen-turbo"])
+        mock_discover.assert_called_once()
 
 
 if __name__ == "__main__":
