@@ -37,6 +37,7 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
+import baostock as bs
 
 # ─── 配置 ────────────────────────────────────────────────────────────
 INITIAL_CAPITAL = 1000000.0
@@ -1466,6 +1467,7 @@ def send_backtest_email(top_stocks, results, recommendations, unique_strategies,
 
 def main(argv=None):
     parser = argparse.ArgumentParser()
+    parser.add_argument("--force", action="store_true", help="强制运行（非交易日也执行）")
     parser.add_argument("--skip-email", action="store_true", help="跳过邮件发送")
     args = parser.parse_args(argv)
 
