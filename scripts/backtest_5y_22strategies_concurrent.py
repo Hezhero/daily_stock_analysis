@@ -1291,6 +1291,7 @@ def send_backtest_email(top_stocks, results, recommendations, unique_strategies,
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--force", action="store_true", help="强制运行（非交易日也执行）")
     args = parser.parse_args()
 
     # 判断是否为交易日
@@ -1359,7 +1360,7 @@ def main():
     logger.info(f"5日验证胜率前10股票: {len(top_stocks)} 只")
 
     # 下个交易日推荐（基于回测前10策略）
-    recommendations, unique_strategies = get_next_day_recommendations(df_week, results, top_n=10)
+    recommendations, unique_strategies = get_next_day_recommendations(df_week, top_stocks, results, top_n=10)
     if recommendations:
         logger.info(f"下交易日推荐股票 {len(recommendations)} 只:")
         for rec in recommendations:
