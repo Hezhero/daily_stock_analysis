@@ -895,13 +895,20 @@ def get_top_stocks_by_win_rate(df_week, results, top_n=10):
                 continue
 
             # 获取买入价格（统一用buy_date的开盘价）
-            buy_price_row = df_week[(df_week["code"] == code) & (df_week["date"] == buy_date)]
+            buy_price_row = df_week.loc[
+                (df_week["code"] == code) & (df_week["date"] == buy_date),
+                ["name", "open"],
+            ]
             if buy_price_row.empty:
                 continue
+            buy_name = buy_price_row.iloc[0]["name"]
             buy_price = buy_price_row.iloc[0]["open"]
 
             # 获取卖出价格（统一用sell_date的收盘价）
-            sell_price_row = df_week[(df_week["code"] == code) & (df_week["date"] == sell_date)]
+            sell_price_row = df_week.loc[
+                (df_week["code"] == code) & (df_week["date"] == sell_date),
+                ["close"],
+            ]
             if sell_price_row.empty:
                 continue
             sell_price = sell_price_row.iloc[0]["close"]
@@ -912,7 +919,7 @@ def get_top_stocks_by_win_rate(df_week, results, top_n=10):
             if code not in stock_info:
                 stock_info[code] = {
                     "code": code,
-                    "name": record.get("name", ""),
+                    "name": buy_name,
                     "strategies": [],
                     "win_rates": [],
                     "total_trades_list": [],
