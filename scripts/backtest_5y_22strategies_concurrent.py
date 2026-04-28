@@ -1387,6 +1387,8 @@ def is_trading_day(date):
     Returns:
         bool: True表示是交易日，False表示非交易日
     """
+    import baostock as bs
+
     # 初始化baostock连接
     lg = bs.login()
     if lg.error_code != '0':
