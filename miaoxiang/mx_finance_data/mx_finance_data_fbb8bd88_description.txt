@@ -1,0 +1,8 @@
+金融数据查询结果说明
+========================================
+查询内容: 162297.SZ 396602.SZ 157463.SZ 600323.SH 600566.SH 在 2026-04-21 的收盘价
+数据文件路径: /opt/daily_stock_analysis/miaoxiang/mx_finance_data/mx_finance_data_fbb8bd88.xlsx
+描述文件路径: /opt/daily_stock_analysis/miaoxiang/mx_finance_data/mx_finance_data_fbb8bd88_description.txt
+数据行数: 3
+表数量: 2
+Sheet 列表: 19广东52(157463.SH)的收盘价, 瀚蓝环境(600323.SH)等的收盘价

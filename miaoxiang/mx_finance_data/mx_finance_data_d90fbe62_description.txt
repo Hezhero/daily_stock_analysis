@@ -1,0 +1,8 @@
+金融数据查询结果说明
+========================================
+查询内容: 601921.SH 603060.SH 603205.SH 603221.SH 605369.SH 在 2026-04-21 的收盘价
+数据文件路径: /opt/daily_stock_analysis/miaoxiang/mx_finance_data/mx_finance_data_d90fbe62.xlsx
+描述文件路径: /opt/daily_stock_analysis/miaoxiang/mx_finance_data/mx_finance_data_d90fbe62_description.txt
+数据行数: 3
+表数量: 1
+Sheet 列表: 浙版传媒(601921.SH)等的收盘价

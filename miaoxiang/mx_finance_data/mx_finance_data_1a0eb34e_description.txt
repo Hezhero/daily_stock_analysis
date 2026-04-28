@@ -1,0 +1,8 @@
+金融数据查询结果说明
+========================================
+查询内容: 002127.SZ 002313.SZ 002380.SZ 605530.SH 339555.SZ 在 2026-04-22 的收盘价
+数据文件路径: /opt/daily_stock_analysis/miaoxiang/mx_finance_data/mx_finance_data_1a0eb34e.xlsx
+描述文件路径: /opt/daily_stock_analysis/miaoxiang/mx_finance_data/mx_finance_data_1a0eb34e_description.txt
+数据行数: 3
+表数量: 1
+Sheet 列表: 南极电商(002127.SZ)等的收盘价

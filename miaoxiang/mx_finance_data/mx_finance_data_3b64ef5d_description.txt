@@ -1,0 +1,8 @@
+金融数据查询结果说明
+========================================
+查询内容: 303264.SZ 230046.SZ 205612.SZ 333663.SZ 202447.SZ 在 2026-04-21 的收盘价
+数据文件路径: /opt/daily_stock_analysis/miaoxiang/mx_finance_data/mx_finance_data_3b64ef5d.xlsx
+描述文件路径: /opt/daily_stock_analysis/miaoxiang/mx_finance_data/mx_finance_data_3b64ef5d_description.txt
+数据行数: 1
+表数量: 1
+Sheet 列表: 23重庆09(230046.SH)的收盘价
