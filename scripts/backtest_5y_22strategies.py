@@ -118,7 +118,10 @@ def convert_market_numeric_columns_to_float32(df: pd.DataFrame) -> pd.DataFrame:
 def load_or_build_market_data_cache(start: str, end: str) -> pd.DataFrame:
     cache_path = get_market_cache_path(start, end)
     if cache_path.exists():
-        return pd.read_parquet(cache_path)
+        df = pd.read_parquet(cache_path)
+        # parquet 读取后 float32 可能恢复为 float64，强制转回
+        df = convert_market_numeric_columns_to_float32(df)
+        return df
     market_data = load_data(start, end)
     market_data = convert_market_numeric_columns_to_float32(market_data)
     market_data.to_parquet(cache_path, index=False)
@@ -329,40 +332,39 @@ def load_or_fill_adjust_factor_cache(codes: List[str], start: str, end: str) -> 
 
 def apply_forward_adjustment(df: pd.DataFrame, df_factor: pd.DataFrame) -> pd.DataFrame:
     """
-    基于复权因子将不复权价格转换为前复权价格
+    基于复权因子将不复权价格转换为前复权价格（原地操作，低内存）
     前复权价格 = 不复权价格 × 当日 foreAdjustFactor
     """
     df = df.sort_values(["code", "date"]).reset_index(drop=True)
-    adjusted_rows = []
+    df["date"] = pd.to_datetime(df["date"]).astype("datetime64[ns]")
 
-    for code, stock_df in df.groupby("code", sort=False):
-        stock_df = stock_df.sort_values("date").copy()
-        stock_df["date"] = pd.to_datetime(stock_df["date"]).astype("datetime64[ns]")
-        factor_df = df_factor[df_factor["code"] == code][["dividOperateDate", "foreAdjustFactor"]].sort_values("dividOperateDate").copy()
-        factor_df["dividOperateDate"] = pd.to_datetime(factor_df["dividOperateDate"]).astype("datetime64[ns]")
+    if not df_factor.empty:
+        factor_subset = df_factor[["code", "dividOperateDate", "foreAdjustFactor"]].copy()
+        factor_subset["dividOperateDate"] = pd.to_datetime(factor_subset["dividOperateDate"]).astype("datetime64[ns]")
+        factor_subset.sort_values("dividOperateDate", inplace=True)
 
-        if factor_df.empty:
-            stock_df["adjust_factor"] = 1.0
-        else:
-            stock_df = pd.merge_asof(
-                stock_df,
-                factor_df,
-                left_on="date",
-                right_on="dividOperateDate",
-                direction="backward",
-            )
-            stock_df["adjust_factor"] = stock_df["foreAdjustFactor"].fillna(1.0)
-            stock_df.drop(columns=["dividOperateDate", "foreAdjustFactor"], inplace=True)
+        df = pd.merge_asof(
+            df.sort_values("date"),
+            factor_subset,
+            left_on="date",
+            right_on="dividOperateDate",
+            by="code",
+            direction="backward",
+        )
+        df["foreAdjustFactor"] = df["foreAdjustFactor"].fillna(1.0)
+        df.drop(columns=["dividOperateDate"], inplace=True, errors="ignore")
 
         for col in ["open", "high", "low", "close"]:
-            stock_df[col] = stock_df[col] * stock_df["adjust_factor"]
+            df[col] = df[col] * df["foreAdjustFactor"]
+        df.drop(columns=["foreAdjustFactor"], inplace=True)
+    else:
+        pass  # 无复权因子，保持原价不变
 
-        stock_df["pre_close"] = stock_df["close"].shift(1)
-        stock_df["pct_chg"] = (stock_df["close"] / stock_df["pre_close"] - 1) * 100
-        stock_df.drop(columns=["adjust_factor"], inplace=True)
-        adjusted_rows.append(stock_df)
+    g = df.groupby("code", sort=False)
+    df["pre_close"] = g["close"].shift(1)
+    df["pct_chg"] = (df["close"] / df["pre_close"] - 1) * 100
 
-    return pd.concat(adjusted_rows, ignore_index=True)
+    return df
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -388,7 +390,12 @@ def get_indicator_cache_path(market_cache_key: str) -> Path:
 def load_or_build_indicator_cache(df_adjusted: pd.DataFrame, market_cache_key: str) -> pd.DataFrame:
     cache_path = get_indicator_cache_path(market_cache_key)
     if cache_path.exists():
-        return pd.read_parquet(cache_path)
+        df = pd.read_parquet(cache_path)
+        # parquet 读取后 float32 可能恢复为 float64，强制转回
+        float_cols = [c for c in df.columns if c not in ("code", "name", "date") and df[c].dtype == "float64"]
+        for c in float_cols:
+            df[c] = df[c].astype("float32")
+        return df
     indicator_df = compute_indicators(df_adjusted)
     indicator_df.to_parquet(cache_path, index=False)
     return indicator_df
@@ -460,6 +467,12 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     # ── 5日持仓收益率（第1天开盘买，第5天收盘卖）────
     # shift(-4) 表示取4天后的收盘价（从买入当天算起第5天）
     df["ret_5d_open_to_close"] = (g["close"].shift(-4) / df["open"] - 1)
+
+    # 指标列转为 float32 节省内存（约减半）
+    indicator_cols = [c for c in df.columns if c not in ("code", "name", "date")]
+    for c in indicator_cols:
+        if df[c].dtype == "float64":
+            df[c] = df[c].astype("float32")
 
     logger.info(f"指标计算完成，耗时 {time.time()-t0:.1f}s")
     gc.collect()
@@ -1524,13 +1537,13 @@ def main(argv=None):
     logger.info(f"回测区间: {backtest_start_date.date()} ~ {backtest_end_date.date()}")
     logger.info(f"验证区间: {validate_start_date.date()} ~ {validate_end_date.date()} (共{VALIDATE_DAYS}个交易日)")
 
-    # 回测数据
-    df_bt = df_all[df_all["date"] <= pd.Timestamp(backtest_end_date)].copy()
-
-    # 验证数据
+    # 先提取验证数据（很小），再原地过滤回测数据，避免 copy 翻倍内存
     df_week = df_all[df_all["date"] >= pd.Timestamp(validate_start_date)].copy()
 
-    del df_all
+    # 回测数据：用 bool 索引过滤后 reset_index 替代 .copy()
+    mask_bt = df_all["date"] <= pd.Timestamp(backtest_end_date)
+    df_bt = df_all.loc[mask_bt].reset_index(drop=True)
+    del df_all, mask_bt
     gc.collect()
 
     results = run_backtests(df_bt)

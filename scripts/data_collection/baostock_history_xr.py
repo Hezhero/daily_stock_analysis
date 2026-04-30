@@ -601,6 +601,7 @@ def worker_process_stocks(worker_id, args, task_queue, result_queue, stock_lates
             row = task_queue.get()
             try:
                 if row is _WORKER_SENTINEL:
+                    task_queue.task_done()
                     return
                 result_queue.put(process_single_stock(args, row, stock_latest_dates))
             finally:
