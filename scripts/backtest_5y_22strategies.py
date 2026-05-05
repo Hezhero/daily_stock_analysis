@@ -39,6 +39,12 @@ import numpy as np
 import pandas as pd
 import baostock as bs
 
+# 导入三步过滤（通达信MCP）
+import sys
+_scripts_dir = Path(__file__).resolve().parents[0]
+sys.path.insert(0, str(_scripts_dir))
+from stock_recommend_filter import normalize_code, step1_filter, step2_filter, step3_filter, build_reasons
+
 # ─── 配置 ────────────────────────────────────────────────────────────
 INITIAL_CAPITAL = 1000000.0
 TOP_N_VALIDATE = 5
@@ -1326,7 +1332,9 @@ STRATEGY_NAMES_CN = {
 
 
 
-def send_backtest_email(top_stocks, results, recommendations, unique_strategies, validate_start_date, validate_end_date, backtest_start_date, backtest_end_date):
+def send_backtest_email(top_stocks, results, recommendations, unique_strategies,
+                          filtered_recs, unique_strategies_for_filtered,
+                          validate_start_date, validate_end_date, backtest_start_date, backtest_end_date):
     """
     发送邮件：胜率前10股票、下个交易日推荐及推荐理由
     """
@@ -1340,7 +1348,8 @@ def send_backtest_email(top_stocks, results, recommendations, unique_strategies,
     msg = MIMEMultipart()
     msg['From'] = EmailConfig.SMTP_USER
     msg['To'] = ", ".join(EmailConfig.RECIPIENTS)
-    msg['Subject'] = f"{date_str}-22策略5日验证回测报告"
+    filtered_tag = f"（精选{len(filtered_recs)}只）" if filtered_recs else ""
+    msg['Subject'] = f"{date_str}-22策略5日验证回测报告{filtered_tag}"
 
     # 构建HTML邮件正文
     body_parts = []
@@ -1352,7 +1361,37 @@ def send_backtest_email(top_stocks, results, recommendations, unique_strategies,
     body_parts.append(f"<p style='color:#666;'>回测区间: {backtest_range} | 验证区间: {validate_range} | 验证方法: {validate_start_date.strftime('%m-%d')}开盘买→{validate_end_date.strftime('%m-%d')}收盘卖</p>")
     body_parts.append("<hr>")
 
-    # ===== 下交易日推荐 =====（放在最前面，最重要）
+    # ===== 三步过滤推荐（置顶）=====（最重要）
+    if filtered_recs:
+        body_parts.append("<h3 style='color:red;'>今日精选（22策略 + 三步过滤：技术面35% + 基本面35% + 资金面30%）</h3>")
+        filtered_strategies_cn = [STRATEGY_NAMES_CN.get(s, s) for s in unique_strategies_for_filtered]
+        body_parts.append(f"<p style='color:#666;'>涉及策略: {' | '.join(filtered_strategies_cn)}</p>")
+        body_parts.append("<table border='1' cellpadding='4' cellspacing='0' style='border-collapse:collapse;'>")
+        body_parts.append("<thead><tr>")
+        body_parts.append("<th>排名</th><th>代码</th><th>名称</th><th>综合评分</th><th>技术面</th><th>基本面</th><th>资金面</th><th>推荐理由</th>")
+        body_parts.append("</tr></thead><tbody>")
+
+        for idx, rec in enumerate(filtered_recs, 1):
+            s1 = rec.get('step1_score', 0)
+            s2 = rec.get('step2_score', 0)
+            s3 = rec.get('step3_score', 0)
+            final = rec.get('final_score', 0)
+            reasons = rec.get('reasons', '')
+            name = rec.get('display', rec.get('name', '')).split('(')[0]
+            body_parts.append("<tr>")
+            body_parts.append(f"<td>{idx}</td>")
+            body_parts.append(f"<td><b>{rec['code']}</b></td>")
+            body_parts.append(f"<td>{name}</td>")
+            body_parts.append(f"<td><b>{final:.1f}</b></td>")
+            body_parts.append(f"<td>{s1:.1f}</td>")
+            body_parts.append(f"<td>{s2:.1f}</td>")
+            body_parts.append(f"<td>{s3:.1f}</td>")
+            body_parts.append(f"<td style='font-size:11px;'>{reasons}</td>")
+            body_parts.append("</tr>")
+
+        body_parts.append("</tbody></table><br><hr>")
+
+    # ===== 下交易日推荐 =====（策略共振）
     if recommendations:
         body_parts.append("<h3 style='color:red;'>下个交易日推荐股票（基于胜率前10策略共振）</h3>")
         unique_strategies_cn = [STRATEGY_NAMES_CN.get(s, s) for s in unique_strategies]
@@ -1563,11 +1602,43 @@ def main(argv=None):
             for reason in rec["reasons"]:
                 logger.info(f"    - {reason}")
 
+    # ===== 三步过滤（技术面35% + 基本面35% + 资金面30%）=====
+    filtered_recs = []
+    unique_strategies_for_filtered = unique_strategies
+    if recommendations:
+        try:
+            # 将recommendations中的股票代码转换为normalize格式
+            codes_for_filter = [r['code'] for r in recommendations]
+            logger.info(f"三步过滤输入 ({len(codes_for_filter)} 支股票): {codes_for_filter}")
+            normalized = [normalize_code(c) for c in codes_for_filter]
+            # 全部通过Step1（阈值0，避免提前淘汰）
+            step1_passed = step1_filter(normalized, threshold=0.0)
+            logger.info(f"三步过滤 Step1(技术面) 通过: {len(step1_passed)}/{len(normalized)}")
+            if step1_passed:
+                step2_passed = step2_filter(step1_passed)
+                logger.info(f"三步过滤 Step2(基本面) 通过: {len(step2_passed)}/{len(step1_passed)}")
+                if step2_passed:
+                    step3_passed = step3_filter(step2_passed)
+                    logger.info(f"三步过滤 Step3(资金面) 通过: {len(step3_passed)}/{len(step2_passed)}")
+                    # 计算综合评分
+                    for s in step3_passed:
+                        s['final_score'] = round(s['step1_score'] * 0.35 + s['step2_score'] * 0.35 + s['step3_score'] * 0.30, 1)
+                        s['reasons'] = build_reasons(s)
+                    step3_passed.sort(key=lambda x: x['final_score'], reverse=True)
+                    filtered_recs = step3_passed
+                    logger.info(f"三步过滤最终通过: {len(filtered_recs)} 支")
+                    for r in filtered_recs:
+                        logger.info(f"  {r['code']} | 综合:{r['final_score']} | 技术:{r['step1_score']} | 业绩:{r['step2_score']} | 研报:{r['step3_score']} | {r['reasons']}")
+        except Exception as e:
+            logger.error(f"三步过滤执行失败: {e}")
+
     # 发送邮件
     if args.skip_email:
         logger.info("已指定 --skip-email，跳过邮件发送")
     elif top_stocks:
-        send_backtest_email(top_stocks, results, recommendations, unique_strategies, validate_start_date, validate_end_date, backtest_start_date, backtest_end_date)
+        send_backtest_email(top_stocks, results, recommendations, unique_strategies,
+                          filtered_recs, unique_strategies_for_filtered,
+                          validate_start_date, validate_end_date, backtest_start_date, backtest_end_date)
     else:
         logger.warning("没有找到符合条件的股票，跳过邮件发送")
 
