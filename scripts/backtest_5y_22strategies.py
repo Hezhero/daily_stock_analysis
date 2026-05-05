@@ -919,7 +919,7 @@ def _backtest_single(name: str, df: pd.DataFrame) -> Dict:
 def resolve_max_workers() -> int:
     raw_value = os.environ.get("BACKTEST_MAX_WORKERS")
     if raw_value is None:
-        return 20
+        return 1
 
     try:
         parsed = int(raw_value)
