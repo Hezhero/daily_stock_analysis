@@ -601,8 +601,8 @@ def worker_process_stocks(worker_id, args, task_queue, result_queue, stock_lates
             row = task_queue.get()
             try:
                 if row is _WORKER_SENTINEL:
-                    # 不再提前 return，确保 finally(task_done) 和 finally(logout) 都能执行
-                    break
+                    task_queue.task_done()
+                    return
                 result_queue.put(process_single_stock(args, row, stock_latest_dates))
             finally:
                 task_queue.task_done()
@@ -869,7 +869,6 @@ def main(args):
 
 
 if __name__ == "__main__":
-    import subprocess
     parser = argparse.ArgumentParser(description="从 BaoStock 获取股票历史数据并保存到 PostgreSQL 数据库")
     parser.add_argument('--start_date', type=lambda s: datetime.strptime(s, '%Y-%m-%d').date(),
                         help='开始日期，格式：YYYY-MM-DD，默认为数据库中最新日期的下一天')
@@ -878,23 +877,11 @@ if __name__ == "__main__":
     parser.add_argument('--stock_codes', nargs='+', help='指定股票代码列表，如果不指定则获取所有股票')
     parser.add_argument('--max_workers', type=int, default=PERF_CONFIG['max_workers'],
                         help=f'并发线程数，默认为{PERF_CONFIG["max_workers"]}')
-    parser.add_argument('--timeout_seconds', type=int, default=7200,
-                        help='进程级超时时间（秒），默认7200（2小时），超时强制终止')
 
     args = parser.parse_args()
 
-    # 将当前进程作为子进程启动，用 watchdog 控制全局超时
-    proc = subprocess.Popen(
-        [sys.executable] + sys.argv,
-        cwd=os.getcwd(),
-        env=os.environ.copy(),
-        preexec_fn=os.setsid  # 创建新进程组，方便批量杀
-    )
     try:
-        proc.wait(timeout=args.timeout_seconds)
-    except subprocess.TimeoutExpired:
-        logger.error(f"进程运行超过 {args.timeout_seconds} 秒，强制终止...")
-        os.killpg(os.getpgid(proc.pid), __import__('signal').SIGKILL)
-        proc.wait()
-        sys.exit(1)
-    sys.exit(proc.returncode)
+        main(args)
+    except KeyboardInterrupt:
+        logger.info("用户中断执行")
+        sys.exit(0)
