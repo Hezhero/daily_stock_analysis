@@ -1377,7 +1377,7 @@ def send_backtest_email(top_stocks, results, recommendations, unique_strategies,
             s3 = rec.get('step3_score', 0)
             final = rec.get('final_score', 0)
             reasons = rec.get('reasons', '')
-            name = rec.get('display', rec.get('name', '')).split('(')[0]
+            name = rec.get('name') or rec.get('display', '').split('(')[0]
             body_parts.append("<tr>")
             body_parts.append(f"<td>{idx}</td>")
             body_parts.append(f"<td><b>{rec['code']}</b></td>")
