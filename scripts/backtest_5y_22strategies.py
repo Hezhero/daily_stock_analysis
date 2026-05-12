@@ -1331,6 +1331,28 @@ STRATEGY_NAMES_CN = {
 
 
 
+def get_stock_name_lookup(items: List[dict]) -> Dict[str, str]:
+    lookup = {}
+    for item in items:
+        code = item.get("code")
+        name = item.get("name")
+        if code and name and name != code:
+            lookup[code] = name
+            lookup[code.split(".")[-1]] = name
+    return lookup
+
+
+def get_display_stock_name(rec: dict, stock_name_lookup: Dict[str, str]) -> str:
+    code = rec.get("code", "")
+    name = rec.get("name") or stock_name_lookup.get(code)
+    if name and name != code:
+        return name
+    display = rec.get("display", "")
+    display_name = display.split("(")[0] if display else ""
+    if display_name and display_name != code:
+        return display_name
+    return name or display_name or code
+
 
 def send_backtest_email(top_stocks, results, recommendations, unique_strategies,
                           filtered_recs, unique_strategies_for_filtered,
@@ -1353,6 +1375,7 @@ def send_backtest_email(top_stocks, results, recommendations, unique_strategies,
 
     # 构建HTML邮件正文
     body_parts = []
+    stock_name_lookup = get_stock_name_lookup([*top_stocks, *recommendations, *filtered_recs])
 
     # 标题
     validate_range = f"{validate_start_date.strftime('%Y-%m-%d')} ~ {validate_end_date.strftime('%Y-%m-%d')}"
@@ -1377,7 +1400,7 @@ def send_backtest_email(top_stocks, results, recommendations, unique_strategies,
             s3 = rec.get('step3_score', 0)
             final = rec.get('final_score', 0)
             reasons = rec.get('reasons', '')
-            name = rec.get('name') or rec.get('display', '').split('(')[0]
+            name = get_display_stock_name(rec, stock_name_lookup)
             body_parts.append("<tr>")
             body_parts.append(f"<td>{idx}</td>")
             body_parts.append(f"<td><b>{rec['code']}</b></td>")
