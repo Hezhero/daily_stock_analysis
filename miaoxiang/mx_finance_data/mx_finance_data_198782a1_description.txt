@@ -1,0 +1,8 @@
+金融数据查询结果说明
+========================================
+查询内容: 165528.SZ 842060.SZ 158878.SZ 396108.SZ 153741.SZ 在 2026-04-21 的收盘价
+数据文件路径: /opt/daily_stock_analysis/miaoxiang/mx_finance_data/mx_finance_data_198782a1.xlsx
+描述文件路径: /opt/daily_stock_analysis/miaoxiang/mx_finance_data/mx_finance_data_198782a1_description.txt
+数据行数: 1
+表数量: 1
+Sheet 列表: 中信保诚鼎利混合(LOF)A(165528.SZ)的收盘价

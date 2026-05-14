@@ -1,0 +1,8 @@
+金融数据查询结果说明
+========================================
+查询内容: 002971.SZ 300077.SZ 602476.SH 340536.SZ 300202.SZ 在 2026-04-21 的收盘价
+数据文件路径: /opt/daily_stock_analysis/miaoxiang/mx_finance_data/mx_finance_data_27753d9a.xlsx
+描述文件路径: /opt/daily_stock_analysis/miaoxiang/mx_finance_data/mx_finance_data_27753d9a_description.txt
+数据行数: 3
+表数量: 1
+Sheet 列表: 和远气体(002971.SZ)等的收盘价
