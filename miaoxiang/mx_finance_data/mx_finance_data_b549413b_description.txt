@@ -1,0 +1,8 @@
+金融数据查询结果说明
+========================================
+查询内容: 603198.SH 603219.SH 002004.SZ 002301.SZ 002793.SZ 在 2026-04-21 的收盘价
+数据文件路径: /opt/daily_stock_analysis/miaoxiang/mx_finance_data/mx_finance_data_b549413b.xlsx
+描述文件路径: /opt/daily_stock_analysis/miaoxiang/mx_finance_data/mx_finance_data_b549413b_description.txt
+数据行数: 3
+表数量: 1
+Sheet 列表: 迎驾贡酒(603198.SH)等的收盘价

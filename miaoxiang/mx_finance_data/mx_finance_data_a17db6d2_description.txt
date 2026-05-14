@@ -1,0 +1,8 @@
+金融数据查询结果说明
+========================================
+查询内容: 948367.SH 690765.SH 600699.SH 600941.SH 000715.SZ 在 2026-04-21 的收盘价
+数据文件路径: /opt/daily_stock_analysis/miaoxiang/mx_finance_data/mx_finance_data_a17db6d2.xlsx
+描述文件路径: /opt/daily_stock_analysis/miaoxiang/mx_finance_data/mx_finance_data_a17db6d2_description.txt
+数据行数: 3
+表数量: 1
+Sheet 列表: 均胜电子(600699.SH)等的收盘价
