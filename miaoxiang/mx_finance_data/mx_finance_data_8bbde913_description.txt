@@ -1,8 +1,0 @@
-金融数据查询结果说明
-========================================
-查询内容: 396243.SZ 155055.SZ 600052.SH 600559.SH 601777.SH 在 2026-04-21 的收盘价
-数据文件路径: /opt/daily_stock_analysis/miaoxiang/mx_finance_data/mx_finance_data_8bbde913.xlsx
-描述文件路径: /opt/daily_stock_analysis/miaoxiang/mx_finance_data/mx_finance_data_8bbde913_description.txt
-数据行数: 3
-表数量: 1
-Sheet 列表: 东望时代(600052.SH)等的收盘价

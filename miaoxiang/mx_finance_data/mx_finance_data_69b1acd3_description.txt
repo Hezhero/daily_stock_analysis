@@ -1,8 +1,0 @@
-金融数据查询结果说明
-========================================
-查询内容: 000715.SZ 002004.SZ 002127.SZ 002259.SZ 002301.SZ 在 2026-04-27 的收盘价
-数据文件路径: /opt/daily_stock_analysis/miaoxiang/mx_finance_data/mx_finance_data_69b1acd3.xlsx
-描述文件路径: /opt/daily_stock_analysis/miaoxiang/mx_finance_data/mx_finance_data_69b1acd3_description.txt
-数据行数: 6
-表数量: 2
-Sheet 列表: 中兴商业(000715.SZ)等当前的最新价, 中兴商业(000715.SZ)等的收盘价

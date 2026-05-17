@@ -1,8 +1,0 @@
-金融数据查询结果说明
-========================================
-查询内容: 229184.SZ 333530.SZ 202175.SZ 198677.SZ 846828.SZ 在 2026-04-22 的收盘价
-数据文件路径: /opt/daily_stock_analysis/miaoxiang/mx_finance_data/mx_finance_data_6899e63e.xlsx
-描述文件路径: /opt/daily_stock_analysis/miaoxiang/mx_finance_data/mx_finance_data_6899e63e_description.txt
-数据行数: 1
-表数量: 1
-Sheet 列表: 23安徽65(198677.IB)的收盘价

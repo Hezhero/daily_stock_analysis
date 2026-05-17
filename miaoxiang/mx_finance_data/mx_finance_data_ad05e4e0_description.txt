@@ -1,8 +1,0 @@
-金融数据查询结果说明
-========================================
-查询内容: 339543.SZ 303263.SZ 230063.SZ 205599.SZ 333655.SZ 在 2026-04-21 的收盘价
-数据文件路径: /opt/daily_stock_analysis/miaoxiang/mx_finance_data/mx_finance_data_ad05e4e0.xlsx
-描述文件路径: /opt/daily_stock_analysis/miaoxiang/mx_finance_data/mx_finance_data_ad05e4e0_description.txt
-数据行数: 1
-表数量: 1
-Sheet 列表: 23湖南04(230063.SH)的收盘价

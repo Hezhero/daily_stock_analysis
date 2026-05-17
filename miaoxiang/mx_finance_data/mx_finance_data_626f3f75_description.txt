@@ -1,8 +1,0 @@
-金融数据查询结果说明
-========================================
-查询内容: 300931.SZ 603289.SH 332959.SZ 291466.SZ 218171.SZ 在 2026-04-22 的收盘价
-数据文件路径: /opt/daily_stock_analysis/miaoxiang/mx_finance_data/mx_finance_data_626f3f75.xlsx
-描述文件路径: /opt/daily_stock_analysis/miaoxiang/mx_finance_data/mx_finance_data_626f3f75_description.txt
-数据行数: 2
-表数量: 1
-Sheet 列表: 通用电梯(300931.SZ)等的收盘价

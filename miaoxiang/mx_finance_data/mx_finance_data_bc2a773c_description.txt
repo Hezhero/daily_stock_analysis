@@ -1,8 +1,0 @@
-金融数据查询结果说明
-========================================
-查询内容: 002629.SZ 002763.SZ 002972.SZ 003006.SZ 300234.SZ 在 2026-04-22 的收盘价
-数据文件路径: /opt/daily_stock_analysis/miaoxiang/mx_finance_data/mx_finance_data_bc2a773c.xlsx
-描述文件路径: /opt/daily_stock_analysis/miaoxiang/mx_finance_data/mx_finance_data_bc2a773c_description.txt
-数据行数: 3
-表数量: 1
-Sheet 列表: 仁智股份(002629.SZ)等的收盘价
