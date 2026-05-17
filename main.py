@@ -838,8 +838,12 @@ def main() -> int:
     # 解析股票列表（统一为大写 Issue #355）
     stock_codes = None
     if args.stocks:
-        stock_codes = [canonical_stock_code(c) for c in args.stocks.split(',') if (c or "").strip()]
-        logger.info(f"使用命令行指定的股票列表: {stock_codes}")
+        parsed_codes = [canonical_stock_code(c) for c in args.stocks.split(',') if (c or "").strip()]
+        if parsed_codes:
+            stock_codes = parsed_codes
+            logger.info(f"使用命令行指定的股票列表: {stock_codes}")
+        else:
+            logger.warning("--stocks 参数未包含有效的股票代码")
 
     # === 处理 --webui / --webui-only 参数，映射到 --serve / --serve-only ===
     if args.webui:
@@ -1020,7 +1024,10 @@ def main() -> int:
             return 0
 
         # 模式3: 正常单次运行
-        if config.run_immediately:
+        has_stock_codes = stock_codes is not None and len(stock_codes) > 0
+        if config.run_immediately or has_stock_codes:
+            if has_stock_codes and not config.run_immediately:
+                logger.info("检测到 --stocks 参数，忽略 RUN_IMMEDIATELY=false 配置")
             run_full_analysis(config, args, stock_codes)
         else:
             logger.info("配置为不立即运行分析 (RUN_IMMEDIATELY=false)")

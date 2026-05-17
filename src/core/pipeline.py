@@ -1717,4 +1717,6 @@ class StockAnalysisPipeline:
             return generator(results, report_type)
         if report_type == ReportType.BRIEF and hasattr(self.notifier, "generate_brief_report"):
             return self.notifier.generate_brief_report(results)
+        if report_type == ReportType.SIMPLE and hasattr(self.notifier, "generate_simple_aggregate_report"):
+            return self.notifier.generate_simple_aggregate_report(results)
         return self.notifier.generate_dashboard_report(results)

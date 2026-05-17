@@ -246,6 +246,8 @@ class NotificationService(
         normalized_type = self._normalize_report_type(report_type)
         if normalized_type == ReportType.BRIEF:
             return self.generate_brief_report(results, report_date=report_date)
+        if normalized_type == ReportType.SIMPLE:
+            return self.generate_simple_aggregate_report(results, report_date=report_date)
         return self.generate_dashboard_report(results, report_date=report_date)
 
     def _collect_models_used(self, results: List[AnalysisResult]) -> List[str]:
@@ -1364,6 +1366,64 @@ class NotificationService(
         lines.append("")
         lines.append(f"*{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*")
         return "\n".join(lines)
+
+    def generate_simple_aggregate_report(
+        self,
+        results: List[AnalysisResult],
+        report_date: Optional[str] = None
+    ) -> str:
+        """
+        生成多只股票的精简合并报告
+
+        将多只股票的单股精简报告合并在一起，适合 REPORT_TYPE=simple 时使用
+
+        Args:
+            results: 分析结果列表
+            report_date: 报告日期（默认今天）
+
+        Returns:
+            Markdown 格式的精简合并报告
+        """
+        config = get_config()
+        report_language = self._get_report_language(results)
+        labels = get_report_labels(report_language)
+
+        if report_date is None:
+            report_date = datetime.now().strftime('%Y-%m-%d')
+
+        # 按评分排序（高分在前）
+        sorted_results = sorted(results, key=lambda x: x.sentiment_score, reverse=True)
+
+        # 统计信息
+        buy_count = sum(1 for r in results if getattr(r, 'decision_type', '') == 'buy')
+        sell_count = sum(1 for r in results if getattr(r, 'decision_type', '') == 'sell')
+        hold_count = sum(1 for r in results if getattr(r, 'decision_type', '') in ('hold', ''))
+
+        report_lines = [
+            f"# 📊 {report_date} {labels['dashboard_title']}（精简版）",
+            "",
+            f"> {labels['analyzed_prefix']} **{len(results)}** {labels['stock_unit']} | "
+            f"🟢{labels['buy_label']}:{buy_count} 🟡{labels['watch_label']}:{hold_count} 🔴{labels['sell_label']}:{sell_count}",
+            "",
+        ]
+
+        # 逐个添加单只股票的精简报告
+        for result in sorted_results:
+            single_report = self.generate_single_stock_report(result)
+            lines = single_report.split("\n")
+            if lines:
+                report_lines.extend(lines)
+                report_lines.append("")
+                report_lines.append("---")
+                report_lines.append("")
+
+        # 添加底部信息
+        model_used_list = self._collect_models_used(results)
+        if model_used_list:
+            report_lines.append(f"*{labels['analysis_model_label']}: {', '.join(model_used_list)}*")
+        report_lines.append(f"*{labels['not_investment_advice']}*")
+
+        return "\n".join(report_lines)
 
     def generate_single_stock_report(self, result: AnalysisResult) -> str:
         """

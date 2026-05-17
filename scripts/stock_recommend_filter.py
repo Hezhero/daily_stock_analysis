@@ -16,7 +16,7 @@ stock_recommend_filter.py
 """
 
 import concurrent.futures
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import argparse
 import asyncio
 import csv
@@ -29,7 +29,7 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 # ─────────────────────────────────────────────
 # 路径配置（相对于本文件位置）
@@ -143,13 +143,13 @@ class TDXMCPClient:
 
 def call_tdx_wenda(question: str, range_market: str = "AG", size: str = "50") -> Dict[str, Any]:
     """
-    调用通达信问小达MCP工具
-    
+    调用通达信问小达MCP工具（支持批量查询）
+
     Args:
-        question: 自然语言查询（如"A股股价大于10元的前10只股票"）
+        question: 自然语言查询（可包含多个股票代码，如"A股 600519 300059 的最新价、涨跌幅"）
         range_market: 市场类别 AG(A股)/HK-GP(港股)/JJ(基金)/ZS(指数)
         size: 每页数量
-    
+
     Returns:
         包含 meta/headers/data/summary 的内层字典
     """
@@ -168,6 +168,36 @@ def call_tdx_wenda(question: str, range_market: str = "AG", size: str = "50") ->
         if isinstance(first_item, dict) and "text" in first_item:
             return json.loads(first_item["text"])
     return result
+
+
+def call_tdx_wenda_batch(questions: List[str], range_market: str = "AG", max_parallel: int = 3) -> List[Dict[str, Any]]:
+    """
+    并发执行多个TDX问小达查询（用于批量股票一次查询）
+
+    Args:
+        questions: 查询列表（如 ["600519最新价", "300059最新价"]）
+        range_market: 市场类别
+        max_parallel: 最大并发数
+
+    Returns:
+        结果列表，与questions顺序对应
+    """
+    results = []
+
+    for i in range(0, len(questions), max_parallel):
+        batch = questions[i:i + max_parallel]
+        with ThreadPoolExecutor(max_workers=min(max_parallel, len(batch))) as executor:
+            futures = {executor.submit(call_tdx_wenda, q, range_market, "20"): j for j, q in enumerate(batch)}
+            batch_results = [None] * len(batch)
+            for future in as_completed(futures):
+                idx = futures[future]
+                try:
+                    batch_results[idx] = future.result(timeout=60)
+                except Exception as e:
+                    batch_results[idx] = {"error": str(e)}
+                results.extend(batch_results)
+        time.sleep(0.3)
+    return results
 
 
 def parse_tdx_result_to_csv(inner: Dict, output_path: Path = None) -> tuple:
@@ -548,25 +578,52 @@ def _parse_technical_score_by_keywords(result: Dict) -> float:
 
 def step1_filter(stocks: List[Dict], threshold: float = 55.0) -> List[Dict]:
     """
-    Step 1 过滤：技术面 + 资金面验证
-    - 评分 ≥ threshold → 通过
+    Step 1 过滤：技术面 + 资金面验证（批量查询优化）
+
+    优化点：
+    1. 将多支股票合并为一次查询，减少API调用次数
+    2. 利用自然语言批量查询能力
+    3. 支持并行批量查询
     """
-    log("[Step 1] 开始技术面+资金面验证")
-    results = {}
-    for s in stocks:
-        try:
-            results[s["em_code"]] = screen_stock_technical(s)
-        except Exception as e:
-            results[s["em_code"]] = {"ok": False, "error": str(e)}
-        time.sleep(0.3)
+    log("[Step 1] 开始技术面+资金面验证（批量查询优化）")
+
+    if not stocks:
+        return []
+
+    # 构建批量查询：多股票一次查询
+    em_codes = [s["em_code"] for s in stocks]
+
+    # 构造批量查询问题，一次获取所有股票的技术面数据
+    batch_question = (
+        f"A股 {','.join(em_codes)} 的最新价、涨跌幅、换手率、成交量、成交额、"
+        f"5日均线、10日均线、20日均线、主力净流入、KDJ、MACD、量比"
+    )
+
+    try:
+        # 单次批量查询代替逐个查询
+        inner = call_tdx_wenda(batch_question, range_market="AG", size=str(len(stocks)))
+        headers = inner.get("headers", [])
+        data = inner.get("data", [])
+
+        if headers and data and len(data) > 0:
+            csv_path, row_count, _ = parse_tdx_result_to_csv(inner)
+            log(f"[Step 1] 批量查询返回 {row_count} 条记录")
+            # 解析CSV，提取每只股票的技术评分
+            results_map = _parse_batch_technical_scores(csv_path, stocks)
+        else:
+            log("[Step 1] 批量查询无结果，降级为逐个查询")
+            results_map = _step1_fallback_individual(stocks)
+
+    except Exception as e:
+        log(f"[Step 1] 批量查询失败: {e}，降级为逐个查询")
+        results_map = _step1_fallback_individual(stocks)
 
     passed = []
     for s in stocks:
-        em_code = s["em_code"]
-        res = results.get(em_code, {})
+        res = results_map.get(s["em_code"], {})
         score = parse_technical_score(res)
         passed_flag = score >= threshold
-        log(f"  {em_code}: 技术评分={score:.1f} → {'✓ 通过' if passed_flag else '✗ 淘汰'}")
+        log(f"  {s['em_code']}: 技术评分={score:.1f} → {'✓ 通过' if passed_flag else '✗ 淘汰'}")
         if passed_flag:
             s["step1_score"] = score
             s["step1_result"] = res
@@ -576,7 +633,7 @@ def step1_filter(stocks: List[Dict], threshold: float = 55.0) -> List[Dict]:
         log("Step1 无通过股票，降低阈值重试...")
         for s in stocks:
             em_code = s["em_code"]
-            res = results.get(em_code, {})
+            res = results_map.get(em_code, {})
             score = parse_technical_score(res)
             passed_flag = score >= 45.0
             log(f"  {em_code}: 技术评分={score:.1f} → {'✓ 通过' if passed_flag else '✗ 淘汰'}")
@@ -589,21 +646,136 @@ def step1_filter(stocks: List[Dict], threshold: float = 55.0) -> List[Dict]:
     return passed
 
 
+def _parse_batch_technical_scores(csv_path: str, stocks: List[Dict]) -> Dict[str, Dict]:
+    """
+    解析批量查询CSV，按股票代码分组返回结果
+    """
+    import csv as csv_lib
+    results = {}
+
+    if not csv_path or not Path(csv_path).exists():
+        return results
+
+    try:
+        with open(csv_path, newline="", encoding="utf-8") as f:
+            reader = csv_lib.DictReader(f)
+            rows = list(reader)
+
+        # 建立股票代码索引
+        stock_map = {s["em_code"]: s for s in stocks}
+
+        for row in rows:
+            # 尝试从行中提取股票代码
+            code = _extract_code_from_row(row)
+            if code and code in stock_map:
+                results[code] = {
+                    "csv_path": csv_path,
+                    "row_data": row,
+                    "ok": True
+                }
+            elif code:
+                # 尝试normalized code（去掉后缀）
+                code_base = code.split(".")[0] if "." in code else code
+                for s in stocks:
+                    if s["code"] == code_base:
+                        results[s["em_code"]] = {
+                            "csv_path": csv_path,
+                            "row_data": row,
+                            "ok": True
+                        }
+                        break
+
+    except Exception as e:
+        log(f"_parse_batch_technical_scores 解析失败: {e}")
+
+    return results
+
+
+def _extract_code_from_row(row: Dict) -> Optional[str]:
+    """从CSV行中提取股票代码"""
+    # 尝试常见代码列
+    code_candidates = ["sec_code", "code", "股票代码", "代码", "secu_code"]
+    for col in row.keys():
+        col_lower = col.lower()
+        if any(c in col_lower for c in code_candidates):
+            val = row[col].strip()
+            if val:
+                return val
+
+    # 尝试从第一列或第二列提取（通常是代码或名称）
+    values = list(row.values())
+    for v in values[:3]:  # 只检查前3列
+        v = v.strip()
+        if re.match(r"^\d{6}\.(SH|SZ|BJ|HK)$", v):
+            return v
+        if re.match(r"^\d{6}$", v):
+            # 补上市场后缀
+            code = v
+            if code.startswith(("6", "9")):
+                return f"{code}.SH"
+            else:
+                return f"{code}.SZ"
+    return None
+
+
+def _step1_fallback_individual(stocks: List[Dict]) -> Dict[str, Dict]:
+    """Step1降级：逐个查询（批量查询失败时使用）"""
+    log("[Step 1] 使用逐个查询模式")
+    results = {}
+    for s in stocks:
+        try:
+            results[s["em_code"]] = screen_stock_technical(s)
+        except Exception as e:
+            results[s["em_code"]] = {"ok": False, "error": str(e)}
+        time.sleep(0.3)
+    return results
+
+
 # ─────────────────────────────────────────────
 # Step 2：业绩基本面验证（stock-earnings-review）
 # ─────────────────────────────────────────────
 
 def step2_filter(stocks: List[Dict]) -> List[Dict]:
     """
-    Step 2 过滤：基本面验证
+    Step 2 过滤：基本面验证（批量查询优化）
+
+    优化点：
+    1. 批量查询多只股票的财务数据
+    2. 并行获取PE、PB、ROE等核心指标
     """
-    log("[Step 2] 开始基本面验证")
+    log("[Step 2] 开始基本面验证（批量查询优化）")
+
+    if not stocks:
+        return []
+
+    em_codes = [s["em_code"] for s in stocks]
+
+    # 批量查询财务数据
+    batch_question = (
+        f"A股 {','.join(em_codes)} 的市盈率、市净率、ROE、净利润增长率、"
+        f"营收增长率、总市值、流通市值"
+    )
+
+    try:
+        inner = call_tdx_wenda(batch_question, range_market="AG", size=str(len(stocks)))
+        headers = inner.get("headers", [])
+        data = inner.get("data", [])
+
+        if headers and data and len(data) > 0:
+            csv_path, row_count, _ = parse_tdx_result_to_csv(inner)
+            log(f"[Step 2] 批量查询返回 {row_count} 条记录")
+            results_map = _parse_batch_financial_scores(csv_path, stocks)
+        else:
+            log("[Step 2] 批量查询无结果，降级为逐个查询")
+            results_map = _step2_fallback_individual(stocks)
+
+    except Exception as e:
+        log(f"[Step 2] 批量查询失败: {e}，降级为逐个查询")
+        results_map = _step2_fallback_individual(stocks)
+
     passed = []
     for s in stocks:
-        try:
-            res = screen_financial(s)
-        except Exception as e:
-            res = {"ok": False, "error": str(e)}
+        res = results_map.get(s["em_code"], {})
         score = parse_financial_score(res)
         passed_flag = score >= 50.0
         log(f"  {s['em_code']}: 基本面评分={score:.1f} → {'✓ 通过' if passed_flag else '✗ 淘汰'}")
@@ -612,21 +784,96 @@ def step2_filter(stocks: List[Dict]) -> List[Dict]:
             s["step2_result"] = res
             passed.append(s)
         time.sleep(0.3)
+
     log(f"[Step 2] 通过 {len(passed)}/{len(stocks)} 支")
     return passed
 
 
-def step3_filter(stocks: List[Dict]) -> List[Dict]:
-    """
-    Step 3 过滤：资金面确认
-    """
-    log("[Step 3] 开始资金面确认")
-    final = []
+def _parse_batch_financial_scores(csv_path: str, stocks: List[Dict]) -> Dict[str, Dict]:
+    """解析批量查询财务CSV"""
+    import csv as csv_lib
+    results = {}
+
+    if not csv_path or not Path(csv_path).exists():
+        return results
+
+    try:
+        with open(csv_path, newline="", encoding="utf-8") as f:
+            reader = csv_lib.DictReader(f)
+            rows = list(reader)
+
+        stock_map = {s["em_code"]: s for s in stocks}
+
+        for row in rows:
+            code = _extract_code_from_row(row)
+            if code and code in stock_map:
+                results[code] = {"csv_path": csv_path, "row_data": row, "ok": True}
+            elif code:
+                code_base = code.split(".")[0] if "." in code else code
+                for s in stocks:
+                    if s["code"] == code_base:
+                        results[s["em_code"]] = {"csv_path": csv_path, "row_data": row, "ok": True}
+                        break
+
+    except Exception as e:
+        log(f"_parse_batch_financial_scores 解析失败: {e}")
+
+    return results
+
+
+def _step2_fallback_individual(stocks: List[Dict]) -> Dict[str, Dict]:
+    """Step2降级：逐个查询"""
+    log("[Step 2] 使用逐个查询模式")
+    results = {}
     for s in stocks:
         try:
-            res = screen_sector(s)
+            results[s["em_code"]] = screen_financial(s)
         except Exception as e:
-            res = {"ok": False, "error": str(e)}
+            results[s["em_code"]] = {"ok": False, "error": str(e)}
+    return results
+
+
+def step3_filter(stocks: List[Dict]) -> List[Dict]:
+    """
+    Step 3 过滤：资金面确认（批量查询优化）
+
+    优化点：
+    1. 利用通达信MCP批量查询行业板块、主力资金流向
+    2. 并行查询提高效率
+    """
+    log("[Step 3] 开始资金面确认（批量查询优化）")
+
+    if not stocks:
+        return []
+
+    em_codes = [s["em_code"] for s in stocks]
+
+    # 批量查询资金面数据
+    batch_question = (
+        f"A股 {','.join(em_codes)} 的近期涨跌幅、换手率、成交量、成交额、"
+        f"量比、主力净流入、5日净流入、10日净流入"
+    )
+
+    try:
+        inner = call_tdx_wenda(batch_question, range_market="AG", size=str(len(stocks)))
+        headers = inner.get("headers", [])
+        data = inner.get("data", [])
+
+        if headers and data and len(data) > 0:
+            csv_path, row_count, _ = parse_tdx_result_to_csv(inner)
+            log(f"[Step 3] 批量查询返回 {row_count} 条记录")
+            results_map = _parse_batch_sector_scores(csv_path, stocks)
+        else:
+            log("[Step 3] 批量查询无结果，降级为逐个查询")
+            results_map = _step3_fallback_individual(stocks)
+
+    except Exception as e:
+        log(f"[Step 3] 批量查询失败: {e}，降级为逐个查询")
+        results_map = _step3_fallback_individual(stocks)
+
+    final = []
+    for s in stocks:
+        res = results_map.get(s["em_code"], {})
         score = parse_sector_score(res)
         passed_flag = score >= 50.0
         log(f"  {s['em_code']}: 资金面评分={score:.1f} → {'✓ 通过' if passed_flag else '✗ 淘汰'}")
@@ -635,8 +882,53 @@ def step3_filter(stocks: List[Dict]) -> List[Dict]:
         if passed_flag:
             final.append(s)
         time.sleep(0.3)
+
     log(f"[Step 3] 最终通过 {len(final)}/{len(stocks)} 支")
     return final
+
+
+def _parse_batch_sector_scores(csv_path: str, stocks: List[Dict]) -> Dict[str, Dict]:
+    """解析批量查询资金面CSV"""
+    import csv as csv_lib
+    results = {}
+
+    if not csv_path or not Path(csv_path).exists():
+        return results
+
+    try:
+        with open(csv_path, newline="", encoding="utf-8") as f:
+            reader = csv_lib.DictReader(f)
+            rows = list(reader)
+
+        stock_map = {s["em_code"]: s for s in stocks}
+
+        for row in rows:
+            code = _extract_code_from_row(row)
+            if code and code in stock_map:
+                results[code] = {"csv_path": csv_path, "row_data": row, "ok": True}
+            elif code:
+                code_base = code.split(".")[0] if "." in code else code
+                for s in stocks:
+                    if s["code"] == code_base:
+                        results[s["em_code"]] = {"csv_path": csv_path, "row_data": row, "ok": True}
+                        break
+
+    except Exception as e:
+        log(f"_parse_batch_sector_scores 解析失败: {e}")
+
+    return results
+
+
+def _step3_fallback_individual(stocks: List[Dict]) -> Dict[str, Dict]:
+    """Step3降级：逐个查询"""
+    log("[Step 3] 使用逐个查询模式")
+    results = {}
+    for s in stocks:
+        try:
+            results[s["em_code"]] = screen_sector(s)
+        except Exception as e:
+            results[s["em_code"]] = {"ok": False, "error": str(e)}
+    return results
 
 
 def screen_financial(stock: Dict) -> Dict[str, Any]:
@@ -853,22 +1145,69 @@ def parse_sector_score(result: Dict) -> float:
 
 
 def build_reasons(stock: Dict) -> str:
-    """生成推荐理由文本。"""
+    """
+    生成推荐理由文本（利用通达信MCP返回的详细数据）
+
+    优化点：根据CSV中的具体字段值生成更有说服力的推荐理由
+    """
     reasons = []
     s1 = stock.get("step1_score", 0)
     s2 = stock.get("step2_score", 0)
     s3 = stock.get("step3_score", 0)
 
+    # 从row_data中提取详细指标
+    row_data = None
+    for key in ["step1_result", "step2_result", "step3_result"]:
+        res = stock.get(key, {})
+        if isinstance(res, dict) and "row_data" in res:
+            row_data = res["row_data"]
+            break
+
+    # 技术面详情
     if s1 >= 80:
-        reasons.append("技术面强势（量价齐升、均线多头排列）")
+        technical_details = []
+        if row_data:
+            change_str = row_data.get("涨跌幅(%)", row_data.get("chg", ""))
+            if change_str:
+                technical_details.append(f"今日涨幅{change_str}%")
+        technical_details.append("技术面强势（量价齐升、均线多头排列）")
+        reasons.append("；".join(technical_details) if technical_details else "技术面强势（量价齐升、均线多头排列）")
     elif s1 >= 65:
         reasons.append("技术面较好")
+    elif s1 >= 55:
+        reasons.append("技术面尚可")
+
+    # 基本面详情
     if s2 >= 70:
-        reasons.append("基本面优秀（低PE、低PB、适中市值）")
+        financial_details = []
+        if row_data:
+            pe_str = row_data.get("市盈率(动)(倍)", "")
+            pb_str = row_data.get("市净率(倍)", "")
+            if pe_str:
+                financial_details.append(f"PE={pe_str}")
+            if pb_str:
+                financial_details.append(f"PB={pb_str}")
+        if financial_details:
+            reasons.append(f"基本面优秀（{', '.join(financial_details)}）")
+        else:
+            reasons.append("基本面优秀（低PE、低PB、适中市值）")
     elif s2 >= 60:
         reasons.append("基本面尚可")
+
+    # 资金面详情
     if s3 >= 70:
-        reasons.append("资金面强势（主力净流入、换手活跃）")
+        money_details = []
+        if row_data:
+            hss_str = row_data.get("换手率(%)", "")
+            lb_str = row_data.get("量比", "")
+            if hss_str:
+                money_details.append(f"换手率{hss_str}%")
+            if lb_str:
+                money_details.append(f"量比{lb_str}")
+        if money_details:
+            reasons.append(f"资金面强势（{', '.join(money_details)}）")
+        else:
+            reasons.append("资金面强势（主力净流入、换手活跃）")
     elif s3 >= 60:
         reasons.append("资金面支撑")
 
