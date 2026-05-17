@@ -1,148 +1,67 @@
-aiohappyeyeballs==2.6.1
-aiohttp==3.13.3
-aiosignal==1.4.0
-akshare==1.18.39
-annotated-doc==0.0.4
-annotated-types==0.7.0
-anyio==4.12.1
-async-timeout==5.0.1
-attrs==25.4.0
-backoff==2.2.1
-baostock==0.9.1
-beautifulsoup4==4.14.3
-bs4==0.0.2
-certifi==2026.2.25
-cffi==2.0.0
-charset-normalizer==3.4.5
-click==8.3.1
-colorama==0.4.6
-cramjam==2.11.0
-cryptography==46.0.5
-cssselect==1.4.0
-curl_cffi==0.13.0
-decorator==5.2.1
-dingtalk-stream==0.24.3
-discord.py==2.7.1
-distro==1.9.0
-duckdb==1.5.1
-efinance==0.5.7
-et_xmlfile==2.0.0
-exceptiongroup==1.3.1
-exchange_calendars==4.13.2
-fake-useragent==2.2.0
-fastapi==0.135.1
-fastparquet==2026.3.0
-fastuuid==0.14.0
-feedfinder2==0.0.4
-feedparser==6.0.12
-filelock==3.25.2
-frozendict==2.4.7
-frozenlist==1.8.0
-fsspec==2026.3.0
-google_search_results==2.4.2
-greenlet==3.4.0
-h11==0.16.0
-hf-xet==1.4.2
-html5lib==1.1
-httpcore==1.0.9
-httptools==0.7.1
-httpx==0.28.1
-huggingface_hub==1.7.1
-idna==3.11
-imgkit==1.2.3
-importlib_metadata==8.7.1
-jieba3k==0.35.1
-Jinja2==3.1.6
-jiter==0.13.0
-joblib==1.5.3
-json_repair==0.58.5
-jsonpath==0.82.2
-jsonschema==4.26.0
-jsonschema-specifications==2025.9.1
-korean-lunar-calendar==0.3.1
-lark-oapi==1.5.3
-litellm==1.82.2
-llvmlite==0.46.0
-longbridge==4.0.5
-lxml==6.0.2
-lxml_html_clean==0.4.4
-markdown-it-py==4.0.0
-markdown2==2.5.5
-MarkupSafe==3.0.3
-mdurl==0.1.2
-mini-racer==0.14.1
-multidict==6.7.1
-multitasking==0.0.12
-newspaper3k==0.2.8
-nltk==3.9.3
-numba==0.64.0
-numpy==2.2.6
-openai==2.28.0
-openpyxl==3.1.5
-pandas==2.3.3
-peewee==4.0.1
-pillow==12.1.1
-platformdirs==4.9.4
-propcache==0.4.1
-protobuf==7.34.0
-psycopg2-binary==2.9.11
-py==1.11.0
-pyarrow==23.0.1
-pycparser==3.0
-pycryptodome==3.23.0
-pydantic==2.12.5
-pydantic_core==2.41.5
-Pygments==2.19.2
-pyluach==2.3.0
-PyNaCl==1.6.2
-pypinyin==0.55.0
-pytdx==1.72
-python-dateutil==2.9.0.post0
-python-dotenv==1.2.2
-python-multipart==0.0.22
-pytz==2026.1.post1
-PyYAML==6.0.3
-referencing==0.37.0
-regex==2026.2.28
-requests==2.32.5
-requests-file==3.0.1
-requests-toolbelt==1.0.0
-retry==0.9.2
-rich==14.3.3
-rpds-py==0.30.0
-schedule==1.2.2
-scipy==1.15.3
-sgmllib3k==1.0.0
-shellingham==1.5.4
-simplejson==3.20.2
-six==1.17.0
-sniffio==1.3.1
-socksio==1.0.0
-soupsieve==2.8.3
-SQLAlchemy==2.0.48
-starlette==0.52.1
-tabulate==0.10.0
-tavily-python==0.7.23
-tenacity==9.1.4
-tickflow==0.1.20
-tiktoken==0.11.0
-tinysegmenter==0.3
-tldextract==5.3.1
-tokenizers==0.22.2
-toolz==1.1.0
-tqdm==4.67.3
-tushare==1.4.25
-typer==0.24.1
-typing-inspection==0.4.2
-typing_extensions==4.15.0
-tzdata==2025.3
-urllib3==2.6.3
-uvicorn==0.41.0
-watchfiles==1.1.1
-webencodings==0.5.1
-websocket-client==1.9.0
-websockets==16.0
-xlrd==2.0.2
-yarl==1.23.0
-yfinance==1.2.0
-zipp==3.23.0
+# ===================================
+# A股自选股智能分析系统 - 依赖列表
+# ===================================
+
+# 核心依赖
+python-dotenv>=1.0.0        # 环境变量配置管理
+tenacity>=8.2.0             # 重试机制（指数退避）
+sqlalchemy>=2.0.0           # ORM数据库操作
+schedule>=1.2.0             # 定时任务调度
+exchange-calendars>=4.5.0   # 交易日历（A股/港股/美股，Issue #373）
+
+# 数据源依赖（多源策略，按优先级排序）
+efinance>=0.5.5             # Priority 0: 东方财富数据源（最高优先级）https://github.com/Micro-sheep/efinance
+akshare>=1.12.0             # Priority 1: 东方财富爬虫数据源
+tushare>=1.4.0              # Priority 2: 挖地兔 Pro API
+pytdx>=1.72                 # Priority 2: 通达信行情服务器
+baostock>=0.8.0             # Priority 3: 证券宝数据
+yfinance>=0.2.0             # Priority 4: Yahoo Finance (Fallback)
+longbridge>=0.2.0           # Priority 5: 长桥 OpenAPI（美股/港股兜底）
+tickflow>=0.1.0            # TickFlow official SDK (Issue #632, market review enhancement)
+
+#飞书
+lark-oapi>=1.0.0             # 飞书API
+
+# 数据处理
+pandas>=2.0.0               # 数据分析
+pypinyin>=0.50.0            # Name-to-code resolver (pinyin matching)
+openpyxl>=3.1.0             # Excel (.xlsx) parsing for import
+numpy>=1.24.0               # 数值计算
+json-repair>=0.55.1         # JSON 修复
+
+# AI 分析
+# Keep the historical minimum version while excluding quarantined builds and avoiding future major breaks.
+litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0   # Unified LLM client (Gemini/Anthropic/OpenAI/DeepSeek etc.)
+tiktoken>=0.8.0,<0.12.0    # BPE tokenizer for LLM token counting (pin <0.12 to avoid plugin registration issues, #537)
+openai>=1.0.0               # OpenAI SDK (transitive dependency of litellm, kept explicit)
+PyYAML>=6.0                 # YAML parser for LITELLM_CONFIG support
+
+# 搜索引擎（用于获取股票新闻）
+tavily-python>=0.3.0        # Tavily 搜索 API（每月 1000 次免费）
+google-search-results>=2.4.0  # SerpAPI（每月 100 次免费）
+
+# 网络请求
+requests>=2.31.0            # HTTP 请求
+markdown2>=2.4.0            # Markdown 转 HTML
+imgkit>=1.2.0              # Markdown 转图片（需安装 wkhtmltopdf）
+fake-useragent>=1.4.0       # 随机 User-Agent 防封禁
+httpx[socks]                # HTTP 客户端 + SOCKS 代理支持（OpenAI 可选依赖）
+dingtalk-stream >= 0.24.3    # 钉钉 Stream SDK
+# 数据库
+# SQLite 是 Python 内置，无需额外安装
+
+# Discord 机器人
+discord.py>=2.0.0              # Discord 机器人开发库
+PyNaCl>=1.5.0                  # Discord Interaction/Webhook Ed25519 签名验证
+
+# Web Content Extraction
+newspaper3k>=0.2.8          # Article extraction
+lxml_html_clean             # Fix for lxml.html.clean ImportError in newer lxml versions
+
+# 报告模板引擎（Report Engine P0）
+jinja2>=3.1.0               # Jinja2 template engine for report rendering
+
+# FastAPI Web 框架
+fastapi>=0.109.0            # 现代 Python Web 框架
+uvicorn[standard]>=0.27.0   # ASGI 服务器
+python-multipart>=0.0.6     # FastAPI File/Form upload support
