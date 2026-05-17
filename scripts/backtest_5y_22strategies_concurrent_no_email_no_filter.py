@@ -41,6 +41,7 @@ from typing import Dict, List, Tuple
 import numpy as np
 import pandas as pd
 import baostock as bs
+from pathlib import Path
 
 # 添加项目根目录到路径
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -958,7 +959,7 @@ def run_main_program_for_stocks(stocks: List[Dict]):
     cmd = [
         sys.executable,
         str(main_script),
-        "--stocks", stock_code_str,
+        "--stocks", stock_code_str,"--force-run"
     ]
 
     logger.info(f"执行命令: {' '.join(cmd)}")
