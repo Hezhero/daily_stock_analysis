@@ -175,7 +175,7 @@ def load_adjust_factor_cache_from_db(codes: List[str], start: str, end: str) -> 
         FROM adjust_factor_cache
         WHERE code IN :codes
           AND divid_operate_date BETWEEN :start AND :end
-        ORDER BY code, dividOperate_date
+        ORDER BY code, divid_operate_date
         """
     ).bindparams(bindparam("codes", expanding=True))
 
