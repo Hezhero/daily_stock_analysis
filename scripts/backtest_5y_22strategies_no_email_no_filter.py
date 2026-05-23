@@ -342,13 +342,17 @@ def get_indicator_cache_path(market_cache_key: str) -> Path:
 def load_or_build_indicator_cache(df_adjusted: pd.DataFrame, market_cache_key: str) -> pd.DataFrame:
     cache_path = get_indicator_cache_path(market_cache_key)
     if cache_path.exists():
+        logger.info("加载缓存的指标数据...")
         df = pd.read_parquet(cache_path)
         float_cols = [c for c in df.columns if c not in ("code", "name", "date") and df[c].dtype == "float64"]
         for c in float_cols:
             df[c] = df[c].astype("float32")
+        log_memory_usage("加载指标缓存后")
         return df
     indicator_df = compute_indicators(df_adjusted)
-    indicator_df.to_parquet(cache_path, index=False)
+    # 使用更高压缩率
+    indicator_df.to_parquet(cache_path, index=False, compression="zstd", compression_level=3)
+    log_memory_usage("计算指标后")
     return indicator_df
 
 
@@ -812,10 +816,7 @@ def calc_metrics(returns: np.ndarray) -> Dict:
 
     avg_holding = sum(HOLDING_PERIODS) / len(HOLDING_PERIODS)
 
-    if _HAS_NUMBA:
-        wr, aw, al, pl, tr, ann, mxd, sr, n_valid = _calc_metrics_core(r, n, avg_holding)
-    else:
-        wr, aw, al, pl, tr, ann, mxd, sr, n_valid = _calc_metrics_core(r, n, avg_holding)
+    wr, aw, al, pl, tr, ann, mxd, sr, n_valid = _calc_metrics_core(r, n, avg_holding)
 
     return {
         "total_trades": int(n_valid),
@@ -863,36 +864,67 @@ def _backtest_single(name: str, df: pd.DataFrame) -> Dict:
 def resolve_max_workers() -> int:
     raw_value = os.environ.get("BACKTEST_MAX_WORKERS")
     if raw_value is None:
-        return 1
+        return 2
 
     try:
         parsed = int(raw_value)
     except ValueError:
-        logger.warning("BACKTEST_MAX_WORKERS=%s 不是有效整数，回退到 1", raw_value)
-        return 1
+        logger.warning("BACKTEST_MAX_WORKERS=%s 不是有效整数，回退到 2", raw_value)
+        return 2
 
     return max(parsed, 1)
+
+
+def log_memory_usage(stage: str):
+    """记录内存使用情况"""
+    try:
+        import psutil
+        process = psutil.Process()
+        mem_info = process.memory_info()
+        logger.info(f"[{stage}] 内存使用: {mem_info.rss / 1024 / 1024:.1f} MB")
+    except ImportError:
+        logger.debug("psutil not installed, skipping memory usage logging")
+
+
+def log_strategy_result(result: Dict, current: int, total: int):
+    """记录单个策略回测结果"""
+    if "error" not in result:
+        logger.info(f"  [{current}/{total}] {result['strategy']}: {result['total_trades']} 笔, "
+                    f"胜率{result['win_rate']:.1f}%, 总收益{result['total_return']:.1f}%")
+    else:
+        logger.error(f"  [{current}/{total}] {result['strategy']}: {result['error']}")
+    log_memory_usage(f"策略 {current} 完成后")
 
 
 def run_backtests(df_bt: pd.DataFrame) -> List[Dict]:
     t0 = time.time()
     n_strategies = len(STRATEGIES)
-    n_workers = min(resolve_max_workers(), n_strategies)
-    logger.info(f"并行回测 {n_strategies} 策略（{n_workers} 线程）...")
+
+    # 检查是否启用并行
+    enable_parallel = os.environ.get("BACKTEST_ENABLE_PARALLEL", "true").lower() != "false"
+    n_workers = min(resolve_max_workers(), n_strategies) if enable_parallel else 1
+
+    if enable_parallel:
+        logger.info(f"并行回测 {n_strategies} 策略（{n_workers} 线程）...")
+    else:
+        logger.info(f"串行回测 {n_strategies} 策略...")
 
     strategy_names = list(STRATEGIES.keys())
     results = []
 
-    with ThreadPoolExecutor(max_workers=n_workers) as executor:
-        futures = {executor.submit(_backtest_single, name, df_bt): name for name in strategy_names}
-        for i, future in enumerate(as_completed(futures)):
-            r = future.result()
+    if enable_parallel and n_workers > 1:
+        with ThreadPoolExecutor(max_workers=n_workers) as executor:
+            futures = {executor.submit(_backtest_single, name, df_bt): name for name in strategy_names}
+            for i, future in enumerate(as_completed(futures)):
+                r = future.result()
+                results.append(r)
+                log_strategy_result(r, i+1, n_strategies)
+    else:
+        # 串行执行
+        for i, name in enumerate(strategy_names):
+            r = _backtest_single(name, df_bt)
             results.append(r)
-            if "error" not in r:
-                logger.info(f"  [{i+1}/{n_strategies}] {r['strategy']}: {r['total_trades']} 笔, "
-                            f"胜率{r['win_rate']:.1f}%, 总收益{r['total_return']:.1f}%")
-            else:
-                logger.error(f"  [{i+1}/{n_strategies}] {r['strategy']}: {r['error']}")
+            log_strategy_result(r, i+1, n_strategies)
 
     valid = sorted([r for r in results if "error" not in r],
                    key=lambda x: x.get("total_return", 0), reverse=True)
@@ -1276,9 +1308,11 @@ def main(argv=None):
     logger.info("=" * 60)
     logger.info("22 策略 5 年回测 + 最近5日验证")
     logger.info(f"Numba加速: {'启用' if _HAS_NUMBA else '未安装（pip install numba）'}")
+    logger.info(f"默认工作线程: {resolve_max_workers()}")
     logger.info("=" * 60)
 
     # 加载数据
+    log_memory_usage("开始")
     df_market = load_or_build_market_data_cache(five_years_ago, today_str)
 
     # 获取复权因子并计算前复权价格
@@ -1291,11 +1325,13 @@ def main(argv=None):
     del df_market
     del df_factor
     gc.collect()
+    log_memory_usage("复权计算后")
 
     market_cache_key = build_market_cache_key(five_years_ago, today_str)
     df_all = load_or_build_indicator_cache(df_adjusted, market_cache_key)
     del df_adjusted
     gc.collect()
+    log_memory_usage("指标计算后")
 
     # 获取所有交易日并排序
     all_dates = sorted(df_all["date"].unique())
@@ -1313,10 +1349,12 @@ def main(argv=None):
     logger.info(f"验证区间: {validate_start_date.date()} ~ {validate_end_date.date()}")
 
     df_week = df_all[df_all["date"] >= pd.Timestamp(validate_start_date)].copy()
+    log_memory_usage("验证数据拆分后")
     mask_bt = df_all["date"] <= pd.Timestamp(backtest_end_date)
     df_bt = df_all.loc[mask_bt].reset_index(drop=True)
     del df_all
     gc.collect()
+    log_memory_usage("回测数据准备后")
 
     results = run_backtests(df_bt)
     val_results = validate_week(df_week, results, TOP_N_VALIDATE)
@@ -1345,12 +1383,15 @@ def main(argv=None):
 def load_or_build_market_data_cache(start: str, end: str) -> pd.DataFrame:
     cache_path = get_market_cache_path(start, end)
     if cache_path.exists():
+        logger.info("加载缓存的市场数据...")
         df = pd.read_parquet(cache_path)
         df = convert_market_numeric_columns_to_float32(df)
+        log_memory_usage("加载市场缓存后")
         return df
     market_data = load_data(start, end)
     market_data = convert_market_numeric_columns_to_float32(market_data)
-    market_data.to_parquet(cache_path, index=False)
+    market_data.to_parquet(cache_path, index=False, compression="zstd", compression_level=3)
+    log_memory_usage("加载市场数据后")
     return market_data
 
 
