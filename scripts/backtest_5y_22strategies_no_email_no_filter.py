@@ -350,8 +350,7 @@ def load_or_build_indicator_cache(df_adjusted: pd.DataFrame, market_cache_key: s
         log_memory_usage("加载指标缓存后")
         return df
     indicator_df = compute_indicators(df_adjusted)
-    # 使用更高压缩率
-    indicator_df.to_parquet(cache_path, index=False, compression="zstd", compression_level=3)
+    indicator_df.to_parquet(cache_path, index=False)
     log_memory_usage("计算指标后")
     return indicator_df
 
@@ -1390,7 +1389,7 @@ def load_or_build_market_data_cache(start: str, end: str) -> pd.DataFrame:
         return df
     market_data = load_data(start, end)
     market_data = convert_market_numeric_columns_to_float32(market_data)
-    market_data.to_parquet(cache_path, index=False, compression="zstd", compression_level=3)
+    market_data.to_parquet(cache_path, index=False)
     log_memory_usage("加载市场数据后")
     return market_data
 
