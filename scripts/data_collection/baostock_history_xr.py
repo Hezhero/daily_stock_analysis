@@ -12,8 +12,9 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import threading
 
-# 每线程独立 BaoStock 会话状态
-BAOSTOCK_THREAD_LOCAL = threading.local()
+# BaoStock 登录状态（全局，因为 BaoStock 是进程级会话）
+BAOSTOCK_LOGGED_IN = False
+BAOSTOCK_LOCK = threading.Lock()
 import psycopg2.sql as sql
 import backoff
 import pandas as pd
@@ -130,54 +131,68 @@ class DatabaseManager:
 
 
 class BaoStockManager:
-    """BaoStock API 管理器（每线程独立会话）"""
+    """BaoStock API 管理器（全局会话锁保护）"""
 
     @classmethod
     def _is_logged_in(cls):
-        return getattr(BAOSTOCK_THREAD_LOCAL, 'logged_in', False)
+        return BAOSTOCK_LOGGED_IN
 
     @classmethod
     def login(cls):
-        """当前线程登录 BaoStock，会话已存在时直接复用"""
-        if cls._is_logged_in():
-            return
+        """全局登录 BaoStock，使用锁保证线程安全"""
+        global BAOSTOCK_LOGGED_IN
 
-        max_retries = 3
-        retry_count = 0
+        with BAOSTOCK_LOCK:
+            if BAOSTOCK_LOGGED_IN:
+                return True
 
-        while retry_count < max_retries:
-            try:
-                login_result = bs.login()
-                if login_result.error_code != '0':
-                    logger.error(f"BaoStock 登录失败: {login_result.error_msg}")
+            max_retries = 3
+            retry_count = 0
+
+            while retry_count < max_retries:
+                try:
+                    login_result = bs.login()
+                    if login_result.error_code != '0':
+                        logger.error(f"BaoStock 登录失败: {login_result.error_msg}, error_code={login_result.error_code}")
+                        retry_count += 1
+                        if retry_count < max_retries:
+                            time.sleep(2 ** retry_count)
+                            continue
+                        return False
+                    BAOSTOCK_LOGGED_IN = True
+                    logger.debug("BaoStock 登录成功")
+                    return True
+                except Exception as e:
+                    logger.error(f"BaoStock 登录异常: {e}")
                     retry_count += 1
                     if retry_count < max_retries:
                         time.sleep(2 ** retry_count)
                         continue
-                    raise Exception(f"BaoStock 登录失败: {login_result.error_msg}")
-                BAOSTOCK_THREAD_LOCAL.logged_in = True
-                logger.debug("BaoStock 线程登录成功")
-                return
-            except Exception as e:
-                logger.error(f"BaoStock 登录异常: {e}")
-                retry_count += 1
-                if retry_count < max_retries:
-                    time.sleep(2 ** retry_count)
-                    continue
-                raise
+                    return False
+            return False
 
     @classmethod
     def logout(cls):
-        """登出当前线程会话"""
-        if not cls._is_logged_in():
-            return
+        """全局登出"""
+        global BAOSTOCK_LOGGED_IN
 
-        try:
-            bs.logout()
-        except Exception as exc:
-            logger.exception(f"BaoStock 登出异常: {exc}")
-        finally:
-            BAOSTOCK_THREAD_LOCAL.logged_in = False
+        with BAOSTOCK_LOCK:
+            if not BAOSTOCK_LOGGED_IN:
+                return
+
+            try:
+                bs.logout()
+            except Exception as exc:
+                logger.exception(f"BaoStock 登出异常: {exc}")
+            finally:
+                BAOSTOCK_LOGGED_IN = False
+
+    @classmethod
+    def ensure_logged_in(cls):
+        """确保已登录，如果未登录则尝试登录"""
+        if not cls._is_logged_in():
+            return cls.login()
+        return True
 
 
 class DataFormatter:
@@ -573,7 +588,12 @@ def process_single_stock(args, row, stock_latest_dates=None):
                 logger.debug(f"股票 {code} 无需获取新数据，跳过")
                 return code, 0, None
 
-        BaoStockManager.login()
+        # 确保 BaoStock 已登录（全局会话）
+        if not BaoStockManager.ensure_logged_in():
+            error_msg = f"股票 {code} BaoStock 登录失败"
+            logger.error(error_msg)
+            return code, 0, error_msg
+
         logger.debug(f"处理股票 {code}")
         data = BaoStockAPI.get_daily_data(code, name, ipo_date, out_date, type, status, start, end)
 
@@ -595,20 +615,18 @@ _WORKER_SENTINEL = object()
 
 
 def worker_process_stocks(worker_id, args, task_queue, result_queue, stock_latest_dates=None):
-    """worker 线程：复用线程局部 BaoStock 会话，串行消费股票任务"""
-    try:
-        while True:
-            row = task_queue.get()
-            try:
-                if row is _WORKER_SENTINEL:
-                    task_queue.task_done()
-                    return
-                result_queue.put(process_single_stock(args, row, stock_latest_dates))
-            finally:
+    """worker 线程：串行消费股票任务，不单独处理登出"""
+    while True:
+        row = task_queue.get()
+        try:
+            if row is _WORKER_SENTINEL:
                 task_queue.task_done()
-    finally:
-        BaoStockManager.logout()
-        logger.debug(f"worker {worker_id} 已退出")
+                return
+            result_queue.put(process_single_stock(args, row, stock_latest_dates))
+        finally:
+            task_queue.task_done()
+
+    logger.debug(f"worker {worker_id} 已退出")
 
 
 
@@ -620,35 +638,55 @@ class BaoStockAPI:
     def get_stock_list():
         """获取股票列表"""
         logger.info("获取股票列表")
-        try:
-            rs = bs.query_stock_basic()
-            if rs.error_code != '0':
-                logger.error(f"获取股票列表失败: {rs.error_msg}")
-                return pd.DataFrame()
+        max_retries = 3
+        retry_count = 0
 
-            data_list = []
-            while (rs.next()):
-                row = rs.get_row_data()
-                if row:
-                    # 将每一行转换为字符串列表，避免 numpy 类型问题
-                    data_list.append([str(x) if x is not None else None for x in row])
+        while retry_count < max_retries:
+            try:
+                rs = bs.query_stock_basic()
+                if rs.error_code != '0':
+                    logger.error(f"获取股票列表失败: {rs.error_msg}")
+                    # 如果是登录问题，尝试重新登录
+                    if "用户未登录" in str(rs.error_msg) and retry_count < max_retries - 1:
+                        logger.warning("获取股票列表时检测到未登录状态，尝试重新登录...")
+                        global BAOSTOCK_LOGGED_IN
+                        BAOSTOCK_LOGGED_IN = False
+                        if BaoStockManager.login():
+                            logger.info("重新登录成功，继续重试...")
+                        else:
+                            logger.error("重新登录失败")
+                        retry_count += 1
+                        time.sleep(2 ** retry_count)
+                        continue
+                    return pd.DataFrame()
 
-            if not data_list:
-                logger.warning("获取到的股票列表为空")
-                return pd.DataFrame()
+                data_list = []
+                while (rs.next()):
+                    row = rs.get_row_data()
+                    if row:
+                        # 将每一行转换为字符串列表，避免 numpy 类型问题
+                        data_list.append([str(x) if x is not None else None for x in row])
 
-            # 获取列名并转换为字符串
-            columns = [str(c) for c in rs.fields]
+                if not data_list:
+                    logger.warning("获取到的股票列表为空")
+                    return pd.DataFrame()
 
-            # 使用字典方式创建 DataFrame，避免 pandas 内部的 numpy 转换问题
-            data_dict = {col: [row[i] for row in data_list] for i, col in enumerate(columns)}
-            df = pd.DataFrame(data_dict)
-            logger.info(f"获取到 {len(df)} 只股票")
-            return df
-        except Exception as e:
-            logger.error(f"获取股票列表异常: {e}")
-            logger.error(traceback.format_exc())
-            raise
+                # 获取列名并转换为字符串
+                columns = [str(c) for c in rs.fields]
+
+                # 使用字典方式创建 DataFrame，避免 pandas 内部的 numpy 转换问题
+                data_dict = {col: [row[i] for row in data_list] for i, col in enumerate(columns)}
+                df = pd.DataFrame(data_dict)
+                logger.info(f"获取到 {len(df)} 只股票")
+                return df
+            except Exception as e:
+                logger.error(f"获取股票列表异常: {e}")
+                retry_count += 1
+                if retry_count >= max_retries:
+                    logger.error(traceback.format_exc())
+                    raise
+                time.sleep(2 ** retry_count)
+        return pd.DataFrame()
 
     @staticmethod
     def get_daily_data(code, name, ipo_date, out_date, type, status, start_date, end_date):
@@ -683,6 +721,15 @@ class BaoStockAPI:
 
                 if rs.error_code != '0':
                     logger.error(f"{code} 请求失败: {rs.error_msg}")
+                    # 如果是登录问题，尝试重新登录
+                    if "用户未登录" in str(rs.error_msg):
+                        logger.warning(f"{code} 检测到未登录状态，尝试重新登录...")
+                        global BAOSTOCK_LOGGED_IN
+                        BAOSTOCK_LOGGED_IN = False
+                        if BaoStockManager.login():
+                            logger.info(f"{code} 重新登录成功，继续重试...")
+                        else:
+                            logger.error(f"{code} 重新登录失败")
                     retry_count += 1
                     if retry_count >= max_retries:
                         raise RuntimeError(f"{code} 获取数据失败，重试耗尽: {rs.error_msg}")
@@ -817,6 +864,9 @@ def main(args):
             DatabaseOperations.init_schema(conn)
 
         BaoStockManager.login()
+        if not BaoStockManager._is_logged_in():
+            raise RuntimeError("主线程 BaoStock 登录失败")
+
         if args.stock_codes:
             stock_list = BaoStockAPI.get_stock_list()
             stock_list = stock_list[stock_list['code'].isin(args.stock_codes)]

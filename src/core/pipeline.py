@@ -97,7 +97,6 @@ class StockAnalysisPipeline:
         save_context_snapshot: Optional[bool] = None,
         progress_callback: Optional[Callable[[int, str], None]] = None,
         analysis_skills: Optional[List[str]] = None,
-        trace_id: Optional[str] = None,
     ):
         """
         初始化调度器
@@ -117,7 +116,6 @@ class StockAnalysisPipeline:
         )
         self.progress_callback = progress_callback
         self.analysis_skills = list(analysis_skills) if analysis_skills is not None else None
-        self.trace_id = trace_id
 
         # 初始化各模块
         self.db = get_db()
