@@ -18,6 +18,7 @@ export interface AnalysisRequest {
   originalQuery?: string;
   selectionSource?: 'manual' | 'autocomplete' | 'import' | 'image';
   notify?: boolean;
+  skills?: string[];
 }
 
 export interface MarketReviewRequest {
@@ -28,6 +29,7 @@ export interface MarketReviewAccepted {
   status: 'accepted';
   message: string;
   sendNotification: boolean;
+  traceId?: string;
   taskId?: string;
 }
 
@@ -116,24 +118,59 @@ export interface AnalysisReport {
 
 // ============ Analysis Result Types ============
 
+export type RunDiagnosticStatus = 'normal' | 'degraded' | 'failed' | 'unknown';
+
+export type RunDiagnosticComponentStatus =
+  | 'ok'
+  | 'degraded'
+  | 'failed'
+  | 'unknown'
+  | 'not_configured'
+  | 'skipped';
+
+export interface RunDiagnosticComponent {
+  key: string;
+  label: string;
+  status: RunDiagnosticComponentStatus;
+  message: string;
+  details?: Record<string, unknown>;
+}
+
+export interface RunDiagnosticSummary {
+  traceId?: string;
+  taskId?: string;
+  queryId?: string;
+  stockCode?: string;
+  triggerSource?: string;
+  status: RunDiagnosticStatus;
+  statusLabel: string;
+  reason: string;
+  components: Record<string, RunDiagnosticComponent>;
+  copyText: string;
+}
+
 /** Sync analysis response */
 export interface AnalysisResult {
   queryId: string;
+  traceId?: string;
   stockCode: string;
   stockName: string;
   report: AnalysisReport;
+  diagnosticSummary?: RunDiagnosticSummary;
   createdAt: string;
 }
 
 /** Async task accepted response */
 export interface TaskAccepted {
   taskId: string;
+  traceId?: string;
   status: 'pending' | 'processing';
   message?: string;
 }
 
 export interface BatchTaskAcceptedItem {
   taskId: string;
+  traceId?: string;
   stockCode: string;
   status: 'pending' | 'processing';
   message?: string;
@@ -158,6 +195,7 @@ export type AnalyzeResponse = AnalysisResult | AnalyzeAsyncResponse;
 /** Task status */
 export interface TaskStatus {
   taskId: string;
+  traceId?: string;
   status: 'pending' | 'processing' | 'completed' | 'failed';
   progress?: number;
   result?: AnalysisResult;
@@ -166,11 +204,13 @@ export interface TaskStatus {
   stockName?: string;
   originalQuery?: string;
   selectionSource?: string;
+  skills?: string[];
 }
 
 /** Task details used by task list and SSE events */
 export interface TaskInfo {
   taskId: string;
+  traceId?: string;
   stockCode: string;
   stockName?: string;
   status: 'pending' | 'processing' | 'completed' | 'failed';

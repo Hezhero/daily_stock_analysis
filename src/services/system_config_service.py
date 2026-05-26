@@ -740,12 +740,21 @@ class SystemConfigService:
 
         try:
             import litellm
-            from src.agent.llm_adapter import LLMToolAdapter
+            from src.agent.llm_adapter import (
+                resolve_fallback_litellm_wire_models,
+                register_fallback_model_pricing,
+            )
 
-            # Register custom model pricing for MiniMax models not in LiteLLM's built-in list
-            # This must be done before litellm.completion() to prevent cost calculation errors
-            # Reuses the registration logic from LLMToolAdapter to avoid code duplication
-            LLMToolAdapter._register_custom_model_pricing()
+            # Register fallback pricing for OpenAI-compatible models to prevent cost calculation errors
+            config_model_list = None
+            if getattr(self, "_config", None) is not None:
+                config_model_list = getattr(self._config, "llm_model_list", None)
+            register_fallback_model_pricing(
+                resolve_fallback_litellm_wire_models(
+                    resolved_model,
+                    config_model_list,
+                )
+            )
 
             started_at = time.perf_counter()
             response = call_litellm_with_param_recovery(
@@ -1426,15 +1435,24 @@ class SystemConfigService:
 
         startup_only_schedule_keys = submitted_keys & {
             "SCHEDULE_ENABLED",
-            "SCHEDULE_TIME",
             "SCHEDULE_RUN_IMMEDIATELY",
         }
         if startup_only_schedule_keys:
             warnings.append(
                 (
                     f"{', '.join(sorted(startup_only_schedule_keys))} 已写入 .env。"
-                    "这些属于启动期调度配置：当前已运行的 WebUI/API 进程不会因为本次保存立即触发分析，"
-                    "也不会自动重建 scheduler；请重启当前进程，并以 schedule 模式重新启动后生效。"
+                    "这些属于启动期调度模式配置：当前已运行的 WebUI/API 进程不会因为本次保存启动、"
+                    "停止或重建 scheduler；请重启当前进程，并以 schedule 模式重新启动后生效。"
+                )
+            )
+
+        if "SCHEDULE_TIME" in submitted_keys:
+            schedule_time = (current_map.get("SCHEDULE_TIME", "") or "").strip() or "18:00"
+            warnings.append(
+                (
+                    f"SCHEDULE_TIME={schedule_time} 已写入 .env。"
+                    "如果当前进程已经以 schedule 模式运行，scheduler 会在下一轮检查中自动重建 daily job；"
+                    "如果当前进程未以 schedule 模式运行，本次保存不会启动 scheduler。"
                 )
             )
 

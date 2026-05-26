@@ -736,6 +736,24 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertTrue(items["AGENT_DEEP_RESEARCH_BUDGET"]["schema"]["is_editable"])
         self.assertTrue(items["AGENT_EVENT_MONITOR_ENABLED"]["schema"]["is_editable"])
 
+        context_profile_schema = items["AGENT_CONTEXT_COMPRESSION_PROFILE"]["schema"]
+        self.assertEqual(
+            [option["label"] for option in context_profile_schema["options"]],
+            ["成本优先", "均衡推荐", "长上下文原文优先"],
+        )
+        self.assertEqual(
+            context_profile_schema["validation"]["enum"],
+            ["cost", "balanced", "long_context_raw_first"],
+        )
+        self.assertEqual(
+            items["AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS"]["schema"]["default_value"],
+            "",
+        )
+        self.assertEqual(
+            items["AGENT_CONTEXT_PROTECTED_TURNS"]["schema"]["default_value"],
+            "",
+        )
+
     def test_validate_reports_invalid_select_option(self) -> None:
         validation = self.service.validate(items=[{"key": "AGENT_ARCH", "value": "invalid-mode"}])
 
@@ -747,6 +765,73 @@ class SystemConfigServiceTestCase(unittest.TestCase):
 
         self.assertTrue(validation["valid"])
         self.assertEqual(validation["issues"], [])
+
+    def test_validate_accepts_blank_context_compression_preset_fields(self) -> None:
+        validation = self.service.validate(
+            items=[
+                {"key": "AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS", "value": ""},
+                {"key": "AGENT_CONTEXT_PROTECTED_TURNS", "value": ""},
+            ]
+        )
+
+        self.assertTrue(validation["valid"])
+        self.assertEqual(validation["issues"], [])
+
+    def test_validate_reports_invalid_context_compression_profile(self) -> None:
+        validation = self.service.validate(
+            items=[{"key": "AGENT_CONTEXT_COMPRESSION_PROFILE", "value": "invalid"}]
+        )
+
+        self.assertFalse(validation["valid"])
+        self.assertTrue(any(issue["code"] == "invalid_enum" for issue in validation["issues"]))
+
+    def test_config_loads_context_compression_preset_when_numeric_values_are_blank(self) -> None:
+        self.env_path.write_text(
+            "\n".join(
+                [
+                    "AGENT_CONTEXT_COMPRESSION_PROFILE=cost",
+                    "AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS=",
+                    "AGENT_CONTEXT_PROTECTED_TURNS=",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        with patch.dict(os.environ, {"ENV_FILE": str(self.env_path)}, clear=True):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.agent_context_compression_profile, "cost")
+        self.assertEqual(config.agent_context_compression_trigger_tokens, 6000)
+        self.assertEqual(config.agent_context_protected_turns, 2)
+
+        self.env_path.write_text(
+            "AGENT_CONTEXT_COMPRESSION_PROFILE=long_context_raw_first\n",
+            encoding="utf-8",
+        )
+        with patch.dict(os.environ, {"ENV_FILE": str(self.env_path)}, clear=True):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.agent_context_compression_profile, "long_context_raw_first")
+        self.assertEqual(config.agent_context_compression_trigger_tokens, 24000)
+        self.assertEqual(config.agent_context_protected_turns, 6)
+
+        self.env_path.write_text(
+            "\n".join(
+                [
+                    "AGENT_CONTEXT_COMPRESSION_PROFILE=bad-profile",
+                    "AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS=bad-int",
+                    "AGENT_CONTEXT_PROTECTED_TURNS=0",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        with patch.dict(os.environ, {"ENV_FILE": str(self.env_path)}, clear=True):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.agent_context_compression_profile, "balanced")
+        self.assertEqual(config.agent_context_compression_trigger_tokens, 12000)
+        self.assertEqual(config.agent_context_protected_turns, 4)
 
     def test_validate_reports_invalid_json(self) -> None:
         validation = self.service.validate(items=[{"key": "AGENT_EVENT_ALERT_RULES_JSON", "value": "[invalid"}])
@@ -2145,9 +2230,42 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertIn("非 schedule 模式", run_warning)
         self.assertNotIn("以 schedule 模式", run_warning)
         self.assertIn("SCHEDULE_RUN_IMMEDIATELY", schedule_warning)
-        self.assertIn("不会自动重建 scheduler", schedule_warning)
+        self.assertIn("不会因为本次保存启动、停止或重建 scheduler", schedule_warning)
         self.assertIn("以 schedule 模式重新启动后生效", schedule_warning)
         self.assertNotIn("它属于启动期单次运行配置", schedule_warning)
+
+    def test_update_appends_schedule_time_runtime_rebind_warning(self) -> None:
+        response = self.service.update(
+            config_version=self.manager.get_config_version(),
+            items=[{"key": "SCHEDULE_TIME", "value": "09:30"}],
+            reload_now=True,
+        )
+
+        self.assertTrue(response["success"])
+        schedule_time_warning = next(
+            warning
+            for warning in response["warnings"]
+            if "SCHEDULE_TIME=09:30 已写入 .env" in warning
+        )
+
+        self.assertIn("已经以 schedule 模式运行", schedule_time_warning)
+        self.assertIn("自动重建 daily job", schedule_time_warning)
+        self.assertIn("不会启动 scheduler", schedule_time_warning)
+        self.assertNotIn("重启当前进程", schedule_time_warning)
+        self.assertNotIn("不会因为本次保存启动、停止或重建 scheduler", schedule_time_warning)
+
+    def test_update_schedule_time_blank_warning_reports_effective_default(self) -> None:
+        response = self.service.update(
+            config_version=self.manager.get_config_version(),
+            items=[{"key": "SCHEDULE_TIME", "value": "   "}],
+            reload_now=True,
+        )
+
+        self.assertTrue(response["success"])
+        self.assertTrue(
+            any("SCHEDULE_TIME=18:00 已写入 .env" in warning for warning in response["warnings"]),
+            response["warnings"],
+        )
 
     def test_update_appends_webui_bind_restart_warning(self) -> None:
         response = self.service.update(
