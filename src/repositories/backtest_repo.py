@@ -63,6 +63,16 @@ class BacktestRepository:
 
             query = query.order_by(desc(AnalysisHistory.created_at)).limit(limit)
             rows = session.execute(query).scalars().all()
+            if not rows:
+                total = session.query(func.count(AnalysisHistory.id)).scalar() or 0
+                evaluated = session.query(func.count(BacktestResult.analysis_history_id.distinct())).scalar() or 0
+                recent = session.query(func.count(AnalysisHistory.id)).where(
+                    AnalysisHistory.created_at > cutoff_dt
+                ).scalar() or 0
+                logger.info(
+                    "自动回测无待评估记录: 总分析记录=%d 已评估=%d 14天内新建=%d min_age=%d force=%s",
+                    total, evaluated, recent, min_age_days, force,
+                )
             return list(rows)
 
     def save_result(self, result: BacktestResult) -> None:

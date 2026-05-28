@@ -1076,6 +1076,17 @@ def main() -> int:
             except KeyboardInterrupt:
                 pass
 
+        # 清理 asyncio 事件循环（修复 lark_oapi 等库创建的未关闭事件循环）
+        try:
+            import asyncio
+            import gc
+            loop = asyncio.get_event_loop_policy().get_event_loop()
+            if loop is not None and not loop.is_closed():
+                loop.close()
+                gc.collect()
+        except Exception:
+            pass
+
         return 0
 
     except KeyboardInterrupt:

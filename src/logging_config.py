@@ -42,8 +42,8 @@ class RelativePathFormatter(logging.Formatter):
         # 将绝对路径转为相对路径
         try:
             record.pathname = str(Path(record.pathname).relative_to(self.relative_to))
-        except ValueError:
-            # 如果无法转换为相对路径，保持原样
+        except (ValueError, ImportError):
+            # 无法转换（路径不匹配 或 解释器正在关闭）时保持原样
             pass
         return super().format(record)
 
