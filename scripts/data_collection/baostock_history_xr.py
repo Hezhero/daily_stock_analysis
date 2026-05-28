@@ -113,11 +113,15 @@ class DatabaseManager:
 
     @classmethod
     def close_pool(cls):
-        """关闭连接池（不阻塞）"""
+        """关闭连接池"""
         if cls._pool:
-            cls._pool.closeall()
-            cls._pool = None
-            logger.debug("数据库连接池已关闭")
+            try:
+                cls._pool.closeall()
+                logger.debug("数据库连接池已关闭")
+            except Exception as e:
+                logger.warning(f"关闭连接池时出错: {e}")
+            finally:
+                cls._pool = None
 
     @staticmethod
     @backoff.on_exception(backoff.expo, Exception, **RETRY_CONFIG['db_connection'])
@@ -615,18 +619,23 @@ _WORKER_SENTINEL = object()
 
 
 def worker_process_stocks(worker_id, args, task_queue, result_queue, stock_latest_dates=None):
-    """worker 线程：串行消费股票任务，不单独处理登出"""
-    while True:
-        row = task_queue.get()
-        try:
-            if row is _WORKER_SENTINEL:
+    """worker 线程：串行消费股票任务"""
+    logger.debug(f"Worker {worker_id} 已启动")
+    try:
+        while True:
+            row = task_queue.get()
+            try:
+                if row is _WORKER_SENTINEL:
+                    logger.debug(f"Worker {worker_id} 收到停止信号")
+                    return
+                result = process_single_stock(args, row, stock_latest_dates)
+                result_queue.put(result)
+            finally:
                 task_queue.task_done()
-                return
-            result_queue.put(process_single_stock(args, row, stock_latest_dates))
-        finally:
-            task_queue.task_done()
-
-    logger.debug(f"worker {worker_id} 已退出")
+    except Exception as e:
+        logger.error(f"Worker {worker_id} 发生错误: {e}")
+    finally:
+        logger.debug(f"Worker {worker_id} 已退出")
 
 
 
@@ -799,14 +808,36 @@ def run_stock_workers(args, stock_list, stock_latest_dates=None):
         worker.start()
         workers.append(worker)
 
-    task_queue.join()
+    # 等待所有任务完成，带超时防止死锁
+    all_tasks_done = False
+    wait_start = time.time()
+    max_wait_time = 3600  # 最多等待1小时
 
+    while not all_tasks_done and time.time() - wait_start < max_wait_time:
+        try:
+            task_queue.join(timeout=5)  # 每5秒检查一次
+            all_tasks_done = True
+        except:
+            pass
+
+    if not all_tasks_done:
+        logger.warning("任务队列未能在1小时内完成，强制继续")
+
+    # 等待所有 worker 线程结束
     for worker in workers:
-        worker.join()
+        worker.join(timeout=60)  # 每个线程最多等待60秒
+        if worker.is_alive():
+            logger.warning(f"Worker {worker.name} 未能在60秒内结束")
 
+    # 收集结果
     results = []
-    while not result_queue.empty():
-        results.append(result_queue.get())
+    # 使用超时机制避免无限等待
+    try:
+        while True:
+            results.append(result_queue.get(timeout=5))
+    except queue.Empty:
+        pass  # 队列为空时退出
+
     return results
 
 

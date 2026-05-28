@@ -33,7 +33,7 @@ from dotenv import load_dotenv
 # 加载环境变量
 load_dotenv()
 
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -71,20 +71,9 @@ def get_cache_dir(name: str) -> Path:
     return cache_dir
 
 
-def build_market_cache_key(start: str, end: str) -> str:
-    raw_key = "|".join([
-        MARKET_CACHE_VERSION,
-        MARKET_FILTER_VERSION,
-        MARKET_COLUMNS_VERSION,
-        "baostock_daily_history_xr",
-        start,
-        end,
-    ])
-    return hashlib.md5(raw_key.encode("utf-8")).hexdigest()
-
-
-def get_market_cache_path(start: str, end: str) -> Path:
-    return get_cache_dir("market_data") / f"{build_market_cache_key(start, end)}.parquet"
+def get_year_market_cache_path(year: int) -> Path:
+    filename = f"{MARKET_CACHE_VERSION}_{MARKET_FILTER_VERSION}_{MARKET_COLUMNS_VERSION}_{year}.parquet"
+    return get_cache_dir("market_data") / filename
 
 
 def convert_market_numeric_columns_to_float32(df: pd.DataFrame) -> pd.DataFrame:
@@ -326,32 +315,114 @@ def apply_forward_adjustment(df: pd.DataFrame, df_factor: pd.DataFrame) -> pd.Da
     return df
 
 
-def build_indicator_cache_key(market_cache_key: str) -> str:
+def build_indicator_cache_key(anchor_year: int) -> str:
     raw_key = "|".join([
-        market_cache_key,
+        MARKET_CACHE_VERSION,
+        MARKET_FILTER_VERSION,
+        MARKET_COLUMNS_VERSION,
+        str(anchor_year),
         ADJUSTMENT_LOGIC_VERSION,
         INDICATOR_CACHE_VERSION,
     ])
     return hashlib.md5(raw_key.encode("utf-8")).hexdigest()
 
 
-def get_indicator_cache_path(market_cache_key: str) -> Path:
-    return get_cache_dir("indicators") / f"{build_indicator_cache_key(market_cache_key)}.parquet"
+def get_indicator_cache_path(anchor_year: int) -> Path:
+    return get_cache_dir("indicators") / f"{build_indicator_cache_key(anchor_year)}.parquet"
 
 
-def load_or_build_indicator_cache(df_adjusted: pd.DataFrame, market_cache_key: str) -> pd.DataFrame:
-    cache_path = get_indicator_cache_path(market_cache_key)
+def _downcast_float64_to_float32(df: pd.DataFrame) -> None:
+    float_cols = [c for c in df.columns if c not in ("code", "name", "date") and df[c].dtype == "float64"]
+    for c in float_cols:
+        df[c] = df[c].astype("float32")
+
+
+def _merge_indicator_cache(df_cached: pd.DataFrame, df_new: pd.DataFrame) -> pd.DataFrame:
+    missing_cols = set(df_cached.columns) - set(df_new.columns)
+    for col in missing_cols:
+        df_new[col] = np.nan
+    extra_cols = set(df_new.columns) - set(df_cached.columns)
+    for col in extra_cols:
+        df_cached[col] = np.nan
+    df_new = df_new[df_cached.columns]
+    combined = pd.concat([df_cached, df_new], ignore_index=True)
+    combined = combined.sort_values(["code", "date"]).reset_index(drop=True)
+    combined = combined.drop_duplicates(subset=["code", "date"], keep="last")
+    return combined
+
+
+def _compute_incremental_indicators(df_adjusted: pd.DataFrame, df_cached: pd.DataFrame) -> Optional[pd.DataFrame]:
+    cached_max_date = df_cached["date"].max()
+    adjusted_min_date = df_adjusted["date"].min()
+    adjusted_max_date = df_adjusted["date"].max()
+
+    if pd.isna(cached_max_date) or pd.isna(adjusted_max_date):
+        return None
+    if adjusted_max_date <= cached_max_date:
+        return None
+
+    lookback_start = cached_max_date - pd.Timedelta(days=365)
+    if lookback_start < adjusted_min_date:
+        lookback_start = adjusted_min_date
+
+    mask = (df_adjusted["date"] >= lookback_start) & (df_adjusted["date"] <= adjusted_max_date)
+    subset = df_adjusted.loc[mask].copy()
+
+    n_stocks = subset["code"].nunique()
+    n_rows = len(subset)
+    logger.info(f"增量指标输入: {subset['date'].min().date()} ~ {subset['date'].max().date()}, "
+                f"{n_rows:,} 行 x {n_stocks} 只股票")
+
+    df_computed = compute_indicators(subset)
+    new_rows = df_computed[df_computed["date"] > cached_max_date].copy()
+
+    if new_rows.empty:
+        logger.info("增量计算未产生新行（无新股票数据）")
+        return None
+
+    logger.info(f"增量指标输出: {new_rows['date'].min().date()} ~ {new_rows['date'].max().date()}, "
+                f"{len(new_rows):,} 行")
+    return new_rows
+
+
+def load_or_build_indicator_cache(df_adjusted: pd.DataFrame, anchor_year: int) -> pd.DataFrame:
+    cache_path = get_indicator_cache_path(anchor_year)
     if cache_path.exists():
-        logger.info("加载缓存的指标数据...")
-        df = pd.read_parquet(cache_path)
-        float_cols = [c for c in df.columns if c not in ("code", "name", "date") and df[c].dtype == "float64"]
-        for c in float_cols:
-            df[c] = df[c].astype("float32")
-        log_memory_usage("加载指标缓存后")
-        return df
+        try:
+            df_cached = pd.read_parquet(cache_path)
+            logger.info(f"加载指标缓存: {len(df_cached):,} 行")
+            _downcast_float64_to_float32(df_cached)
+
+            cached_max_date = df_cached["date"].max()
+            adjusted_max_date = df_adjusted["date"].max()
+
+            if pd.isna(cached_max_date) or pd.isna(adjusted_max_date):
+                raise ValueError("缓存或调整数据日期为空")
+            if adjusted_max_date <= cached_max_date:
+                logger.info("指标缓存已是最新")
+                log_memory_usage("加载指标缓存后")
+                return df_cached
+
+            logger.info(f"缓存截止: {cached_max_date.date()}, 有新数据待增量计算")
+            df_new = _compute_incremental_indicators(df_adjusted, df_cached)
+            if df_new is not None and not df_new.empty:
+                combined = _merge_indicator_cache(df_cached, df_new)
+                combined.to_parquet(cache_path, index=False)
+                logger.info(f"指标缓存已增量更新: {len(combined):,} 行")
+                _downcast_float64_to_float32(combined)
+                log_memory_usage("增量指标计算后")
+                return combined
+            else:
+                log_memory_usage("加载指标缓存后")
+                return df_cached
+        except Exception as e:
+            logger.warning(f"指标缓存异常 ({e})，全量重新计算...")
+
+    logger.info("全量计算指标...")
     indicator_df = compute_indicators(df_adjusted)
     indicator_df.to_parquet(cache_path, index=False)
-    log_memory_usage("计算指标后")
+    logger.info(f"指标缓存已保存: {len(indicator_df):,} 行")
+    log_memory_usage("全量指标计算后")
     return indicator_df
 
 
@@ -1303,22 +1374,25 @@ def main(argv=None):
     # 计算日期
     five_years_ago = (datetime.now() - pd.DateOffset(years=5)).strftime("%Y-%m-%d")
     today_str = datetime.now().strftime("%Y-%m-%d")
+    anchored_start = f"{five_years_ago[:4]}-01-01"
+    anchor_year = int(anchored_start[:4])
 
     logger.info("=" * 60)
     logger.info("22 策略 5 年回测 + 最近5日验证")
     logger.info(f"Numba加速: {'启用' if _HAS_NUMBA else '未安装（pip install numba）'}")
     logger.info(f"默认工作线程: {resolve_max_workers()}")
+    logger.info(f"缓存锚定年份: {anchor_year}")
     logger.info("=" * 60)
 
     # 加载数据
     log_memory_usage("开始")
-    df_market = load_or_build_market_data_cache(five_years_ago, today_str)
+    df_market = load_or_build_market_data_cache(anchored_start, today_str)
 
     # 获取复权因子并计算前复权价格
     logger.info("获取复权因子并计算前复权价格...")
     codes = df_market["code"].unique().tolist()
     logger.info(f"共 {len(codes)} 只股票需要获取复权因子...")
-    df_factor = load_or_fill_adjust_factor_cache(codes, five_years_ago, today_str)
+    df_factor = load_or_fill_adjust_factor_cache(codes, anchored_start, today_str)
     logger.info(f"获取到 {len(df_factor)} 条复权因子记录")
     df_adjusted = apply_forward_adjustment(df_market, df_factor)
     del df_market
@@ -1326,8 +1400,7 @@ def main(argv=None):
     gc.collect()
     log_memory_usage("复权计算后")
 
-    market_cache_key = build_market_cache_key(five_years_ago, today_str)
-    df_all = load_or_build_indicator_cache(df_adjusted, market_cache_key)
+    df_all = load_or_build_indicator_cache(df_adjusted, anchor_year)
     del df_adjusted
     gc.collect()
     log_memory_usage("指标计算后")
@@ -1380,18 +1453,38 @@ def main(argv=None):
 
 
 def load_or_build_market_data_cache(start: str, end: str) -> pd.DataFrame:
-    cache_path = get_market_cache_path(start, end)
-    if cache_path.exists():
-        logger.info("加载缓存的市场数据...")
-        df = pd.read_parquet(cache_path)
-        df = convert_market_numeric_columns_to_float32(df)
-        log_memory_usage("加载市场缓存后")
-        return df
-    market_data = load_data(start, end)
-    market_data = convert_market_numeric_columns_to_float32(market_data)
-    market_data.to_parquet(cache_path, index=False)
+    start_year = int(start[:4])
+    end_year = int(end[:4])
+    current_year = datetime.now().year
+    frames = []
+
+    for year in range(start_year, end_year + 1):
+        year_cache_path = get_year_market_cache_path(year)
+        year_start = f"{year}-01-01"
+        year_end = f"{year}-12-31"
+
+        if year < current_year and year_cache_path.exists():
+            logger.info(f"从缓存加载市场数据: {year}")
+            df_year = pd.read_parquet(year_cache_path)
+            df_year = convert_market_numeric_columns_to_float32(df_year)
+            frames.append(df_year)
+        else:
+            actual_end = end if year == end_year else year_end
+            logger.info(f"从数据库查询市场数据: {year_start} ~ {actual_end}")
+            df_year = load_data(year_start, actual_end)
+            df_year = convert_market_numeric_columns_to_float32(df_year)
+            if year < current_year:
+                df_year.to_parquet(year_cache_path, index=False)
+                logger.info(f"市场数据已缓存: {year}")
+            frames.append(df_year)
+
+    if not frames:
+        return pd.DataFrame()
+
+    result = pd.concat(frames, ignore_index=True)
+    result = result[(result["date"] >= pd.Timestamp(start)) & (result["date"] <= pd.Timestamp(end))]
     log_memory_usage("加载市场数据后")
-    return market_data
+    return result
 
 
 if __name__ == "__main__":
