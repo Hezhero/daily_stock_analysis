@@ -91,3 +91,4 @@ docs/specs/
 cache/*
 *.log
 *.excel
+/cache/
