@@ -221,28 +221,96 @@ def upsert_adjust_factor_cache(df_factor: pd.DataFrame) -> None:
 def fetch_adjust_factors_from_baostock(codes: List[str], start: str, end: str) -> pd.DataFrame:
     """
     通过 baostock query_adjust_factor 获取前复权因子
+    优化：分批处理、增加超时、增加进度日志
     """
+    import socket
+
+    # 设置socket超时，防止无限阻塞
+    socket.setdefaulttimeout(30)
+
     login_result = bs.login()
     if login_result.error_code != '0':
         raise RuntimeError(f"BaoStock 登录失败: {login_result.error_msg}")
 
     all_factors = []
+    total_codes = len(codes)
+    batch_size = 100  # 每批处理100只股票
+    processed = 0
+    failed_codes = []
+
+    logger.info(f"开始获取复权因子，共 {total_codes} 只股票，每批 {batch_size} 只")
+
     try:
-        for code in codes:
-            try:
-                rs_factor = bs.query_adjust_factor(code=code, start_date=start, end_date=end)
-                while (rs_factor.error_code == '0') & rs_factor.next():
-                    row = rs_factor.get_row_data()
-                    all_factors.append({
-                        "code": row[0],
-                        "dividOperateDate": row[1],
-                        "foreAdjustFactor": float(row[2]) if row[2] else 1.0,
-                    })
-            except Exception as e:
-                logger.warning(f"获取 {code} 前复权因子失败: {e}")
-                continue
+        # 分批处理
+        for i in range(0, total_codes, batch_size):
+            batch = codes[i:i + batch_size]
+            batch_num = i // batch_size + 1
+            total_batches = (total_codes + batch_size - 1) // batch_size
+
+            logger.info(f"处理第 {batch_num}/{total_batches} 批，共 {len(batch)} 只股票")
+
+            for code in batch:
+                retry_count = 0
+                max_retries = 3
+                success = False
+
+                while retry_count < max_retries and not success:
+                    try:
+                        rs_factor = bs.query_adjust_factor(code=code, start_date=start, end_date=end)
+
+                        # 检查错误码
+                        if rs_factor.error_code != '0':
+                            logger.warning(f"获取 {code} 复权因子返回错误: {rs_factor.error_msg}")
+                            retry_count += 1
+                            time.sleep(0.5)
+                            continue
+
+                        row_count = 0
+                        while rs_factor.next():
+                            row = rs_factor.get_row_data()
+                            if len(row) >= 3:
+                                all_factors.append({
+                                    "code": row[0],
+                                    "dividOperateDate": row[1],
+                                    "foreAdjustFactor": float(row[2]) if row[2] else 1.0,
+                                })
+                                row_count += 1
+
+                        success = True
+                        processed += 1
+
+                        # 每处理100只记录一次进度
+                        if processed % 100 == 0:
+                            logger.info(f"已处理 {processed}/{total_codes} 只股票，获取 {len(all_factors)} 条复权因子记录")
+
+                    except socket.timeout:
+                        logger.warning(f"获取 {code} 复权因子超时（第 {retry_count + 1} 次重试）")
+                        retry_count += 1
+                        time.sleep(1)
+                    except Exception as e:
+                        logger.warning(f"获取 {code} 前复权因子失败: {e}")
+                        retry_count += 1
+                        time.sleep(0.5)
+
+                if not success:
+                    failed_codes.append(code)
+                    logger.error(f"获取 {code} 复权因子失败，已达最大重试次数")
+
+            # 每批处理完后短暂休息，避免触发限流
+            if i + batch_size < total_codes:
+                time.sleep(0.5)
+
+            # 主动释放内存
+            gc.collect()
+
     finally:
         bs.logout()
+        socket.setdefaulttimeout(None)  # 恢复默认超时
+
+    if failed_codes:
+        logger.warning(f"共有 {len(failed_codes)} 只股票获取复权因子失败")
+
+    logger.info(f"复权因子获取完成：成功 {processed}/{total_codes} 只，共 {len(all_factors)} 条记录")
 
     if not all_factors:
         return empty_adjust_factor_frame()
@@ -253,30 +321,57 @@ def fetch_adjust_factors_from_baostock(codes: List[str], start: str, end: str) -
 
 
 def load_or_fill_adjust_factor_cache(codes: List[str], start: str, end: str) -> pd.DataFrame:
+    """
+    加载复权因子缓存，对于缓存中不存在的股票从Baostock获取
+    优化：只要股票在缓存中有任何记录即认为已覆盖，大幅减少API调用
+    """
     if not codes:
         return empty_adjust_factor_frame()
 
-    cached_df = load_adjust_factor_cache_from_db(codes, start, end)
-    start_ts = pd.Timestamp(start)
-    end_ts = pd.Timestamp(end)
-    covered_codes = set()
+    # 分批查询缓存，避免一次性查询过多股票
+    batch_size = 500
+    all_cached = []
 
+    for i in range(0, len(codes), batch_size):
+        batch = codes[i:i + batch_size]
+        batch_df = load_adjust_factor_cache_from_db(batch, start, end)
+        if not batch_df.empty:
+            all_cached.append(batch_df)
+
+    if all_cached:
+        cached_df = pd.concat(all_cached, ignore_index=True)
+    else:
+        cached_df = empty_adjust_factor_frame()
+
+    # 找出有缓存记录的股票（按code分组，只要存在记录即认为已缓存）
+    cached_codes = set()
     if not cached_df.empty:
-        coverage = cached_df.groupby("code", sort=False)["dividOperateDate"].agg(["min", "max"])
-        covered_codes = {
-            code
-            for code, row in coverage.iterrows()
-            if row["min"] <= start_ts and row["max"] >= end_ts
-        }
+        cached_codes = set(cached_df["code"].unique())
 
-    missing_codes = [code for code in codes if code not in covered_codes]
+    # 缺失的股票 = 输入股票 - 有缓存记录的股票
+    missing_codes = [code for code in codes if code not in cached_codes]
+
+    logger.info(f"复权因子缓存覆盖: {len(cached_codes)}/{len(codes)} 只，缺失: {len(missing_codes)} 只")
 
     if not missing_codes:
+        logger.info("所有股票复权因子已缓存，无需从Baostock获取")
         return cached_df
 
+    # 只获取缺失的股票
     fetched_df = fetch_adjust_factors_from_baostock(missing_codes, start, end)
     upsert_adjust_factor_cache(fetched_df)
-    return load_adjust_factor_cache_from_db(codes, start, end)
+
+    # 重新查询所有股票的缓存
+    all_cached = []
+    for i in range(0, len(codes), batch_size):
+        batch = codes[i:i + batch_size]
+        batch_df = load_adjust_factor_cache_from_db(batch, start, end)
+        if not batch_df.empty:
+            all_cached.append(batch_df)
+
+    if all_cached:
+        return pd.concat(all_cached, ignore_index=True)
+    return empty_adjust_factor_frame()
 
 
 def apply_forward_adjustment(df: pd.DataFrame, df_factor: pd.DataFrame) -> pd.DataFrame:
