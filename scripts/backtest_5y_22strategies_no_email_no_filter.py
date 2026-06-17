@@ -260,7 +260,22 @@ def fetch_adjust_factors_from_baostock(codes: List[str], start: str, end: str) -
 
                         # 检查错误码
                         if rs_factor.error_code != '0':
-                            logger.warning(f"获取 {code} 复权因子返回错误: {rs_factor.error_msg}")
+                            error_msg = str(rs_factor.error_msg)
+                            logger.warning(f"获取 {code} 复权因子返回错误: {error_msg}")
+
+                            # 检测登录过期，尝试重新登录
+                            if "用户未登录" in error_msg and retry_count < max_retries - 1:
+                                logger.warning(f"检测到Baostock登录过期，尝试重新登录...")
+                                bs.logout()
+                                time.sleep(1)
+                                login_result = bs.login()
+                                if login_result.error_code == '0':
+                                    logger.info("重新登录成功，继续重试...")
+                                    retry_count += 1
+                                    continue
+                                else:
+                                    logger.error(f"重新登录失败: {login_result.error_msg}")
+
                             retry_count += 1
                             time.sleep(0.5)
                             continue

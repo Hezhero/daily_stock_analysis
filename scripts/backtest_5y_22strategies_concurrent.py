@@ -148,23 +148,65 @@ def get_forward_adjust_factors(codes: List[str], start: str, end: str) -> pd.Dat
         raise RuntimeError(f"BaoStock 登录失败: {login_result.error_msg}")
 
     all_factors = []
+    failed_codes = []
 
     try:
         for code in codes:
-            try:
-                rs_factor = bs.query_adjust_factor(code=code, start_date=start, end_date=end)
-                while (rs_factor.error_code == '0') & rs_factor.next():
-                    row = rs_factor.get_row_data()
-                    all_factors.append({
-                        "code": row[0],
-                        "dividOperateDate": row[1],
-                        "foreAdjustFactor": float(row[2]) if row[2] else 1.0,
-                    })
-            except Exception as e:
-                logger.warning(f"获取 {code} 前复权因子失败: {e}")
-                continue
+            retry_count = 0
+            max_retries = 3
+            success = False
+
+            while retry_count < max_retries and not success:
+                try:
+                    rs_factor = bs.query_adjust_factor(code=code, start_date=start, end_date=end)
+
+                    # 检查错误码
+                    if rs_factor.error_code != '0':
+                        error_msg = str(rs_factor.error_msg)
+                        logger.warning(f"获取 {code} 复权因子返回错误: {error_msg}")
+
+                        # 检测登录过期，尝试重新登录
+                        if "用户未登录" in error_msg and retry_count < max_retries - 1:
+                            logger.warning("检测到Baostock登录过期，尝试重新登录...")
+                            bs.logout()
+                            time.sleep(1)
+                            login_result = bs.login()
+                            if login_result.error_code == '0':
+                                logger.info("重新登录成功，继续重试...")
+                                retry_count += 1
+                                continue
+                            else:
+                                logger.error(f"重新登录失败: {login_result.error_msg}")
+
+                        retry_count += 1
+                        time.sleep(0.5)
+                        continue
+
+                    # 成功获取数据
+                    while rs_factor.next():
+                        row = rs_factor.get_row_data()
+                        if len(row) >= 3:
+                            all_factors.append({
+                                "code": row[0],
+                                "dividOperateDate": row[1],
+                                "foreAdjustFactor": float(row[2]) if row[2] else 1.0,
+                            })
+                    success = True
+
+                except Exception as e:
+                    logger.warning(f"获取 {code} 前复权因子失败: {e}")
+                    retry_count += 1
+                    time.sleep(0.5)
+
+            if not success:
+                failed_codes.append(code)
+                logger.error(f"获取 {code} 复权因子失败，已达最大重试次数")
+
     finally:
         bs.logout()
+
+    if failed_codes:
+        logger.warning(f"共有 {len(failed_codes)} 只股票获取复权因子失败")
 
     if not all_factors:
         return pd.DataFrame(columns=["code", "dividOperateDate", "foreAdjustFactor"])
