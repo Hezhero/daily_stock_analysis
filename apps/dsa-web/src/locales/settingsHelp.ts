@@ -7,6 +7,8 @@ export interface SettingsHelpContent {
   valueNotes?: string[];
   impact?: string[];
   notes?: string[];
+  examples?: string[];
+  showFieldKey?: boolean;
   docs?: SystemConfigDocLink[];
 }
 
@@ -29,6 +31,38 @@ const settingsHelpZhCN: SettingsHelpMap = {
       '股票代码之间不要使用中文逗号。',
       '修改后保存配置即可供后续任务读取。',
     ],
+  },
+  'settings.ai_model.GENERATION_BACKEND': {
+    title: '分析生成方式',
+    showFieldKey: false,
+    summary: '决定系统用哪种方式生成个股分析、大盘复盘和普通文本回复。',
+    usage: '通常保持“默认模型配置”。系统会继续使用你在本页配置的主模型、备选模型、渠道和用量记录。',
+    valueNotes: [
+      '当前页面只开放“默认模型配置”作为可选方式，看到更多选项前无需调整。',
+      '如果通过环境变量手动填写了其他值，系统会提示配置错误，避免误以为已经切换成功。',
+    ],
+    impact: ['影响普通分析、大盘复盘和文本生成入口，不改变问股助手的工具执行规则。'],
+    notes: [
+      '想恢复默认行为，选择“默认模型配置”并保存配置。',
+      '高级说明：当前默认模型配置内部由 LiteLLM 兼容层执行；普通使用无需了解或修改该内部值。',
+    ],
+    examples: [],
+  },
+  'settings.ai_model.GENERATION_FALLBACK_BACKEND': {
+    title: '备用生成方式（预留）',
+    showFieldKey: false,
+    summary: '为以后多个生成方式之间的备用切换预留；当前主要用于明确保持默认行为。',
+    usage: '通常保持“默认模型配置”。主生成方式也是默认模型配置时，不会额外重复调用一次。',
+    valueNotes: [
+      '如果只是想设置主模型失败后的备用模型，请使用“备选模型”，不是这个字段。',
+      '当前页面只开放“默认模型配置”，保存默认值即可。',
+    ],
+    impact: ['不改变现有模型备用顺序，也不会影响渠道编辑器里的模型配置。'],
+    notes: [
+      '想恢复默认行为，选择“默认模型配置”并保存配置。',
+      '高级说明：当前默认模型配置内部由 LiteLLM 兼容层执行；普通使用无需了解或修改该内部值。',
+    ],
+    examples: [],
   },
   'settings.ai_model.LITELLM_MODEL': {
     title: '主模型',
@@ -108,6 +142,52 @@ const settingsHelpZhCN: SettingsHelpMap = {
     impact: ['影响分析文本、报告语气和结构化输出稳定性。'],
     notes: ['不同 provider 对 temperature 的实际支持范围可能不同。'],
   },
+  'settings.ai_model.LLM_PROMPT_CACHE_TELEMETRY_ENABLED': {
+    title: 'Prompt Cache 遥测',
+    summary: '记录 provider 返回的 prompt cache usage 与归一化诊断。',
+    usage: '默认开启。关闭后不持久化 provider raw usage JSON、normalized cache fields 和 cache decision diagnostics，基础 token usage 仍保持兼容。',
+    valueNotes: ['该开关不控制 provider implicit cache，也不会改变请求参数。'],
+    impact: ['影响 llm_usage 中 provider/cache telemetry 的完整性。'],
+    notes: ['如果需要排查 cache hit/miss 或 provider usage shape，保持开启。'],
+  },
+  'settings.ai_model.LLM_PROMPT_CACHE_HINTS_ENABLED': {
+    title: 'Prompt Cache Hints',
+    summary: '允许主分析路径主动发送已验证 provider-specific cache hint。',
+    usage: '默认关闭。开启后仍只会对 registry 中 verified 或 smoke-tested 的 provider/route 发送 prompt_cache_key、cache_control 或 user_id 等 hint。',
+    valueNotes: ['未知 OpenAI-compatible gateway 默认 telemetry only，不会自动发送 cache 参数。'],
+    impact: ['可能改变主分析路径的 provider 请求 shape；Agent 路径当前只记录 diagnostics，不主动发送 hints。'],
+    notes: ['开启前应确认当前 LiteLLM 版本和 provider route 已通过 request-shape 测试。'],
+  },
+  'settings.ai_model.LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL': {
+    title: 'Prompt Cache 诊断级别',
+    summary: '控制 prompt cache capability 与 hint 决策诊断细节。',
+    usage: '可选 off、basic 或 debug。非法值会回退为 off。',
+    valueNotes: [
+      'basic 只包含 provider、api surface、verification status、hint applied 和 disabled reason 等枚举。',
+      'debug 可增加 HMAC-derived route/cache diagnostics 和 matched caps id，但仍不包含 raw prompt、request body、message content、webhook 或 API key。',
+    ],
+    impact: ['影响维护者排查 cache 能力匹配和 hint lowering 的可见度。'],
+    notes: ['debug 诊断只用于脱敏日志和测试可观察对象，不写入 provider_usage_json。'],
+  },
+  'settings.ai_model.LLM_USAGE_HMAC_SECRET': {
+    title: 'LLM 用量 HMAC 密钥',
+    summary: '用于 LLM usage telemetry 的 message-level HMAC 指纹。',
+    usage: '通常留空即可，系统会在数据目录生成本地密钥文件；只有需要跨部署比较 HMAC 时才手动配置同一个高熵随机密钥，例如 openssl rand -hex 32。',
+    valueNotes: [
+      '该密钥不会发送给 provider，也不会改变 prompt、模型参数或报告内容。',
+      '修改后新旧 HMAC 不再可比较，应同步更新 LLM_USAGE_HMAC_KEY_VERSION。',
+    ],
+    impact: ['影响 llm_usage 表中 messages_hmac、system_message_hmac 和 user_message_hmac 的可比性。'],
+    notes: ['不要使用登录 session secret，也不要把真实密钥提交到版本控制、issue、日志或截图里。'],
+  },
+  'settings.ai_model.LLM_USAGE_HMAC_KEY_VERSION': {
+    title: 'LLM 用量 HMAC 版本',
+    summary: '标记当前 LLM usage HMAC 密钥版本。',
+    usage: '轮换 LLM_USAGE_HMAC_SECRET 时同步更新，例如 prod-2026-06。',
+    valueNotes: ['留空时使用 local-v1。'],
+    impact: ['帮助区分不同密钥生成的 HMAC，避免错误比较不同部署或不同版本的指纹。'],
+    notes: ['该字段只是版本标签，不是密钥。'],
+  },
   'settings.ai_model.provider_keys': {
     title: '模型服务 API Key',
     summary: '配置模型服务商或聚合网关的访问密钥。',
@@ -167,6 +247,30 @@ const settingsHelpZhCN: SettingsHelpMap = {
     valueNotes: ['该 Key 是可选增强项，不是运行主分析流程的必填项。'],
     impact: ['影响大盘复盘和市场统计增强数据的覆盖度。'],
     notes: ['不要在 issue、日志或截图中暴露真实 Key。'],
+  },
+  'settings.data_source.stock_index_remote': {
+    title: '股票索引远程更新',
+    summary: '从 GitHub main 分支获取最新股票自动补全索引，并缓存到本地。',
+    usage: '默认开启；如运行环境无法访问 GitHub raw，可关闭开关。远程 URL、检查频率和超时时间均为系统内置值。',
+    valueNotes: ['系统默认 48 小时检查一次更新，避免频繁访问 GitHub。', '远程检查失败不会阻断 WebUI 或分析流程。'],
+    impact: ['影响 Web 自动补全和后端股票名称解析使用的股票简称新鲜度。'],
+    notes: ['远程下载失败时会继续使用已有缓存或随应用打包的内置索引。'],
+  },
+  'settings.data_source.ALPHASIFT_ENABLED': {
+    title: 'AlphaSift 选股',
+    summary: '控制是否启用内置 AlphaSift 选股页。',
+    usage: '默认关闭。设为 true 后，Web 会检查随后端依赖安装的 alphasift.dsa_adapter；若缺失，请先执行 pip install -r requirements.txt 或重建后端产物。',
+    valueNotes: ['AlphaSift 作为 DSA 后端依赖安装，/install 仅作为显式修复入口保留。', '选股结果仅用于研究辅助，不构成投资建议。'],
+    impact: ['影响 Web 选股入口、AlphaSift 策略读取和选股 API。'],
+    notes: ['AlphaSift 初筛候选，DSA 补充行情、基本面和新闻上下文；关闭时不影响原有分析、报告和通知流程。'],
+  },
+  'settings.data_source.ALPHASIFT_INSTALL_SPEC': {
+    title: 'AlphaSift 安装来源',
+    summary: '配置显式修复安装使用的受信任 AlphaSift pip 来源。',
+    usage: '默认固定到已验证的 ZhuLinsen/alphasift commit；正常部署通过 requirements 安装，只有手动调用修复安装入口时才使用该来源。',
+    valueNotes: ['自定义本地路径或 wheel 不会走修复安装；请先手动安装到当前后端 Python 环境。', '该字段按敏感值处理，设置页不会直接展示完整内容。'],
+    impact: ['影响 AlphaSift 适配层来源校验和显式修复安装。'],
+    notes: ['请确认来源可信；AlphaSift 是实验性质选股能力，启用前应理解相关风险。'],
   },
   'settings.data_source.REALTIME_SOURCE_PRIORITY': {
     title: '实时行情源优先级',
@@ -252,6 +356,80 @@ const settingsHelpZhCN: SettingsHelpMap = {
       '如果飞书侧配置 IP 白名单，需要确认当前运行环境出口 IP 已加入白名单。',
     ],
   },
+  'settings.notification.FEISHU_STREAM_ENABLED': {
+    title: '飞书 Stream 模式',
+    summary: '启用飞书应用机器人 / Stream Bot 长连接模式，不是飞书群 Webhook 推送开关。',
+    usage: '只有在已创建飞书应用、完成应用发布、权限和事件订阅配置后才开启；同时需要 FEISHU_APP_ID 和 FEISHU_APP_SECRET。',
+    valueNotes: [
+      'true 表示允许运行时使用应用机器人 Stream 模式。',
+      'false 表示不启用 Stream 模式；群消息推送仍应使用 FEISHU_WEBHOOK_URL。',
+      '只填写 App ID/Secret 或只开启 Stream，不等于启用群 Webhook 推送。',
+    ],
+    impact: [
+      '影响飞书应用机器人交互或 Stream Bot 链路。',
+      '不会改变 FEISHU_WEBHOOK_URL 的群机器人 Webhook 推送语义。',
+    ],
+    notes: [
+      '保存后通常需要重启相关 bot/服务进程，已运行的长连接不会自动重建。',
+      '失败只应影响飞书应用机器人链路，不应拖垮主分析流程。',
+    ],
+  },
+  'settings.notification.FEISHU_CHAT_ID': {
+    title: '飞书 App Bot 推送目标',
+    summary: '配置飞书应用机器人主动推送的目标 chat_id（群聊模式）或 open_id（私聊模式）。',
+    usage: '需要同时填写 FEISHU_APP_ID 和 FEISHU_APP_SECRET。群聊模式填写 oc_ 开头的 chat_id；私聊模式填写 ou_ 开头的 open_id 并将 FEISHU_RECEIVE_ID_TYPE 设为 open_id。',
+    valueNotes: [
+      '仅凭 FEISHU_APP_ID / FEISHU_APP_SECRET 不会自动启用群 Webhook 推送。',
+      'App Bot 模式与 Webhook 模式互斥：Webhook URL 优先，未配置 Webhook 时才走 App Bot。',
+    ],
+    impact: [
+      '影响飞书 App Bot 通知渠道的送达目标。',
+      '失败时不应拖垮主分析流程，只影响该渠道送达。',
+    ],
+    notes: [
+      'App Bot 需要应用拥有 im:message:send_as_bot 权限。',
+      '私聊需要用户在飞书端主动打开过与应用机器人的对话框。',
+    ],
+  },
+  'settings.notification.FEISHU_RECEIVE_ID_TYPE': {
+    title: '飞书接收方 ID 类型',
+    summary: '指定 FEISHU_CHAT_ID 的类型：chat_id 表示群聊，open_id 表示私聊。',
+    usage: '群聊选择 chat_id；私聊（给指定用户发 P2P 消息）选择 open_id。',
+    valueNotes: [
+      '仅当 FEISHU_CHAT_ID 已填写时生效。',
+      '填错类型会导致消息发送失败；如果收到 invalid receive_id 错误，需要确认该值与前端的实际 ID 类型一致。',
+    ],
+    impact: ['影响飞书 App Bot 消息的路由方式。'],
+    notes: ['大多数场景使用 chat_id 即可；如果值不是 chat_id 或 open_id，运行时会自动回退到 chat_id。'],
+  },
+  'settings.notification.FEISHU_DOMAIN': {
+    title: '飞书 API 域名',
+    summary: '选择飞书 API 的区域：feishu 对应飞书国内版（feishu.cn），lark 对应 Lark 国际版（larksuite.com）。',
+    usage: '国内用户选择 feishu；海外 / Lark 用户选择 lark。',
+    valueNotes: [
+      '仅影响 App Bot 主动推送的 API 调用域名，不影响 Webhook URL。',
+      '选错会导致 API 调用失败（SDK 连错服务器）。',
+    ],
+    impact: ['影响飞书 App Bot 主动推送的 API 连通性。'],
+    notes: ['如果值不是 feishu 或 lark，运行时会自动回退到 feishu。'],
+  },
+  'settings.notification.DINGTALK_STREAM_ENABLED': {
+    title: '钉钉 Stream 模式',
+    summary: '启用钉钉应用机器人长连接模式，不是普通钉钉群机器人 Webhook 开关。',
+    usage: '需要先在钉钉开放平台配置应用机器人，并填写 DINGTALK_APP_KEY 和 DINGTALK_APP_SECRET。',
+    valueNotes: [
+      'true 表示允许运行时使用钉钉应用机器人 Stream/长连接模式。',
+      'false 表示不启用该长连接模式；自定义 Webhook 中的钉钉群机器人地址仍走 CUSTOM_WEBHOOK_URLS。',
+    ],
+    impact: [
+      '影响钉钉应用机器人交互或长连接链路。',
+      '不会改变自定义 Webhook 通知的发送路径。',
+    ],
+    notes: [
+      '保存后通常需要重启相关 bot/服务进程，已运行的长连接不会自动重建。',
+      '不要把 Stream 模式和群机器人 Webhook 混为一条配置路径。',
+    ],
+  },
   'settings.notification.webhooks': {
     title: '企业微信 Webhook',
     summary: '配置企业微信群机器人 Webhook，用于把分析报告推送到指定群。',
@@ -270,6 +448,8 @@ const settingsHelpZhCN: SettingsHelpMap = {
     valueNotes: [
       '模板必须渲染为 JSON object。',
       '推荐使用 $content_json、$title_json 避免换行和引号破坏 JSON。',
+      'Docker 部署中保存到 .env 时会自动写成 $$content_json、$$title_json；运行时仍会还原为单个 $ 占位符。',
+      '本字段仅影响自定义 Webhook 的 payload 行为，不会改写 LLM provider、模型名、Base URL 或迁移优先级。',
     ],
     impact: ['影响 AstrBot、NapCat、自建服务等自定义推送。'],
     notes: ['先用一个 Webhook 验证成功，再扩展到多个目标。'],
@@ -346,6 +526,54 @@ const settingsHelpZhCN: SettingsHelpMap = {
     impact: ['影响重启后浏览器访问 WebUI 的 URL 端口。'],
     notes: ['修改 WEBUI_PORT 后需要重启当前进程、Docker 容器或服务管理器才会生效。'],
   },
+  'settings.system.LOG_DIR': {
+    title: '日志目录',
+    summary: '配置应用日志输出目录。',
+    usage: '填写运行用户或容器可写的目录路径；本地默认 ./logs，容器内常见路径为 /app/logs。',
+    valueNotes: [
+      '相对路径按运行进程的工作目录解析。',
+      'Longbridge SDK 等组件也可能在该目录下写入日志文件。',
+    ],
+    impact: [
+      '影响应用日志、部分 SDK 日志和排障文件的落盘位置。',
+    ],
+    notes: [
+      '修改后通常需要重启进程，已初始化的 logger 不一定会立即切换目录。',
+      'Docker、桌面端和本地源码运行的可写路径不同，保存前需确认权限。',
+    ],
+  },
+  'settings.system.WEBUI_ENABLED': {
+    title: '默认启动 WebUI',
+    summary: '控制启动期是否默认进入 WebUI/API 服务模式。',
+    usage: '这是兼容旧启动入口的启动期配置；保存后不会让当前页面立即启动或关闭 WebUI。',
+    valueNotes: [
+      'true 表示后续按默认入口启动时倾向进入 WebUI/API 服务模式。',
+      'false 表示保持非 WebUI 默认启动行为；显式 CLI 参数仍可能覆盖该配置。',
+    ],
+    impact: [
+      '影响 main.py 或相关服务入口下一次启动时的默认模式。',
+    ],
+    notes: [
+      '保存后需要重启相关进程才会生效。',
+      '不要把该开关理解为当前 Web 设置页的即时启停按钮。',
+    ],
+  },
+  'settings.system.WEBUI_AUTO_BUILD': {
+    title: '启动前自动构建前端',
+    summary: '控制后端启动 WebUI 前是否自动检查并构建前端静态产物。',
+    usage: '源码部署通常保持 true；已预构建镜像、离线环境或受限环境可设为 false。',
+    valueNotes: [
+      'true 时启动流程会尝试准备 apps/dsa-web 静态产物。',
+      'false 时只检查已有构建产物；如果产物缺失，WebUI 可能不可用或只看到后端警告。',
+    ],
+    impact: [
+      '影响 WebUI 下一次启动时前端静态资源是否自动准备。',
+    ],
+    notes: [
+      '保存后不会立即触发构建，需要重启相关后端进程。',
+      '在 Docker 或发布包中关闭前，请确认构建产物已经随镜像或安装包提供。',
+    ],
+  },
   'settings.system.ADMIN_AUTH_ENABLED': {
     title: 'Web 登录保护',
     summary: '启用 WebUI 管理员密码保护。',
@@ -365,16 +593,16 @@ const settingsHelpZhCN: SettingsHelpMap = {
   'settings.system.schedule': {
     title: '定时任务',
     summary: '控制是否启用每日定时分析以及启动时是否立即执行一次。',
-    usage: 'SCHEDULE_TIME 使用 HH:MM 24 小时格式；SCHEDULE_ENABLED 和 SCHEDULE_RUN_IMMEDIATELY 控制定时模式启动行为。',
+    usage: 'SCHEDULE_TIME 使用 HH:MM 24 小时格式；SCHEDULE_TIMES 可配置逗号分隔的多个 HH:MM 时间点；SCHEDULE_ENABLED 控制 runtime scheduler 是否启用。',
     valueNotes: [
-      '已运行的 schedule 模式会在下一轮调度检查中读取新的 SCHEDULE_TIME 并重建 daily job。',
-      'SCHEDULE_ENABLED 和 SCHEDULE_RUN_IMMEDIATELY 属于启动期行为，保存后不会启动、停止或重建当前 scheduler。',
+      '已运行的 schedule 模式会在下一轮调度检查中读取新的 SCHEDULE_TIME / SCHEDULE_TIMES 并重建 daily jobs。',
+      'WebUI/API/Desktop 长运行进程保存 SCHEDULE_ENABLED、SCHEDULE_TIME 或 SCHEDULE_TIMES 后会按新配置启停或重建 runtime scheduler。',
       '定时任务触发时会读取当前保存的 STOCK_LIST。',
     ],
     impact: ['影响 schedule 模式下自动分析频率、启动行为和通知推送时间。'],
     notes: [
       '注意运行环境时区，容器和服务器时区可能与本地不同。',
-      '若当前进程未以 schedule 模式启动，保存这些字段不会自动创建调度器。',
+      'SCHEDULE_RUN_IMMEDIATELY 仍是启动期行为；保存后不会立即触发一次分析。',
     ],
   },
   'settings.system.RUN_IMMEDIATELY': {
@@ -393,7 +621,7 @@ const settingsHelpZhCN: SettingsHelpMap = {
     summary: '控制非交易日是否跳过分析。',
     usage: '默认 true；需要强制运行可设为 false 或使用 --force-run。',
     valueNotes: ['会结合市场日历判断 A 股、港股、美股等市场是否开市。'],
-    impact: ['影响定时任务和手动运行是否在休市日执行。'],
+    impact: ['影响定时任务、CLI 和 GitHub Actions 手动运行是否在休市日执行；Web/API 大盘复盘按钮会直接提交任务。'],
     notes: ['关闭后休市日可能生成缺少实时行情的报告。'],
   },
   'settings.system.HTTP_PROXY': {
@@ -505,6 +733,22 @@ const settingsHelpZhCN: SettingsHelpMap = {
     ],
     impact: ['影响个股分析流程、报告生成质量和 LLM 调用次数。'],
     notes: ['Agent 模式会消耗更多 token 和时间，适合需要深度推理的场景。'],
+  },
+  'settings.agent.AGENT_GENERATION_BACKEND': {
+    title: '问股生成方式',
+    showFieldKey: false,
+    summary: '决定问股助手用哪种方式生成回复，并配合工具查询行情、新闻和历史数据。',
+    usage: '通常保持“自动”。系统会选择当前可用的模型工具调用方式；如果没有明确要固定方式，无需调整。',
+    valueNotes: [
+      '如果不确定，选择“自动”即可。',
+      '只有当你明确要固定使用当前默认模型工具调用时，才改为“默认模型工具调用”。',
+    ],
+    impact: ['影响问股助手的回复生成和工具调用入口，不改变它能使用哪些工具。'],
+    notes: [
+      '想恢复默认行为，选择“自动”并保存配置。',
+      '高级说明：当前默认模型工具调用内部由 LiteLLM 兼容层执行；普通使用无需了解或修改该内部值。',
+    ],
+    examples: [],
   },
   'settings.agent.AGENT_MAX_STEPS': {
     title: 'Agent 最大推理步数',
@@ -855,12 +1099,25 @@ const settingsHelpZhCN: SettingsHelpMap = {
     impact: ['影响分析总耗时。'],
     notes: ['总耗时 ≈ 股票数 × 单股耗时 + (股票数-1) × ANALYSIS_DELAY。'],
   },
+  'settings.system.SAVE_CONTEXT_SNAPSHOT': {
+    title: '保存分析上下文快照',
+    summary: '控制是否将分析历史的整份 context_snapshot 持久化到数据库。',
+    usage: '默认开启。关闭后，新历史记录不会保存 enhanced_context、market_phase_summary、AnalysisContextPack overview 或运行诊断快照等 context_snapshot 内容。',
+    valueNotes: [
+      '关闭后，新历史记录的历史详情、completed 任务状态和 Web 报告页无法读取低敏输入数据块摘要。',
+      '该开关不关闭当次 AnalysisContextPack 构建，也不关闭 LLM Prompt 中的低敏 pack summary。',
+      'CLI 的 --no-context-snapshot 与设为 false 的持久化效果一致。',
+    ],
+    impact: ['影响历史透明度、回测/诊断可用的上下文快照信息和 Web 报告页的数据来源摘要。'],
+    notes: ['若需要完全关闭 P3-P5 pack 接入，需要回滚相关代码；当前没有运行时 pack 总开关。'],
+  },
   'settings.system.market_review': {
     title: '大盘分析',
     summary: '控制大盘分析功能的开关、覆盖市场和配色方案。',
-    usage: 'MARKET_REVIEW_ENABLED 开启大盘分析；MARKET_REVIEW_REGION 选择市场（cn/hk/us/both）；MARKET_REVIEW_COLOR_SCHEME 选择配色。',
+    usage: 'MARKET_REVIEW_ENABLED 开启大盘分析；DAILY_MARKET_CONTEXT_ENABLED 默认开启，会把当日大盘摘要用于个股分析 Prompt 与保守护栏；MARKET_REVIEW_REGION 选择市场（cn/hk/us/both）；MARKET_REVIEW_COLOR_SCHEME 选择配色。',
     valueNotes: [
       'cn 覆盖 A 股，hk 覆盖港股，us 覆盖美股，both 覆盖全部。',
+      '默认开启 DAILY_MARKET_CONTEXT_ENABLED；设为 false 后仍可生成大盘复盘报告，但个股分析不会读取大盘摘要或软化买入/加仓建议。',
       '配色方案影响大盘报告中指数涨跌的颜色显示：green_up 为绿涨红跌，red_up 为红涨绿跌。',
     ],
     impact: ['影响分析报告中大盘概览部分的内容和视觉呈现。'],
@@ -880,6 +1137,38 @@ const settingsHelpEnUS: SettingsHelpMap = {
     ],
     impact: ['Affects analysis scope, notification content, and saved history reports.'],
     notes: ['Use English commas between symbols.', 'Save the setting before later tasks can read it.'],
+  },
+  'settings.ai_model.GENERATION_BACKEND': {
+    title: 'Analysis Generation Method',
+    showFieldKey: false,
+    summary: 'Chooses how the system generates stock analysis, market reviews, and regular text responses.',
+    usage: 'Usually keep “Default model settings”. The system will continue to use the primary model, fallback models, channels, and usage tracking configured on this page.',
+    valueNotes: [
+      'The settings page currently exposes “Default model settings” as the available method, so most users do not need to change this.',
+      'If another value is set manually through environment variables, the system reports a configuration error instead of pretending the switch worked.',
+    ],
+    impact: ['Affects regular analysis, market review, and text generation entry points. It does not change how the ask-stock assistant runs tools.'],
+    notes: [
+      'To restore the default behavior, choose “Default model settings” and save.',
+      'Advanced note: the default model settings are currently executed through the LiteLLM compatibility layer; regular users do not need to understand or change that internal value.',
+    ],
+    examples: [],
+  },
+  'settings.ai_model.GENERATION_FALLBACK_BACKEND': {
+    title: 'Fallback Generation Method (reserved)',
+    showFieldKey: false,
+    summary: 'Reserved for switching between multiple generation methods later; today it mainly records the default behavior explicitly.',
+    usage: 'Usually keep “Default model settings”. When the main method is already the default model settings, the system does not make an extra duplicate call.',
+    valueNotes: [
+      'If you want a backup model after the primary model fails, use “Fallback models” instead of this field.',
+      'The settings page currently exposes “Default model settings” only, so saving the default is enough.',
+    ],
+    impact: ['Does not change the current fallback model order or the model-channel editor configuration.'],
+    notes: [
+      'To restore the default behavior, choose “Default model settings” and save.',
+      'Advanced note: the default model settings are currently executed through the LiteLLM compatibility layer; regular users do not need to understand or change that internal value.',
+    ],
+    examples: [],
   },
   'settings.ai_model.LITELLM_MODEL': {
     title: 'Primary Model',
@@ -943,6 +1232,52 @@ const settingsHelpEnUS: SettingsHelpMap = {
     impact: ['Affects report wording and structured-output stability.'],
     notes: ['Provider-specific limits can differ.'],
   },
+  'settings.ai_model.LLM_PROMPT_CACHE_TELEMETRY_ENABLED': {
+    title: 'Prompt Cache Telemetry',
+    summary: 'Records provider prompt-cache usage and normalized diagnostics.',
+    usage: 'Enabled by default. When disabled, provider raw usage JSON, normalized cache fields, and cache-decision diagnostics are not persisted; basic token usage remains compatible.',
+    valueNotes: ['This does not control provider implicit cache and does not change request parameters.'],
+    impact: ['Affects completeness of provider/cache telemetry in llm_usage.'],
+    notes: ['Keep it enabled when investigating cache hit/miss or provider usage shapes.'],
+  },
+  'settings.ai_model.LLM_PROMPT_CACHE_HINTS_ENABLED': {
+    title: 'Prompt Cache Hints',
+    summary: 'Allows the main analysis path to send verified provider-specific cache hints.',
+    usage: 'Disabled by default. When enabled, hints such as prompt_cache_key, cache_control, or user_id are sent only for verified or smoke-tested provider/route entries in the registry.',
+    valueNotes: ['Unknown OpenAI-compatible gateways remain telemetry-only and do not receive cache parameters automatically.'],
+    impact: ['May change provider request shape for the main analysis path only. The Agent path currently records diagnostics but does not actively send hints.'],
+    notes: ['Enable only after the current LiteLLM version and provider route pass request-shape tests.'],
+  },
+  'settings.ai_model.LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL': {
+    title: 'Prompt Cache Diagnostics',
+    summary: 'Controls prompt-cache capability and hint decision diagnostics.',
+    usage: 'Allowed values are off, basic, and debug. Invalid values fall back to off.',
+    valueNotes: [
+      'basic includes only enums such as provider, API surface, verification status, hint applied, and disabled reason.',
+      'debug may include HMAC-derived route/cache diagnostics and matched caps id, but still excludes raw prompts, request bodies, message content, webhooks, and API keys.',
+    ],
+    impact: ['Affects maintainer visibility into cache capability matching and hint lowering.'],
+    notes: ['Debug diagnostics are for redacted logs and test-observable objects only; they are not written to provider_usage_json.'],
+  },
+  'settings.ai_model.LLM_USAGE_HMAC_SECRET': {
+    title: 'LLM Usage HMAC Secret',
+    summary: 'Signs message-level HMAC fingerprints for LLM usage telemetry.',
+    usage: 'Usually leave this empty so the backend creates a local secret file. Set it only when deployments intentionally need comparable HMACs, and use a high-entropy random value such as openssl rand -hex 32.',
+    valueNotes: [
+      'This secret is not sent to providers and does not change prompts, model parameters, or reports.',
+      'When rotating it, also update LLM_USAGE_HMAC_KEY_VERSION.',
+    ],
+    impact: ['Affects comparability of messages_hmac, system_message_hmac, and user_message_hmac in llm_usage.'],
+    notes: ['Do not reuse the login session secret or commit/expose the real value in version control, issues, logs, or screenshots.'],
+  },
+  'settings.ai_model.LLM_USAGE_HMAC_KEY_VERSION': {
+    title: 'LLM Usage HMAC Key Version',
+    summary: 'Labels the current LLM usage HMAC key version.',
+    usage: 'Update it when rotating LLM_USAGE_HMAC_SECRET, for example prod-2026-06.',
+    valueNotes: ['Defaults to local-v1 when unset.'],
+    impact: ['Prevents accidental comparison across different HMAC keys or deployments.'],
+    notes: ['This is only a version label, not a secret.'],
+  },
   'settings.ai_model.provider_keys': {
     title: 'Provider API Key',
     summary: 'Configures credentials for model providers or gateways.',
@@ -996,6 +1331,30 @@ const settingsHelpEnUS: SettingsHelpMap = {
     valueNotes: ['This key is an optional enhancement, not required for the main analysis flow.'],
     impact: ['Affects market-review and market-statistics coverage.'],
     notes: ['Do not expose real keys in issues, logs, or screenshots.'],
+  },
+  'settings.data_source.stock_index_remote': {
+    title: 'Remote Stock Index',
+    summary: 'Fetches the latest stock autocomplete index from GitHub main and caches it locally.',
+    usage: 'Enabled by default. If GitHub raw is unreachable, disable it. The URL, check frequency, and timeout are built-in system values.',
+    valueNotes: ['The system checks for updates every 48 hours to avoid frequent GitHub access.', 'Remote check failures do not block WebUI or analysis.'],
+    impact: ['Affects stock-name freshness for Web autocomplete and backend stock-name resolution.'],
+    notes: ['When remote download fails, the app keeps using an existing cache or the bundled index.'],
+  },
+  'settings.data_source.ALPHASIFT_ENABLED': {
+    title: 'AlphaSift Screening',
+    summary: 'Controls the built-in AlphaSift stock screening page.',
+    usage: 'Disabled by default. When true, the Web app checks alphasift.dsa_adapter installed with backend dependencies; if it is missing, run pip install -r requirements.txt or rebuild the backend artifact.',
+    valueNotes: ['AlphaSift is installed as a DSA backend dependency; /install is retained only as an explicit repair action.', 'Screening output is for research support only and is not investment advice.'],
+    impact: ['Affects the Web screening entry, AlphaSift strategy loading, and screening API.'],
+    notes: ['AlphaSift generates candidates, while DSA enriches them with quote, fundamental, and news context; disabling it does not affect existing analysis, reports, or notifications.'],
+  },
+  'settings.data_source.ALPHASIFT_INSTALL_SPEC': {
+    title: 'AlphaSift Install Source',
+    summary: 'Configures the trusted AlphaSift pip source used by explicit repair installs.',
+    usage: 'Defaults to a verified ZhuLinsen/alphasift commit. Normal deployments install AlphaSift through requirements; this source is used only when the repair install endpoint is called manually.',
+    valueNotes: ['Custom local paths or wheels are not handled by the repair endpoint; install them into the backend Python environment first.', 'This field is treated as sensitive, so the settings page does not show the full value.'],
+    impact: ['Affects AlphaSift adapter source validation and explicit repair installs.'],
+    notes: ['Use a trusted source only. AlphaSift is an experimental screening capability, so understand the risk before enabling it.'],
   },
   'settings.data_source.REALTIME_SOURCE_PRIORITY': {
     title: 'Realtime Source Priority',
@@ -1076,6 +1435,80 @@ const settingsHelpEnUS: SettingsHelpMap = {
       'If IP allowlisting is enabled in Feishu, add the outbound IP of your runtime environment.',
     ],
   },
+  'settings.notification.FEISHU_STREAM_ENABLED': {
+    title: 'Feishu Stream Mode',
+    summary: 'Enables Feishu application bot / Stream Bot long-connection mode. It is not the Feishu group webhook switch.',
+    usage: 'Enable it only after the Feishu app is created, published, granted permissions, and configured for events. FEISHU_APP_ID and FEISHU_APP_SECRET are also required.',
+    valueNotes: [
+      'true allows runtime Feishu app bot stream mode.',
+      'false disables stream mode; group message delivery still uses FEISHU_WEBHOOK_URL.',
+      'App credentials or this switch alone do not enable group webhook delivery.',
+    ],
+    impact: [
+      'Affects Feishu application bot interaction or Stream Bot paths.',
+      'Does not change FEISHU_WEBHOOK_URL group webhook delivery semantics.',
+    ],
+    notes: [
+      'Restart the relevant bot/service process after saving; existing long connections are not rebuilt automatically.',
+      'Failures should affect only the Feishu app bot path, not the main analysis flow.',
+    ],
+  },
+  'settings.notification.FEISHU_CHAT_ID': {
+    title: 'Feishu App Bot Push Target',
+    summary: 'Configures the target chat_id (group mode) or open_id (P2P mode) for Feishu App Bot notification delivery.',
+    usage: 'FEISHU_APP_ID and FEISHU_APP_SECRET must also be configured. For groups, use a chat_id starting with oc_. For P2P, use an open_id starting with ou_ and set FEISHU_RECEIVE_ID_TYPE to open_id.',
+    valueNotes: [
+      'FEISHU_APP_ID / FEISHU_APP_SECRET alone do not enable group webhook delivery.',
+      'App Bot mode and Webhook mode are mutually exclusive: webhook URL takes priority; App Bot is used only when no webhook URL is configured.',
+    ],
+    impact: [
+      'Affects the target destination for the Feishu App Bot notification channel.',
+      'Delivery failure should not block the main analysis flow.',
+    ],
+    notes: [
+      'The app bot needs the im:message:send_as_bot permission.',
+      'For P2P messages, the target user must have previously opened the conversation with the app bot in Feishu.',
+    ],
+  },
+  'settings.notification.FEISHU_RECEIVE_ID_TYPE': {
+    title: 'Feishu Receive ID Type',
+    summary: 'Specifies the type of FEISHU_CHAT_ID: chat_id for group chat, open_id for P2P private message.',
+    usage: 'Choose chat_id for groups; choose open_id for sending P2P messages to a specific user.',
+    valueNotes: [
+      'Only takes effect when FEISHU_CHAT_ID is also configured.',
+      'If the type does not match the actual ID, sending will fail with an invalid receive_id error.',
+    ],
+    impact: ['Affects the routing of Feishu App Bot messages.'],
+    notes: ['chat_id covers most use cases. If the value is neither chat_id nor open_id, the runtime falls back to chat_id.'],
+  },
+  'settings.notification.FEISHU_DOMAIN': {
+    title: 'Feishu API Domain',
+    summary: 'Selects the Feishu API region: feishu for mainland China (feishu.cn), lark for international (larksuite.com).',
+    usage: 'Mainland China users choose feishu; international / Lark users choose lark.',
+    valueNotes: [
+      'Only affects the API domain used by App Bot notification delivery; does not affect webhook URLs.',
+      'Choosing the wrong domain causes API errors (SDK connects to the wrong server).',
+    ],
+    impact: ['Affects API connectivity for Feishu App Bot notification delivery.'],
+    notes: ['If the value is neither feishu nor lark, the runtime falls back to feishu.'],
+  },
+  'settings.notification.DINGTALK_STREAM_ENABLED': {
+    title: 'DingTalk Stream Mode',
+    summary: 'Enables DingTalk application bot long-connection mode. It is not the regular DingTalk group webhook switch.',
+    usage: 'Configure a DingTalk application bot first, then provide DINGTALK_APP_KEY and DINGTALK_APP_SECRET.',
+    valueNotes: [
+      'true allows runtime DingTalk app bot stream/long-connection mode.',
+      'false disables that long-connection mode; DingTalk group webhook URLs in CUSTOM_WEBHOOK_URLS still use the custom webhook path.',
+    ],
+    impact: [
+      'Affects DingTalk application bot interaction or long-connection paths.',
+      'Does not change custom webhook notification delivery.',
+    ],
+    notes: [
+      'Restart the relevant bot/service process after saving; existing long connections are not rebuilt automatically.',
+      'Do not treat Stream mode and group bot Webhook as the same delivery path.',
+    ],
+  },
   'settings.notification.webhooks': {
     title: 'Enterprise WeChat Webhook',
     summary: 'Configures an Enterprise WeChat group bot webhook for report delivery.',
@@ -1088,7 +1521,12 @@ const settingsHelpEnUS: SettingsHelpMap = {
     title: 'Custom Webhooks',
     summary: 'Pushes reports to any service that accepts POST JSON.',
     usage: 'Use comma-separated URLs. CUSTOM_WEBHOOK_BODY_TEMPLATE can customize the JSON body.',
-    valueNotes: ['The template must render to a JSON object.', 'Prefer $content_json and $title_json to avoid invalid JSON.'],
+    valueNotes: [
+      'The template must render to a JSON object.',
+      'Prefer $content_json and $title_json to avoid invalid JSON.',
+      'Docker saves these placeholders as $$content_json / $$title_json in .env, and runtime restores the single-$ form.',
+      'This setting only affects custom webhook payload behavior and does not alter LLM provider/model/Base URL or runtime routing priority.',
+    ],
     impact: ['Affects AstrBot, NapCat, or self-hosted push integrations.'],
     notes: ['Validate one webhook before adding multiple targets.'],
   },
@@ -1159,6 +1597,48 @@ const settingsHelpEnUS: SettingsHelpMap = {
     impact: ['Affects the browser URL used to open WebUI after restart.'],
     notes: ['Restart the process, Docker container, or service manager after changing WEBUI_PORT.'],
   },
+  'settings.system.LOG_DIR': {
+    title: 'Log Directory',
+    summary: 'Configures where application logs are written.',
+    usage: 'Use a directory writable by the runtime user or container. The local default is ./logs; container deployments often use /app/logs.',
+    valueNotes: [
+      'Relative paths are resolved from the process working directory.',
+      'Components such as the Longbridge SDK can also write log files under this directory.',
+    ],
+    impact: ['Affects application logs, some SDK logs, and troubleshooting files.'],
+    notes: [
+      'Restart the process after changing this field; already initialized loggers may not switch immediately.',
+      'Docker, desktop, and source deployments can have different writable paths.',
+    ],
+  },
+  'settings.system.WEBUI_ENABLED': {
+    title: 'Default WebUI Startup',
+    summary: 'Controls whether startup defaults to WebUI/API service mode.',
+    usage: 'This is a startup-time compatibility flag. Saving it does not immediately start or stop the current WebUI process.',
+    valueNotes: [
+      'true makes later default entrypoint starts prefer WebUI/API service mode.',
+      'false keeps the non-WebUI default startup behavior; explicit CLI arguments can still override it.',
+    ],
+    impact: ['Affects the default mode on the next main.py or service-entry startup.'],
+    notes: [
+      'Restart the relevant process before the change takes effect.',
+      'Do not treat this switch as an immediate on/off control for the current settings page.',
+    ],
+  },
+  'settings.system.WEBUI_AUTO_BUILD': {
+    title: 'Auto-build Web Frontend',
+    summary: 'Controls whether backend WebUI startup automatically checks and builds frontend static assets.',
+    usage: 'Keep true for source deployments. Set false for prebuilt images, offline environments, or restricted runtimes.',
+    valueNotes: [
+      'true makes startup prepare apps/dsa-web static assets.',
+      'false only verifies existing build artifacts; if assets are missing, WebUI may be unavailable or only backend warnings will be logged.',
+    ],
+    impact: ['Affects frontend asset preparation on the next WebUI backend startup.'],
+    notes: [
+      'Saving does not trigger a build immediately; restart the backend process.',
+      'Before disabling it in Docker or packages, make sure the built assets are already included.',
+    ],
+  },
   'settings.system.ADMIN_AUTH_ENABLED': {
     title: 'Web Login Protection',
     summary: 'Enables admin password protection for WebUI.',
@@ -1178,16 +1658,16 @@ const settingsHelpEnUS: SettingsHelpMap = {
   'settings.system.schedule': {
     title: 'Schedule',
     summary: 'Controls daily scheduled analysis and whether startup runs immediately.',
-    usage: 'SCHEDULE_TIME uses HH:MM 24-hour format. SCHEDULE_ENABLED and SCHEDULE_RUN_IMMEDIATELY control schedule-mode startup behavior.',
+    usage: 'SCHEDULE_TIME uses HH:MM 24-hour format. SCHEDULE_TIMES accepts comma-separated HH:MM values. SCHEDULE_ENABLED controls whether the runtime scheduler is enabled.',
     valueNotes: [
-      'An already-running schedule mode reads a new SCHEDULE_TIME on the next scheduler check and rebuilds the daily job.',
-      'SCHEDULE_ENABLED and SCHEDULE_RUN_IMMEDIATELY are startup-time settings; saving them does not start, stop, or rebuild the current scheduler.',
+      'An already-running schedule mode reads new SCHEDULE_TIME / SCHEDULE_TIMES values on the next scheduler check and rebuilds the daily jobs.',
+      'Long-running WebUI/API/Desktop processes start, stop, or rebuild the runtime scheduler after saving SCHEDULE_ENABLED, SCHEDULE_TIME, or SCHEDULE_TIMES.',
       'Scheduled runs read the currently saved STOCK_LIST.',
     ],
     impact: ['Affects automatic analysis frequency, startup behavior, and notification timing in schedule mode.'],
     notes: [
       'Check the runtime timezone, especially in containers and servers.',
-      'If the current process was not started in schedule mode, saving these fields will not create a scheduler.',
+      'SCHEDULE_RUN_IMMEDIATELY remains a startup-time setting; saving it does not trigger an immediate analysis run.',
     ],
   },
   'settings.system.RUN_IMMEDIATELY': {
@@ -1206,7 +1686,7 @@ const settingsHelpEnUS: SettingsHelpMap = {
     summary: 'Controls whether analysis is skipped on non-trading days.',
     usage: 'Default true. Set false or use --force-run to override.',
     valueNotes: ['Uses market calendars for A-share, HK, US, and other supported markets.'],
-    impact: ['Affects whether manual and scheduled runs execute on holidays.'],
+    impact: ['Affects scheduled jobs, CLI runs, and GitHub Actions manual runs on holidays; the Web/API market-review button submits directly.'],
     notes: ['Disabling it can produce reports with missing realtime quotes on closed markets.'],
   },
   'settings.system.HTTP_PROXY': {
@@ -1318,6 +1798,22 @@ const settingsHelpEnUS: SettingsHelpMap = {
     ],
     impact: ['Affects stock analysis flow, report quality, and LLM call count.'],
     notes: ['Agent mode consumes more tokens and time; best for scenarios requiring deep reasoning.'],
+  },
+  'settings.agent.AGENT_GENERATION_BACKEND': {
+    title: 'Ask-Stock Generation Method',
+    showFieldKey: false,
+    summary: 'Chooses how the ask-stock assistant generates replies and queries market, news, and history tools.',
+    usage: 'Usually keep Auto. The system chooses the currently available model tool-calling method; change it only when you need to pin the assistant method.',
+    valueNotes: [
+      'If you are unsure, choose Auto.',
+      'Choose “Default model tool calling” only when you explicitly want to pin the assistant to the current default model tool-calling method.',
+    ],
+    impact: ['Affects the assistant reply path and tool entry point. It does not change which tools the assistant can use.'],
+    notes: [
+      'To restore the default behavior, choose Auto and save.',
+      'Advanced note: the current default model tool-calling method is executed through the LiteLLM compatibility layer; regular users do not need to understand or change that internal value.',
+    ],
+    examples: [],
   },
   'settings.agent.AGENT_MAX_STEPS': {
     title: 'Agent Max Steps',
@@ -1668,12 +2164,25 @@ const settingsHelpEnUS: SettingsHelpMap = {
     impact: ['Affects total analysis time.'],
     notes: ['Total time ≈ stock count × per-stock time + (count-1) × ANALYSIS_DELAY.'],
   },
+  'settings.system.SAVE_CONTEXT_SNAPSHOT': {
+    title: 'Save Context Snapshot',
+    summary: 'Controls whether the full analysis history context_snapshot is persisted to the database.',
+    usage: 'Enabled by default. When disabled, new history records do not persist enhanced_context, market_phase_summary, AnalysisContextPack overview, diagnostic snapshots, or other context_snapshot content.',
+    valueNotes: [
+      'When disabled, history detail, completed task status, and Web report pages cannot read low-sensitivity input-block summaries from persisted records.',
+      'This switch does not disable AnalysisContextPack construction for the current run and does not remove the low-sensitivity pack summary from LLM prompts.',
+      'The CLI --no-context-snapshot flag has the same persistence effect as setting this to false.',
+    ],
+    impact: ['Affects historical transparency, diagnostics that rely on context snapshots, and Web report data-source summaries.'],
+    notes: ['To disable the P3-P5 pack integration itself, roll back the related code; there is no runtime pack master switch.'],
+  },
   'settings.system.market_review': {
     title: 'Market Review',
     summary: 'Controls the market review feature: on/off, coverage region, and color scheme.',
-    usage: 'MARKET_REVIEW_ENABLED toggles market review; MARKET_REVIEW_REGION selects markets (cn/hk/us/both); MARKET_REVIEW_COLOR_SCHEME selects colors.',
+    usage: 'MARKET_REVIEW_ENABLED toggles market review; DAILY_MARKET_CONTEXT_ENABLED is on by default and controls whether the daily market summary is injected into stock-analysis prompts and conservative guardrails; MARKET_REVIEW_REGION selects markets (cn/hk/us/both); MARKET_REVIEW_COLOR_SCHEME selects colors.',
     valueNotes: [
       'cn covers A-shares, hk covers Hong Kong, us covers US stocks, both covers all.',
+      'DAILY_MARKET_CONTEXT_ENABLED is enabled by default; set it to false to keep market review reports running without injecting the summary into stock analysis or softening buy/add advice.',
       'Color scheme affects how index changes are displayed: green_up = green for gains/red for losses; red_up = red for gains/green for losses.',
     ],
     impact: ['Affects the market overview section in analysis reports.'],
@@ -1704,7 +2213,7 @@ export function getSettingsHelpContent(
 
   if (fallbackDescription) {
     return {
-      title: '配置说明',
+      title: locale?.toLowerCase().startsWith('en') ? 'Configuration help' : '配置说明',
       summary: fallbackDescription,
     };
   }

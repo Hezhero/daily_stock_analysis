@@ -20,6 +20,7 @@ from urllib.parse import unquote, urlparse
 from dotenv import load_dotenv, dotenv_values
 from dataclasses import dataclass, field
 
+from src.core.config_manager import unescape_compose_sensitive_env_value
 from src.report_language import (
     is_supported_report_language_value,
     normalize_report_language,
@@ -31,9 +32,24 @@ from src.notification_noise import (
     parse_notification_quiet_hours,
     validate_notification_timezone,
 )
+from src.notification_contracts import (
+    is_feishu_app_bot_configured,
+    is_feishu_static_configured,
+)
+from src.llm.backend_registry import (
+    AUTO_AGENT_BACKEND_ID,
+    LITELLM_BACKEND_ID,
+    SUPPORTED_AGENT_GENERATION_BACKENDS,
+    SUPPORTED_GENERATION_BACKENDS,
+)
 from src.llm import generation_params as llm_generation_params
+from src.scheduler import normalize_schedule_times
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_ALPHASIFT_INSTALL_SPEC = (
+    "git+https://github.com/ZhuLinsen/alphasift.git@377049857cc04175dc3cca62121ee41adec6cdb8"
+)
 
 
 @dataclass
@@ -58,6 +74,7 @@ class ConfigIssue:
 _MANAGED_LITELLM_KEY_PROVIDERS = {"gemini", "vertex_ai", "anthropic", "openai", "deepseek"}
 SUPPORTED_LLM_CHANNEL_PROTOCOLS = ("openai", "anthropic", "gemini", "vertex_ai", "deepseek", "ollama")
 _FALSEY_ENV_VALUES = {"0", "false", "no", "off"}
+PROMPT_CACHE_DIAGNOSTICS_LEVELS = {"off", "basic", "debug"}
 # Fallback defaults used when ANSPIRE_API_KEYS is reused as legacy OpenAI-compatible source.
 # These are compatibility examples; actual availability should be validated by Anspire console/model entitlement.
 ANSPIRE_LLM_BASE_URL_DEFAULT = "https://open-gateway.anspire.cn/v6"
@@ -87,6 +104,18 @@ def _has_gotify_base_url(value: Optional[str]) -> bool:
         return False
     path_segments = [segment for segment in parsed.path.split("/") if segment]
     return not (path_segments and path_segments[-1].lower() == "message")
+
+
+def parse_prompt_cache_diagnostics_level(value: Optional[str]) -> str:
+    """Parse prompt-cache diagnostics level with a conservative fallback."""
+    normalized = (value or "off").strip().lower()
+    if normalized in PROMPT_CACHE_DIAGNOSTICS_LEVELS:
+        return normalized
+    logger.warning(
+        "Invalid LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL=%r; falling back to off",
+        value,
+    )
+    return "off"
 
 
 AGENT_MAX_STEPS_DEFAULT = 10
@@ -595,7 +624,26 @@ def setup_env(override: bool = False):
         env_path = Path(env_file)
     else:
         env_path = Path(__file__).parent.parent / '.env'
+    compose_sensitive_keys = ("CUSTOM_WEBHOOK_BODY_TEMPLATE",)
+    preexisting_compose_sensitive_keys = {
+        key for key in compose_sensitive_keys if key in os.environ
+    }
     load_dotenv(dotenv_path=env_path, override=override)
+    try:
+        raw_env_values = dotenv_values(env_path, interpolate=False)
+    except Exception as exc:  # pragma: no cover - defensive branch
+        logger.warning("Failed to read raw .env values from %s: %s", env_path, exc)
+        return
+
+    key = "CUSTOM_WEBHOOK_BODY_TEMPLATE"
+    if key in raw_env_values and (
+        override or key not in preexisting_compose_sensitive_keys
+    ):
+        raw_value = raw_env_values.get(key)
+        os.environ[key] = unescape_compose_sensitive_env_value(
+            key,
+            "" if raw_value is None else str(raw_value),
+        )
 
 
 @dataclass
@@ -625,14 +673,27 @@ class Config:
     longbridge_app_key: Optional[str] = None
     longbridge_app_secret: Optional[str] = None
     longbridge_access_token: Optional[str] = None
+    longbridge_oauth_client_id: Optional[str] = None
+    stock_index_remote_update_enabled: bool = True
+
+    # === AlphaSift optional stock screening integration ===
+    alphasift_enabled: bool = False
+    alphasift_install_spec: str = DEFAULT_ALPHASIFT_INSTALL_SPEC
 
     # === AI 分析配置 ===
+    generation_backend: str = LITELLM_BACKEND_ID
+    generation_fallback_backend: str = LITELLM_BACKEND_ID
     # LiteLLM unified model config (provider/model format, e.g. gemini/gemini-3.1-pro-preview)
     litellm_model: str = ""  # Primary model; must include provider prefix when set explicitly
     litellm_fallback_models: List[str] = field(default_factory=list)  # Cross-model fallback list
 
     # Unified temperature for all LLM calls (LLM_TEMPERATURE); legacy per-provider temps are fallback only
     llm_temperature: float = 0.7
+
+    # Provider prompt-cache controls. These do not control provider implicit cache.
+    llm_prompt_cache_telemetry_enabled: bool = True
+    llm_prompt_cache_hints_enabled: bool = False
+    llm_prompt_cache_diagnostics_level: str = "off"
 
     # --- Multi-channel LLM config (new) ---
     # LITELLM_CONFIG: path to a standard litellm_config.yaml file (most powerful)
@@ -641,6 +702,9 @@ class Config:
     llm_models_source: str = "legacy_env"
     # LLM_CHANNELS: list of channel dicts, each with name/base_url/api_keys/models
     llm_channels: List[Dict[str, Any]] = field(default_factory=list)
+    # Raw channel names requested through LLM_CHANNELS, including channels that
+    # were skipped during parsing because required channel fields were missing.
+    llm_channel_names: List[str] = field(default_factory=list)
     # Pre-built LiteLLM Router model_list (populated from channels, YAML, or legacy keys)
     llm_model_list: List[Dict[str, Any]] = field(default_factory=list)
 
@@ -698,9 +762,14 @@ class Config:
     # === 新闻与分析筛选配置 ===
     news_max_age_days: int = 3   # 新闻最大时效（天）
     news_strategy_profile: str = "short"  # 新闻窗口策略档位：ultra_short/short/medium/long
+    news_intel_retention_days: int = 30  # 本地资讯池保留天数
+    news_intel_fetch_timeout_sec: float = 8.0  # 单个资讯源拉取超时
+    news_intel_max_items_per_source: int = 50  # 单次每个资讯源最多采集条数
+    newsnow_base_url: str = "https://newsnow.busiyi.world"  # NewsNow HTTP API base URL (数据源侧，不影响 LLM/provider base URL)
     bias_threshold: float = 5.0  # 乖离率阈值（%），超过此值提示不追高
 
     # === Agent 模式配置 ===
+    agent_generation_backend: str = AUTO_AGENT_BACKEND_ID
     agent_litellm_model: str = ""  # Optional Agent-only primary model; empty inherits LITELLM_MODEL
     agent_mode: bool = False
     _agent_mode_explicit: bool = False  # True when AGENT_MODE was explicitly set in env
@@ -739,6 +808,11 @@ class Config:
     feishu_webhook_url: Optional[str] = None
     feishu_webhook_secret: Optional[str] = None  # 自定义机器人签名密钥（可选）
     feishu_webhook_keyword: Optional[str] = None  # 自定义机器人关键词（可选）
+
+    # 飞书应用机器人（App Bot）通知
+    feishu_chat_id: Optional[str] = None  # 目标群会话 chat_id（群聊模式），或用户 open_id（P2P 模式）
+    feishu_receive_id_type: str = "chat_id"  # 接收者 ID 类型: "chat_id"(群聊) / "open_id"(私聊)
+    feishu_domain: str = "feishu"  # 飞书域名: "feishu"(feishu.cn) / "lark"(larksuite.com)
     
     # Telegram 配置（需要同时配置 Bot Token 和 Chat ID）
     telegram_bot_token: Optional[str] = None  # Bot Token（@BotFather 获取）
@@ -877,9 +951,11 @@ class Config:
     # === 定时任务配置 ===
     schedule_enabled: bool = False            # 是否启用定时任务
     schedule_time: str = "18:00"              # 每日推送时间（HH:MM 格式）
+    schedule_times: List[str] = field(default_factory=lambda: ["18:00"])
     schedule_run_immediately: bool = True     # 启动时是否立即执行一次
     run_immediately: bool = True              # 启动时是否立即执行一次（非定时模式）
     market_review_enabled: bool = True        # 是否启用大盘复盘
+    daily_market_context_enabled: bool = True   # 是否将大盘环境摘要用于个股分析 Prompt 与保守护栏
     # 大盘复盘市场区域：cn(A股)、hk(港股)、us(美股)、both(三市场)，us 适合仅关注美股的用户
     market_review_region: str = "cn"
     market_review_color_scheme: str = "green_up"
@@ -997,6 +1073,7 @@ class Config:
             "RUN_IMMEDIATELY",
             "SCHEDULE_ENABLED",
             "SCHEDULE_TIME",
+            "SCHEDULE_TIMES",
             "SCHEDULE_RUN_IMMEDIATELY",
         }
     )
@@ -1123,10 +1200,6 @@ class Config:
             if (c or "").strip()
         ]
         
-        # 如果没有配置，使用默认的示例股票
-        if not stock_list:
-            stock_list = ['600519', '000001', '300750']
-        
         # === LiteLLM multi-key parsing ===
         # GEMINI_API_KEYS (comma-separated) > GEMINI_API_KEY (single)
         _gemini_keys_raw = os.getenv('GEMINI_API_KEYS', '')
@@ -1236,6 +1309,7 @@ class Config:
         litellm_config_path = os.getenv('LITELLM_CONFIG', '').strip() or None
         llm_models_source = "legacy_env"
         llm_channels: List[Dict[str, Any]] = []
+        llm_channel_names: List[str] = []
         llm_model_list: List[Dict[str, Any]] = []
 
         # Priority 1: LITELLM_CONFIG (standard LiteLLM YAML config file)
@@ -1248,6 +1322,11 @@ class Config:
         if not llm_model_list:
             _channels_str = os.getenv('LLM_CHANNELS', '').strip()
             if _channels_str:
+                llm_channel_names = [
+                    ch.strip().lower()
+                    for ch in _channels_str.split(',')
+                    if ch.strip()
+                ]
                 llm_channels = cls._parse_llm_channels(_channels_str)
                 llm_model_list = cls._channels_to_model_list(llm_channels)
                 if llm_model_list:
@@ -1291,6 +1370,19 @@ class Config:
                 m for m in _all_ch_models
                 if m not in _seen and not _seen.add(m)  # type: ignore[func-returns-value]
             ]
+
+        generation_backend = (
+            os.getenv('GENERATION_BACKEND', LITELLM_BACKEND_ID).strip().lower()
+            or LITELLM_BACKEND_ID
+        )
+        generation_fallback_backend = (
+            os.getenv('GENERATION_FALLBACK_BACKEND', LITELLM_BACKEND_ID).strip().lower()
+            or LITELLM_BACKEND_ID
+        )
+        agent_generation_backend = (
+            os.getenv('AGENT_GENERATION_BACKEND', AUTO_AGENT_BACKEND_ID).strip().lower()
+            or AUTO_AGENT_BACKEND_ID
+        )
 
         agent_litellm_model = normalize_agent_litellm_model(
             os.getenv('AGENT_LITELLM_MODEL', ''),
@@ -1404,6 +1496,11 @@ class Config:
             default='18:00',
             prefer_env_file=True,
         )
+        schedule_times_value = cls._resolve_env_value(
+            'SCHEDULE_TIMES',
+            default='',
+            prefer_env_file=True,
+        )
 
         report_language_raw = cls._resolve_report_language_env_value(
             preexisting_report_language
@@ -1425,13 +1522,32 @@ class Config:
             longbridge_app_key=os.getenv('LONGBRIDGE_APP_KEY') or None,
             longbridge_app_secret=os.getenv('LONGBRIDGE_APP_SECRET') or None,
             longbridge_access_token=os.getenv('LONGBRIDGE_ACCESS_TOKEN') or None,
+            longbridge_oauth_client_id=os.getenv('LONGBRIDGE_OAUTH_CLIENT_ID') or None,
+            stock_index_remote_update_enabled=parse_env_bool(
+                os.getenv('STOCK_INDEX_REMOTE_UPDATE_ENABLED'),
+                default=True,
+            ),
+            generation_backend=generation_backend,
+            generation_fallback_backend=generation_fallback_backend,
             litellm_model=litellm_model,
             litellm_fallback_models=litellm_fallback_models,
             llm_temperature=resolve_unified_llm_temperature(litellm_model),
             litellm_config_path=litellm_config_path,
             llm_models_source=llm_models_source,
             llm_channels=llm_channels,
+            llm_channel_names=llm_channel_names,
             llm_model_list=llm_model_list,
+            llm_prompt_cache_telemetry_enabled=parse_env_bool(
+                os.getenv("LLM_PROMPT_CACHE_TELEMETRY_ENABLED"),
+                default=True,
+            ),
+            llm_prompt_cache_hints_enabled=parse_env_bool(
+                os.getenv("LLM_PROMPT_CACHE_HINTS_ENABLED"),
+                default=False,
+            ),
+            llm_prompt_cache_diagnostics_level=parse_prompt_cache_diagnostics_level(
+                os.getenv("LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL")
+            ),
             gemini_api_keys=gemini_api_keys,
             anthropic_api_keys=anthropic_api_keys,
             openai_api_keys=openai_api_keys,
@@ -1479,7 +1595,30 @@ class Config:
             news_strategy_profile=cls._parse_news_strategy_profile(
                 os.getenv('NEWS_STRATEGY_PROFILE', 'short')
             ),
+            news_intel_retention_days=parse_env_int(
+                os.getenv('NEWS_INTEL_RETENTION_DAYS'),
+                30,
+                field_name='NEWS_INTEL_RETENTION_DAYS',
+                minimum=1,
+                maximum=365,
+            ),
+            news_intel_fetch_timeout_sec=parse_env_float(
+                os.getenv('NEWS_INTEL_FETCH_TIMEOUT_SEC'),
+                8.0,
+                field_name='NEWS_INTEL_FETCH_TIMEOUT_SEC',
+                minimum=1.0,
+                maximum=30.0,
+            ),
+            news_intel_max_items_per_source=parse_env_int(
+                os.getenv('NEWS_INTEL_MAX_ITEMS_PER_SOURCE'),
+                50,
+                field_name='NEWS_INTEL_MAX_ITEMS_PER_SOURCE',
+                minimum=1,
+                maximum=200,
+            ),
+            newsnow_base_url=((os.getenv('NEWSNOW_BASE_URL') or '').strip().rstrip('/') or 'https://newsnow.busiyi.world'),
             bias_threshold=parse_env_float(os.getenv('BIAS_THRESHOLD'), 5.0, field_name='BIAS_THRESHOLD', minimum=1.0),
+            agent_generation_backend=agent_generation_backend,
             agent_litellm_model=agent_litellm_model,
             agent_mode=os.getenv('AGENT_MODE', 'false').lower() == 'true',
             _agent_mode_explicit=os.getenv('AGENT_MODE') is not None,
@@ -1544,6 +1683,10 @@ class Config:
             feishu_webhook_url=os.getenv('FEISHU_WEBHOOK_URL'),
             feishu_webhook_secret=os.getenv('FEISHU_WEBHOOK_SECRET'),
             feishu_webhook_keyword=os.getenv('FEISHU_WEBHOOK_KEYWORD'),
+
+            feishu_chat_id=os.getenv('FEISHU_CHAT_ID'),
+            feishu_receive_id_type=os.getenv('FEISHU_RECEIVE_ID_TYPE', 'chat_id'),
+            feishu_domain=os.getenv('FEISHU_DOMAIN', 'feishu'),
             telegram_bot_token=os.getenv('TELEGRAM_BOT_TOKEN'),
             telegram_chat_id=os.getenv('TELEGRAM_CHAT_ID'),
             telegram_message_thread_id=os.getenv('TELEGRAM_MESSAGE_THREAD_ID'),
@@ -1563,7 +1706,10 @@ class Config:
             serverchan3_sendkey=os.getenv('SERVERCHAN3_SENDKEY'),
             custom_webhook_urls=[u.strip() for u in os.getenv('CUSTOM_WEBHOOK_URLS', '').split(',') if u.strip()],
             custom_webhook_bearer_token=os.getenv('CUSTOM_WEBHOOK_BEARER_TOKEN'),
-            custom_webhook_body_template=os.getenv('CUSTOM_WEBHOOK_BODY_TEMPLATE'),
+            custom_webhook_body_template=unescape_compose_sensitive_env_value(
+                'CUSTOM_WEBHOOK_BODY_TEMPLATE',
+                os.getenv('CUSTOM_WEBHOOK_BODY_TEMPLATE') or '',
+            ) or None,
             webhook_verify_ssl=os.getenv('WEBHOOK_VERIFY_SSL', 'true').lower() == 'true',
             discord_bot_token=os.getenv('DISCORD_BOT_TOKEN'),
             discord_main_channel_id=(
@@ -1678,9 +1824,14 @@ class Config:
                 prefer_env_file=True,
             ).lower() == 'true',
             schedule_time=(schedule_time_value or '18:00').strip() or '18:00',
+            schedule_times=normalize_schedule_times(
+                schedule_times_value,
+                fallback_time=(schedule_time_value or '18:00').strip() or '18:00',
+            ),
             schedule_run_immediately=schedule_run_immediately,
             run_immediately=legacy_run_immediately,
             market_review_enabled=os.getenv('MARKET_REVIEW_ENABLED', 'true').lower() == 'true',
+            daily_market_context_enabled=os.getenv('DAILY_MARKET_CONTEXT_ENABLED', 'true').lower() == 'true',
             market_review_region=cls._parse_market_review_region(
                 os.getenv('MARKET_REVIEW_REGION', 'cn')
             ),
@@ -1798,7 +1949,13 @@ class Config:
                 field_name='PORTFOLIO_RISK_LOOKBACK_DAYS',
                 minimum=1,
             ),
-            portfolio_fx_update_enabled=os.getenv('PORTFOLIO_FX_UPDATE_ENABLED', 'true').lower() == 'true'
+            portfolio_fx_update_enabled=os.getenv('PORTFOLIO_FX_UPDATE_ENABLED', 'true').lower() == 'true',
+            alphasift_enabled=parse_env_bool(os.getenv('ALPHASIFT_ENABLED'), default=False),
+            alphasift_install_spec=(
+                DEFAULT_ALPHASIFT_INSTALL_SPEC
+                if os.getenv('ALPHASIFT_INSTALL_SPEC') is None
+                else os.getenv('ALPHASIFT_INSTALL_SPEC', '').strip()
+            ),
         )
     
     @classmethod
@@ -1952,7 +2109,12 @@ class Config:
 
     @classmethod
     def _channels_to_model_list(cls, channels: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Convert parsed LLM channels to LiteLLM Router model_list format."""
+        """Convert parsed LLM channels to LiteLLM Router model_list format.
+
+        Mapping follows:
+        - LiteLLM providers: https://docs.litellm.ai/docs/providers
+        - LiteLLM model_list 语义: https://docs.litellm.ai/docs/proxy/configs#the-model_list-key
+        """
         model_list: List[Dict[str, Any]] = []
         for ch in channels:
             for model_name in ch['models']:
@@ -1992,6 +2154,11 @@ class Config:
         deployments, keyed by placeholder model_name tokens.  The analyzer
         resolves actual model_names at call time from LITELLM_MODEL /
         LITELLM_FALLBACK_MODELS.
+
+        Compatibility note:
+        - LiteLLM OpenAI-compatible 约定: https://docs.litellm.ai/docs/providers/openai_compatible
+        - OpenAI 请求与鉴权约定: https://platform.openai.com/docs/api-reference/making-requests
+          / https://platform.openai.com/docs/api-reference/authentication
         """
         model_list: List[Dict[str, Any]] = []
 
@@ -2105,7 +2272,7 @@ class Config:
         value = env_values.get(key)
         if value is None:
             return None
-        return str(value)
+        return unescape_compose_sensitive_env_value(key, str(value))
 
     @classmethod
     def _resolve_env_value(
@@ -2381,9 +2548,6 @@ class Config:
             if (c or "").strip()
         ]
 
-        if not stock_list:
-            stock_list = ['000001']
-
         self.stock_list = stock_list
     
     def validate_structured(self) -> List[ConfigIssue]:
@@ -2405,7 +2569,7 @@ class Config:
         if not self.stock_list:
             issues.append(ConfigIssue(
                 severity="error",
-                message="未配置自选股列表 (STOCK_LIST)",
+                message="未配置 STOCK_LIST。请设置至少一个股票代码，例如：600519,hk00700,AAPL。",
                 field="STOCK_LIST",
             ))
         elif self.stock_email_groups:
@@ -2448,20 +2612,78 @@ class Config:
                 field="TUSHARE_TOKEN",
             ))
 
+        # --- Generation backend selection ---
+        generation_backend = (self.generation_backend or LITELLM_BACKEND_ID).strip().lower()
+        generation_fallback_backend = (
+            self.generation_fallback_backend or LITELLM_BACKEND_ID
+        ).strip().lower()
+        agent_generation_backend = (
+            self.agent_generation_backend or AUTO_AGENT_BACKEND_ID
+        ).strip().lower()
+        if generation_backend not in SUPPORTED_GENERATION_BACKENDS:
+            issues.append(ConfigIssue(
+                severity="error",
+                message=(
+                    "GENERATION_BACKEND 当前仅支持 litellm。"
+                    f"已配置的值为：{generation_backend}。"
+                ),
+                field="GENERATION_BACKEND",
+            ))
+        if generation_fallback_backend not in SUPPORTED_GENERATION_BACKENDS:
+            issues.append(ConfigIssue(
+                severity="error",
+                message=(
+                    "GENERATION_FALLBACK_BACKEND 当前仅支持 litellm。"
+                    f"已配置的值为：{generation_fallback_backend}。"
+                ),
+                field="GENERATION_FALLBACK_BACKEND",
+            ))
+        if agent_generation_backend not in SUPPORTED_AGENT_GENERATION_BACKENDS:
+            issues.append(ConfigIssue(
+                severity="error",
+                message=(
+                    "AGENT_GENERATION_BACKEND 当前仅支持 auto 或 litellm。"
+                    f"已配置的值为：{agent_generation_backend}。"
+                ),
+                field="AGENT_GENERATION_BACKEND",
+            ))
+
         # --- LLM availability ---
         # llm_model_list is populated for YAML / channels / managed legacy keys.
         # Other LiteLLM-native providers (for example cohere/*) run through the
         # direct litellm env path and therefore do not populate llm_model_list.
         has_direct_env_model = bool(self.litellm_model) and _uses_direct_env_provider(self.litellm_model)
         if not self.llm_model_list and not has_direct_env_model:
-            issues.append(ConfigIssue(
-                severity="error",
-                message=(
-                    "未配置任何可用的 AI 模型接入（高级模型路由配置 / 渠道 / API Key），"
-                    "AI 分析功能将不可用"
-                ),
-                field="LITELLM_CONFIG",
-            ))
+            if self.litellm_config_path:
+                issues.append(ConfigIssue(
+                    severity="error",
+                    message=(
+                        "已配置 LITELLM_CONFIG，但未解析出可用模型。"
+                        "请检查 YAML 中的 model_list、litellm_params 和环境变量引用。"
+                    ),
+                    field="LITELLM_CONFIG",
+                ))
+            elif self.llm_channel_names:
+                issues.append(ConfigIssue(
+                    severity="error",
+                    message=(
+                        "已配置 LLM_CHANNELS，但未解析出可用模型渠道。"
+                        "请检查对应 LLM_<CHANNEL>_API_KEY(S)、"
+                        "LLM_<CHANNEL>_MODELS、LLM_<CHANNEL>_PROTOCOL 或 Base URL。"
+                    ),
+                    field="LLM_CHANNELS",
+                ))
+            else:
+                issues.append(ConfigIssue(
+                    severity="error",
+                    message=(
+                        "未配置任何可用的 AI 模型接入。请至少配置 ANSPIRE_API_KEYS、"
+                        "AIHUBMIX_KEY、GEMINI_API_KEY、ANTHROPIC_API_KEY、"
+                        "OPENAI_API_KEY 或 DEEPSEEK_API_KEY 中的一个，或配置 "
+                        "LITELLM_CONFIG / LLM_CHANNELS 可用模型渠道。"
+                    ),
+                    field="LITELLM_CONFIG",
+                ))
         elif not self.litellm_model:
             issues.append(ConfigIssue(
                 severity="info",
@@ -2576,6 +2798,11 @@ class Config:
         has_notification = bool(
             self.wechat_webhook_url
             or self.feishu_webhook_url
+            or (
+                (self.feishu_app_id or "")
+                and (self.feishu_app_secret or "")
+                and (self.feishu_chat_id or "")
+            )
             or (self.telegram_bot_token and self.telegram_chat_id)
             or (self.email_sender and self.email_password)
             or (self.pushover_user_key and self.pushover_api_token)
@@ -2601,6 +2828,49 @@ class Config:
                 message="未配置通知渠道，将不发送推送通知",
                 field="WECHAT_WEBHOOK_URL",
             ))
+
+        has_telegram_token = bool((self.telegram_bot_token or "").strip())
+        has_telegram_chat_id = bool((self.telegram_chat_id or "").strip())
+        if has_telegram_token != has_telegram_chat_id:
+            issues.append(ConfigIssue(
+                severity="error",
+                message="Telegram 通知配置不完整：TELEGRAM_BOT_TOKEN 和 TELEGRAM_CHAT_ID 必须同时配置。",
+                field="TELEGRAM_CHAT_ID" if has_telegram_token else "TELEGRAM_BOT_TOKEN",
+            ))
+
+        has_email_sender = bool((self.email_sender or "").strip())
+        has_email_password = bool((self.email_password or "").strip())
+        if has_email_sender != has_email_password:
+            issues.append(ConfigIssue(
+                severity="error",
+                message="邮件通知配置不完整：EMAIL_SENDER 和 EMAIL_PASSWORD 必须同时配置。",
+                field="EMAIL_PASSWORD" if has_email_sender else "EMAIL_SENDER",
+            ))
+
+        def _warn_if_webhook_url_invalid(field: str, value: Optional[str]) -> None:
+            raw_url = (value or "").strip()
+            if not raw_url:
+                return
+            parsed = urlparse(raw_url)
+            if parsed.scheme.lower() in {"http", "https"} and parsed.netloc:
+                return
+            issues.append(ConfigIssue(
+                severity="warning",
+                message=f"{field} 看起来不是有效 URL，请确认是否以 http:// 或 https:// 开头。",
+                field=field,
+            ))
+
+        for field, value in (
+            ("WECHAT_WEBHOOK_URL", self.wechat_webhook_url),
+            ("FEISHU_WEBHOOK_URL", self.feishu_webhook_url),
+            ("DISCORD_WEBHOOK_URL", self.discord_webhook_url),
+            ("SLACK_WEBHOOK_URL", self.slack_webhook_url),
+            ("ASTRBOT_URL", self.astrbot_url),
+        ):
+            _warn_if_webhook_url_invalid(field, value)
+
+        for custom_url in self.custom_webhook_urls:
+            _warn_if_webhook_url_invalid("CUSTOM_WEBHOOK_URLS", custom_url)
 
         if self.ntfy_url and not _has_ntfy_topic_endpoint(self.ntfy_url):
             issues.append(ConfigIssue(
@@ -2669,27 +2939,35 @@ class Config:
 
         has_feishu_app_id = bool((self.feishu_app_id or "").strip())
         has_feishu_app_secret = bool((self.feishu_app_secret or "").strip())
+        has_feishu_app_credentials_complete = has_feishu_app_id and has_feishu_app_secret
         has_feishu_app_credentials = has_feishu_app_id or has_feishu_app_secret
         has_feishu_doc_token = bool((self.feishu_folder_token or "").strip())
         has_feishu_full_cloud_doc_credentials = (
-            has_feishu_app_id
-            and has_feishu_app_secret
+            has_feishu_app_credentials_complete
             and has_feishu_doc_token
         )
+        has_feishu_stream_route = bool(self.feishu_stream_enabled and has_feishu_app_credentials_complete)
+        has_feishu_app_notification_route = is_feishu_app_bot_configured(self)
         if (
             has_feishu_app_credentials
             and not has_feishu_full_cloud_doc_credentials
-            and not self.feishu_webhook_url
-            and not (self.feishu_stream_enabled and has_feishu_app_id and has_feishu_app_secret)
+            and not is_feishu_static_configured(self)
+            and not has_feishu_stream_route
+            and not has_feishu_app_notification_route
         ):
+            suggestions = []
+            if has_feishu_app_credentials_complete:
+                suggestions.append("配置 FEISHU_CHAT_ID 开启 App Bot 主动推送")
+                suggestions.append("开启 FEISHU_STREAM_ENABLED 使用应用机器人事件订阅")
+            else:
+                suggestions.append("补齐 FEISHU_APP_ID / FEISHU_APP_SECRET 后配置 FEISHU_CHAT_ID 开启 App Bot 主动推送")
+            suggestions.append("配置 FEISHU_WEBHOOK_URL 使用自定义机器人 Webhook 推送")
             issues.append(ConfigIssue(
                 severity="warning",
-                message=(
-                    "仅配置 FEISHU_APP_ID / FEISHU_APP_SECRET 不会开启飞书群 Webhook 推送；"
-                    "如需群消息通知，请配置 FEISHU_WEBHOOK_URL。若要使用应用机器人，请同时开启 "
-                    "FEISHU_STREAM_ENABLED 并完成应用发布与权限配置。"
-                ),
-                field="FEISHU_WEBHOOK_URL",
+                message="仅配置 FEISHU_APP_ID / FEISHU_APP_SECRET 不会开启飞书静态通知。"
+                        + " 请选择以下方式之一："
+                        + "；".join(suggestions) + "。",
+                field="FEISHU_CHAT_ID",
             ))
 
         # --- Deprecated field migration hints ---

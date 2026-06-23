@@ -20,6 +20,8 @@
 
 优先级保持不变：`LITELLM_CONFIG` / `LITELLM_CONFIG_YAML` > `LLM_CHANNELS` > legacy provider keys。P4 只补文档，不迁移、不清空、不静默改写旧配置。
 
+Generation backend 配置是更外层的运行时选择契约。Phase 1 只支持 `GENERATION_BACKEND=litellm`、`GENERATION_FALLBACK_BACKEND=litellm` 和 `AGENT_GENERATION_BACKEND=auto|litellm`；这些字段不会改变本页所述的 provider/model/Base URL 三层路由优先级。配置本地 CLI、Hermes 或其他非 `litellm` backend 会得到明确配置错误，不会自动降级到 LiteLLM。
+
 ## Web 设置页路径
 
 推荐优先使用 Web 设置页完成 Channels 配置：
@@ -70,7 +72,7 @@ OpenAI-compatible Base URL 只填到服务商兼容入口，不额外拼接 `/ch
 | Kimi / Moonshot | `moonshot` | `openai` | `https://api.moonshot.cn/v1` | `kimi-k2.6,kimi-k2.5` |
 | 通义千问 / DashScope | `dashscope` | `openai` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen3.6-plus,qwen3.6-flash` |
 | 智谱 GLM | `zhipu` | `openai` | `https://open.bigmodel.cn/api/paas/v4` | `glm-5.1,glm-4.7-flash` |
-| MiniMax | `minimax` | `openai` | `https://api.minimax.io/v1` | `MiniMax-M2.7,MiniMax-M2.7-highspeed` |
+| MiniMax | `minimax` | `openai` | `https://api.minimax.io/v1` | `MiniMax-M3,MiniMax-M2.7,MiniMax-M2.7-highspeed` |
 | 小米 MiMo | `mimo` | `openai` | 官方控制台提供（Actions 默认未映射） | 官方文档/控制台为准 |
 | 火山方舟 / 豆包 | `volcengine` | `openai` | `https://ark.cn-beijing.volces.com/api/v3` | `doubao-seed-1-6-251015,doubao-seed-1-6-thinking-251015` |
 | 硅基流动 / SiliconFlow | `siliconflow` | `openai` | `https://api.siliconflow.cn/v1` | `deepseek-ai/DeepSeek-V3.2,Qwen/Qwen3-235B-A22B-Thinking-2507` |
@@ -89,7 +91,7 @@ OpenAI-compatible Base URL 只填到服务商兼容入口，不额外拼接 `/ch
 | Kimi / Moonshot | [Kimi K2.6 快速开始](https://platform.kimi.com/docs/guide/kimi-k2-6-quickstart)、[模型列表](https://platform.kimi.com/docs/models) | 官方推荐 `kimi-k2.6`；`kimi-k2` 系列将在 2026-05-25 下线，旧 `moonshot-v1-*` 仅保留为稳定旧工作负载选择。 |
 | 通义千问 / DashScope | [文本生成](https://help.aliyun.com/zh/model-studio/text-generation-model/) | 百炼推荐 `qwen3.6-plus`，确认效果后可用 `qwen3.6-flash` 降低成本。 |
 | 智谱 GLM | [模型概览](https://docs.bigmodel.cn/cn/guide/start/model-overview)、[GLM-5.1](https://docs.bigmodel.cn/cn/guide/models/text/glm-5.1) | `glm-5.1` 是当前旗舰；`glm-4.7-flash` 作为轻量/免费模型示例。 |
-| MiniMax | [OpenAI API 兼容](https://platform.minimax.io/docs/api-reference/text-chat)、[获取模型列表](https://platform.minimax.io/docs/api-reference/models/openai/list-models) | 官方 OpenAI-compatible Base URL 为 `https://api.minimax.io/v1`，并列出 `MiniMax-M2.7`、`MiniMax-M2.7-highspeed`。中国区 Coding 工具场景可能使用 `.com`/Anthropic 专用入口，以控制台为准。 |
+| MiniMax | [OpenAI API 兼容](https://platform.minimax.io/docs/api-reference/text-chat)、[获取模型列表](https://platform.minimax.io/docs/api-reference/models/openai/list-models)、[Pricing](https://platform.minimax.io/docs/guides/pricing-paygo) | 官方 OpenAI-compatible Base URL 为 `https://api.minimax.io/v1`，并列出 `MiniMax-M3`（默认，支持图片输入，官方支持最多 1M 输入上下文，pricing 区分 `<=512K` 与 `>512K` 输入两档价格）、`MiniMax-M2.7`、`MiniMax-M2.7-highspeed`，以及 Legacy 模型 `MiniMax-M2.5`。本仓库 fallback 成本估算保守按 `<=512K` 价格档注册 M3，并保留 M2.5 legacy 定价以兼容历史用户配置；中国区 Coding 工具场景可能使用 `.com`/Anthropic 专用入口，以控制台为准。 |
 | 小米 MiMo | 官方文档 / 控制台 | 当前按 OpenAI-compatible 方式接入，Base URL、模型名与权限以 MiMo 官方文档/控制台为准；`mimo` 渠道在仓库默认 workflow 中未显式映射，Actions 使用请按本文“GitHub Actions 配置”补齐自定义映射。 |
 | 火山方舟 / 豆包 | [在线推理（常规）](https://www.volcengine.com/docs/82379/2121998)、[模型列表](https://www.volcengine.com/docs/82379/1949118) | 官方示例使用 `https://ark.cn-beijing.volces.com/api/v3` 与 `doubao-seed-1-6-251015`；如使用 Coding Plan，请改用其专用 Base URL 和模型名，不要套用本表的在线推理模板。 |
 | SiliconFlow | [模型列表](https://docs.siliconflow.cn/quickstart/models)、[获取模型列表 API](https://docs.siliconflow.cn/cn/api-reference/models/get-model-list) | 平台模型实时更新且 `/models` 需要 API Key；模板只给常见新模型示例，保存前建议在 Web 设置页点击「获取模型」确认账号可见性。 |
@@ -121,8 +123,12 @@ OpenAI-compatible Base URL 只填到服务商兼容入口，不额外拼接 `/ch
 | `LLM_<CHANNEL>_EXTRA_HEADERS` | Secrets 或 Variables | JSON 字符串；只要包含鉴权、租户、组织或私有网关信息，就应放 Secrets。 |
 | `LITELLM_CONFIG` | Variables 或 Secrets | YAML 文件路径；配合 `LITELLM_CONFIG_YAML` 使用时，workflow 会写入该路径。 |
 | `LITELLM_CONFIG_YAML` | Secrets 优先 | YAML 内容本身可能包含私有网关或 header，建议放 Secrets。 |
+| `LLM_USAGE_HMAC_SECRET` | Secrets | 可选；只有需要跨部署比较 usage message HMAC 时才配置同一个高熵随机密钥，例如 `openssl rand -hex 32`；不要放 Variables 或提交到版本控制。 |
+| `LLM_USAGE_HMAC_KEY_VERSION` | Variables 或 Secrets | 可选；轮换 `LLM_USAGE_HMAC_SECRET` 时同步更新版本标签，避免误比较不同密钥生成的 HMAC。 |
 
 默认 workflow 已显式映射 `primary`、`secondary`、`aihubmix`、`anspire`、`deepseek`、`dashscope`、`zhipu`、`moonshot`、`minimax`、`volcengine`、`siliconflow`、`openrouter`、`gemini`、`anthropic`、`openai`、`ollama`；`mimo` 未在默认 workflow 中映射。若使用 `mimo`（或任何未列渠道名），除了在 Variables/Secrets 配置同名 `LLM_<CHANNEL>_*` 外，还需在 workflow 中同步补齐对应 env 映射；本地 `.env`、Docker 和自托管脚本不受这个限制。
+
+回滚 HMAC 遥测显式配置时，可移除 `LLM_USAGE_HMAC_SECRET` 并恢复或删除 `LLM_USAGE_HMAC_KEY_VERSION`；留空后系统会回到本地生成 `.llm_usage_hmac_secret` 的默认行为。
 
 Ollama 默认 Base URL `http://127.0.0.1:11434` 主要面向本地、Docker 或能访问该服务的 self-hosted runner。GitHub-hosted runner 通常没有本地 Ollama 服务，直接配置 `LLM_CHANNELS=ollama` 大概率会连接失败。
 
@@ -140,6 +146,7 @@ Ollama 默认 Base URL `http://127.0.0.1:11434` 主要面向本地、Docker 或�
 | `tls_error` | TLS 证书、代理或中间人证书异常。 | 检查 HTTPS 证书链、公司代理、自签证书和系统时间。 |
 | `connection_refused` | 目标端口无服务，或本地服务未启动。 | 检查 Base URL、端口、防火墙；Ollama 确认本机或 runner 能访问服务。 |
 | `endpoint_not_found` | `/models` 或 chat endpoint 路径不存在。 | 确认 Base URL 是否填到兼容入口，不要多拼或少拼厂商要求的路径。 |
+| `invalid_url` | base_url 包含不受支持形态（空白/控制字符、反斜杠、`userinfo@host` 等）或解析语义不安全。 | 清理 `LLM_<CHANNEL>_BASE_URL`（建议先置空/删除该变量），保持 provider 默认入口；如需固定网关请先按官方兼容示例填写。 |
 | `model_access_denied` | 基于已观测 provider 文案的 best-effort 模型可用性归类：模型可能被禁用、未开通、账号不可见或当前 key 无权限访问。 | 先查看测试结果里的“本次测试模型”，在服务商控制台确认该模型已开通；必要时调整模型顺序、移除不可用模型，或点击「获取模型」核对账号可见模型。 |
 | `provider_blocked` | 服务商或中转网关明确拦截了本次请求，可能来自账号风控、地域、请求来源、模型权限、代理商策略或内容安全策略。 | 先查看测试结果里的“本次测试模型”和服务商控制台日志；检查账号/项目状态、地域或来源限制、网关策略和内容安全规则，而不是优先排查 Base URL、TLS 或本地网络。 |
 | `provider_prefix_mismatch` | LiteLLM provider prefix 与渠道协议不匹配。 | OpenAI-compatible 渠道通常使用 `openai/<model>`；不要把 `Qwen/...`、`deepseek-ai/...` 误当 provider prefix。 |

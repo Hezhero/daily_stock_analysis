@@ -15,11 +15,13 @@ FastAPI 应用工厂模块
     app = create_app()
 """
 
+import asyncio
+import json
 import logging
 import mimetypes
 import os
 import re
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import unquote
@@ -29,6 +31,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 
 logger = logging.getLogger(__name__)
 
@@ -120,22 +123,156 @@ def _missing_asset_media_type(asset_path: str) -> str:
         return content_type
     return "text/plain"
 
+
+def _warn_if_open_cors_without_auth() -> None:
+    if is_auth_enabled():
+        return
+    logger.warning(
+        "CORS_ALLOW_ALL=true is enabled while ADMIN_AUTH_ENABLED is false. "
+        "The API will accept browser requests from any origin; only use this "
+        "on trusted local networks or enable admin authentication."
+    )
+
 from api.v1 import api_v1_router
 from api.middlewares.auth import add_auth_middleware
 from api.middlewares.error_handler import add_error_handlers
 from api.v1.schemas.common import HealthResponse
+from src.auth import is_auth_enabled
+from src.data.stock_index_loader import find_existing_stock_index_path
 from src.services.system_config_service import SystemConfigService
+from src.services.runtime_scheduler import (
+    CLI_SCHEDULER_OWNER_ENV,
+    RUNTIME_SCHEDULER_ARGS_ENV,
+    RUNTIME_SCHEDULER_FORCE_ENABLED_ENV,
+    RUNTIME_SCHEDULER_RUN_IMMEDIATELY_ENV,
+    RUNTIME_SCHEDULER_SUPPRESS_START_ENV,
+    RuntimeSchedulerService,
+)
+from src.services.stock_index_remote_service import (
+    get_remote_stock_index_cache_path,
+    refresh_remote_stock_index_cache,
+    settings_from_config,
+)
+
+
+_STOCK_INDEX_FILENAME = "stocks.index.json"
+_STOCK_INDEX_HEADERS = {
+    "Cache-Control": "no-cache",
+}
+
+
+def _bundled_stock_index_path() -> Path:
+    return Path(__file__).parent.parent / "apps" / "dsa-web" / "public" / _STOCK_INDEX_FILENAME
+
+
+async def _refresh_stock_index_cache_in_background(reason: str) -> None:
+    try:
+        from src.config import get_config
+
+        settings = settings_from_config(get_config())
+        result = await run_in_threadpool(refresh_remote_stock_index_cache, settings)
+        if result.refreshed:
+            logger.info("[stock-index] background refresh completed (%s): %s", reason, result.cache_path)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - index refresh must stay best-effort.
+        logger.warning("[stock-index] background refresh failed (%s): %s", reason, exc)
+
+
+def _schedule_stock_index_background_refresh(app: FastAPI, reason: str) -> None:
+    task = getattr(app.state, "stock_index_refresh_task", None)
+    if task is not None and not task.done():
+        return
+
+    app.state.stock_index_refresh_task = asyncio.create_task(
+        _refresh_stock_index_cache_in_background(reason)
+    )
+
+
+def _load_runtime_scheduler_args() -> dict:
+    raw_value = os.getenv(RUNTIME_SCHEDULER_ARGS_ENV)
+    if not raw_value:
+        return {}
+    try:
+        parsed = json.loads(raw_value)
+    except json.JSONDecodeError:
+        logger.warning("Invalid %s payload; runtime scheduler uses default args", RUNTIME_SCHEDULER_ARGS_ENV)
+        return {}
+    if not isinstance(parsed, dict):
+        logger.warning("%s payload is not an object; runtime scheduler uses default args", RUNTIME_SCHEDULER_ARGS_ENV)
+        return {}
+    return parsed
 
 
 @asynccontextmanager
 async def app_lifespan(app: FastAPI):
     """Initialize and release shared services for the app lifecycle."""
-    app.state.system_config_service = SystemConfigService()
+    runtime_owns_schedule = os.getenv(CLI_SCHEDULER_OWNER_ENV, "").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    runtime_force_enabled = os.getenv(RUNTIME_SCHEDULER_FORCE_ENABLED_ENV, "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    runtime_suppress_start = os.getenv(RUNTIME_SCHEDULER_SUPPRESS_START_ENV, "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    runtime_run_immediately_override = os.getenv(RUNTIME_SCHEDULER_RUN_IMMEDIATELY_ENV)
+    if runtime_suppress_start or not runtime_owns_schedule:
+        runtime_run_immediately = False
+    elif runtime_run_immediately_override is None:
+        from src.config import get_config
+
+        runtime_run_immediately = bool(getattr(get_config(), "schedule_run_immediately", False))
+    else:
+        runtime_run_immediately = runtime_run_immediately_override.strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+    runtime_scheduler_args = _load_runtime_scheduler_args()
+    os.environ.pop(RUNTIME_SCHEDULER_FORCE_ENABLED_ENV, None)
+    os.environ.pop(RUNTIME_SCHEDULER_RUN_IMMEDIATELY_ENV, None)
+    os.environ.pop(RUNTIME_SCHEDULER_SUPPRESS_START_ENV, None)
+    os.environ.pop(RUNTIME_SCHEDULER_ARGS_ENV, None)
+    runtime_scheduler_service = RuntimeSchedulerService(
+        owns_schedule=runtime_owns_schedule,
+        force_enabled=runtime_force_enabled,
+        run_immediately_in_background=True,
+        schedule_args_overrides=runtime_scheduler_args,
+    )
+    app.state.runtime_scheduler_service = runtime_scheduler_service
+    if not runtime_suppress_start:
+        app.state.runtime_scheduler_service.reconcile_from_config(
+            run_immediately=runtime_run_immediately,
+        )
+    app.state.system_config_service = SystemConfigService(
+        runtime_scheduler=app.state.runtime_scheduler_service,
+    )
+    _schedule_stock_index_background_refresh(app, "startup")
     try:
         yield
     finally:
+        refresh_task = getattr(app.state, "stock_index_refresh_task", None)
+        if refresh_task is not None and not refresh_task.done():
+            refresh_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await refresh_task
         if hasattr(app.state, "system_config_service"):
             delattr(app.state, "system_config_service")
+        runtime_scheduler = getattr(app.state, "runtime_scheduler_service", None)
+        if runtime_scheduler is not None:
+            runtime_scheduler.stop()
+            delattr(app.state, "runtime_scheduler_service")
 
 
 def create_app(static_dir: Optional[Path] = None) -> FastAPI:
@@ -162,7 +299,8 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
             "- 历史记录：查询历史分析报告\n"
             "- 股票数据：获取行情数据\n\n"
             "## 认证方式\n"
-            "支持可选的运行时认证（通过 WebUI 设置页面启用/关闭）"
+            "支持可选管理员认证：ADMIN_AUTH_ENABLED=true 时，除登录、状态、健康检查和 "
+            "OpenAPI 文档外，/api/v1/* 需要有效管理员会话 Cookie；关闭时不强制认证。"
         ),
         version="1.0.0",
         lifespan=app_lifespan,
@@ -188,6 +326,7 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
     allow_all_origins = os.environ.get("CORS_ALLOW_ALL", "").lower() == "true"
     allow_credentials = not allow_all_origins
     if allow_all_origins:
+        _warn_if_open_cors_without_auth()
         allowed_origins = ["*"]
     
     app.add_middleware(
@@ -204,7 +343,7 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
     # 注册路由
     # ============================================================
     
-    app.include_router(api_v1_router)
+    app.include_router(api_v1_router, prefix="/api/v1")
     add_error_handlers(app)
     
     # ============================================================
@@ -257,6 +396,13 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
             return HTMLResponse(content=_FRONTEND_NOT_BUILT_HTML)
     
     @app.get(
+        "/health",
+        response_model=HealthResponse,
+        tags=["Health"],
+        summary="健康检查",
+        description="用于负载均衡器或监控系统检查服务状态"
+    )
+    @app.get(
         "/api/health",
         response_model=HealthResponse,
         tags=["Health"],
@@ -268,6 +414,48 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
         return HealthResponse(
             status="ok",
             timestamp=datetime.now().isoformat()
+        )
+
+    def _stock_index_candidate_paths() -> tuple[Path, ...]:
+        local_candidates = (
+            static_dir / _STOCK_INDEX_FILENAME,
+            _bundled_stock_index_path(),
+        )
+        local_path = next((path for path in local_candidates if path.is_file()), None)
+        if local_path is None:
+            return (get_remote_stock_index_cache_path(),)
+        return (
+            get_remote_stock_index_cache_path(),
+            local_path,
+        )
+
+    def _find_existing_stock_index_path() -> Optional[Path]:
+        remote_cache_path = get_remote_stock_index_cache_path()
+        return find_existing_stock_index_path(
+            _stock_index_candidate_paths(),
+            remote_cache_path=remote_cache_path,
+        )
+
+    @app.api_route(
+        f"/{_STOCK_INDEX_FILENAME}",
+        methods=["GET", "HEAD"],
+        include_in_schema=False,
+    )
+    async def serve_stock_index():
+        """Serve the freshest available stock autocomplete index."""
+        _schedule_stock_index_background_refresh(app, "serve-stock-index")
+
+        index_path = _find_existing_stock_index_path()
+        if index_path is None:
+            return Response(
+                content="stock index not found",
+                status_code=404,
+                media_type="text/plain",
+            )
+        return FileResponse(
+            index_path,
+            media_type="application/json",
+            headers=_STOCK_INDEX_HEADERS,
         )
     
     # ============================================================

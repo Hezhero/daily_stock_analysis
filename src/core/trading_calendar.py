@@ -36,19 +36,27 @@ except ImportError:
     )
 
 # Market -> exchange code (exchange-calendars)
-MARKET_EXCHANGE = {"cn": "XSHG", "hk": "XHKG", "us": "XNYS"}
+MARKET_EXCHANGE = {"cn": "XSHG", "hk": "XHKG", "us": "XNYS", "jp": "XTKS", "kr": "XKRX"}
 
 # Market -> IANA timezone for "today"
 MARKET_TIMEZONE = {
     "cn": "Asia/Shanghai",
     "hk": "Asia/Hong_Kong",
     "us": "America/New_York",
+    "jp": "Asia/Tokyo",
+    "kr": "Asia/Seoul",
 }
 
 # P0 market phase baseline (Issue #1386). This is an intentionally small
 # regular-session inference layer; it does not change existing fail-open
 # trading-day filtering or effective-date behavior.
 _CLOSING_AUCTION_WINDOW_MINUTES = {"cn": 3, "hk": 10, "us": 5}
+_SUPPORTED_ANALYSIS_PHASES = {
+    "auto",
+    "premarket",
+    "intraday",
+    "postmarket",
+}
 
 
 class MarketPhase(str, Enum):
@@ -105,7 +113,7 @@ def get_market_for_stock(code: str) -> Optional[str]:
     Infer market region for a stock code.
 
     Returns:
-        'cn' | 'hk' | 'us' | None (None = unrecognized, fail-open: treat as open)
+        'cn' | 'hk' | 'us' | 'jp' | 'kr' | None (None = unrecognized, fail-open: treat as open)
     """
     if not code or not isinstance(code, str):
         return None
@@ -117,6 +125,14 @@ def get_market_for_stock(code: str) -> Optional[str]:
         return "us"
     if is_hk_stock_code(code):
         return "hk"
+    if code.endswith(".T"):
+        base = code[:-2]
+        if base.isdigit() and len(base) in (4, 5):
+            return "jp"
+    if code.endswith((".KS", ".KQ")):
+        base = code.rsplit(".", 1)[0]
+        if base.isdigit() and len(base) == 6:
+            return "kr"
     # A-share: 6-digit numeric
     if code.isdigit() and len(code) == 6:
         return "cn"
@@ -412,20 +428,45 @@ def _phase_minutes(
     return None, None, False
 
 
+def _normalize_analysis_phase(
+    analysis_phase: Optional[str],
+    analysis_intent: Optional[str],
+) -> str:
+    def _coerce(value: Optional[str]) -> str:
+        if isinstance(value, MarketPhase):
+            return value.value
+        return str(value or "").strip().lower()
+
+    requested = _coerce(analysis_phase) or "auto"
+    legacy_intent = _coerce(analysis_intent)
+    if requested == "auto" and legacy_intent and legacy_intent != "auto":
+        requested = legacy_intent
+    if requested not in _SUPPORTED_ANALYSIS_PHASES:
+        raise ValueError(
+            f"invalid analysis_phase: {requested}. "
+            f"Must be one of {sorted(_SUPPORTED_ANALYSIS_PHASES)}"
+        )
+    return requested
+
+
 def build_market_phase_context(
     *,
     market: Optional[str],
     current_time: Optional[datetime] = None,
     trigger_source: str = "system",
     analysis_intent: str = "auto",
+    analysis_phase: str = "auto",
 ) -> MarketPhaseContext:
     """
     Build a JSON-safe runtime market-phase context for analysis plumbing.
 
-    This helper does not change prompt wording, API schema, history metadata,
-    or task status behavior. Calendar failures degrade to ``unknown`` with
-    stable warning codes so later P1b/P2 work can consume the same contract.
+    ``analysis_phase="auto"`` keeps calendar inference. Explicit supported
+    phases override only the phase and derived flags/minute fields; they do
+    not rewrite market-local time or the effective daily-bar date. The legacy
+    ``analysis_intent`` argument remains a compatibility alias when
+    ``analysis_phase`` is left as ``auto``.
     """
+    requested_phase = _normalize_analysis_phase(analysis_phase, analysis_intent)
     market_now = get_market_now(market, current_time=current_time)
     warnings: List[str] = []
 
@@ -435,9 +476,15 @@ def build_market_phase_context(
     else:
         if not _XCALS_AVAILABLE:
             _add_warning_code(warnings, "calendar_unavailable")
-        phase = infer_market_phase(market, current_time=current_time)
-        if phase == MarketPhase.UNKNOWN and _XCALS_AVAILABLE:
-            _add_warning_code(warnings, "calendar_error")
+        if requested_phase == "auto":
+            phase = infer_market_phase(market, current_time=current_time)
+            if phase == MarketPhase.UNKNOWN and _XCALS_AVAILABLE:
+                _add_warning_code(warnings, "calendar_error")
+        else:
+            phase = MarketPhase(requested_phase)
+
+    if requested_phase != "auto" and phase == MarketPhase.UNKNOWN:
+        phase = MarketPhase(requested_phase)
 
     effective_daily_bar_date = get_effective_trading_date(
         market,
@@ -464,7 +511,7 @@ def build_market_phase_context(
         minutes_to_open=minutes_to_open,
         minutes_to_close=minutes_to_close,
         trigger_source=trigger_source or "system",
-        analysis_intent=analysis_intent or "auto",
+        analysis_intent=requested_phase,
         warnings=warnings,
     )
 

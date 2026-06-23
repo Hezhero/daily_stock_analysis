@@ -1,3 +1,6 @@
+import type { AnalysisContextPackOverview, MarketPhaseSummary } from './analysis';
+import type { DecisionSignalItem } from './decisionSignals';
+
 export type AlertType =
   | 'price_cross'
   | 'price_change_percent'
@@ -17,7 +20,7 @@ export type AlertSeverity = 'info' | 'warning' | 'critical';
 export type AlertTargetScope = 'single_symbol' | 'watchlist' | 'portfolio_holdings' | 'portfolio_account' | 'market';
 export type AlertDirection = 'above' | 'below' | 'up' | 'down' | 'bullish_cross' | 'bearish_cross';
 export type PortfolioStopLossMode = 'near' | 'breach';
-export type MarketRegion = 'cn' | 'hk' | 'us';
+export type MarketRegion = 'cn' | 'hk' | 'us' | 'jp' | 'kr';
 export type MarketLightStatus = 'yellow' | 'red';
 export type AlertDryRunStatus = 'triggered' | 'not_triggered' | 'evaluation_error';
 export type AlertTriggerStatus = 'triggered' | 'skipped' | 'degraded' | 'failed';
@@ -117,6 +120,10 @@ export interface AlertTriggerItem {
   triggeredAt?: string | null;
   status: AlertTriggerStatus | string;
   diagnostics?: string | null;
+  marketPhaseSummary?: MarketPhaseSummary | null;
+  analysisContextPackOverview?: AnalysisContextPackOverview | null;
+  analysisVisibilitySource?: string | null;
+  decisionSignalSummary?: Partial<DecisionSignalItem> | null;
 }
 
 export interface AlertTriggerListResponse {

@@ -10,6 +10,8 @@ import unittest
 from pathlib import Path
 
 from src.core.config_registry import (
+    SCHEMA_VERSION,
+    WEB_SETTINGS_HIDDEN_FROM_UI,
     build_schema_response,
     get_field_definition,
     get_registered_field_keys,
@@ -148,6 +150,133 @@ class TestAstrBotFieldsRegistered(unittest.TestCase):
             self.assertIn(key, field_keys, f"{key} missing from schema response")
 
 
+class TestAlphaSiftFieldsRegistered(unittest.TestCase):
+    def test_install_spec_is_sensitive(self):
+        field = get_field_definition("ALPHASIFT_INSTALL_SPEC")
+
+        self.assertTrue(field["is_sensitive"])
+        self.assertEqual(field["ui_control"], "password")
+
+
+class TestLLMUsageHMACFieldsRegistered(unittest.TestCase):
+    def test_secret_is_sensitive_password_field(self):
+        field = get_field_definition("LLM_USAGE_HMAC_SECRET")
+
+        self.assertEqual(field["category"], "ai_model")
+        self.assertTrue(field["is_sensitive"])
+        self.assertEqual(field["ui_control"], "password")
+        self.assertEqual(field["help_key"], "settings.ai_model.LLM_USAGE_HMAC_SECRET")
+        self.assertIn("high-entropy", field["description"])
+        self.assertIn("version control", field["description"])
+        self.assertIn("openssl rand -hex 32", field["examples"][0])
+        self.assertIn("secret_value", field.get("warning_codes", []))
+
+    def test_key_version_is_visible_non_sensitive_field(self):
+        field = get_field_definition("LLM_USAGE_HMAC_KEY_VERSION")
+
+        self.assertEqual(field["category"], "ai_model")
+        self.assertFalse(field["is_sensitive"])
+        self.assertEqual(field["ui_control"], "text")
+        self.assertEqual(field["default_value"], "local-v1")
+        self.assertEqual(field["help_key"], "settings.ai_model.LLM_USAGE_HMAC_KEY_VERSION")
+
+
+class TestGenerationBackendFieldsRegistered(unittest.TestCase):
+    def test_analysis_backend_fields_are_ai_model_selects(self):
+        expected = {
+            "GENERATION_BACKEND": "settings.ai_model.GENERATION_BACKEND",
+            "GENERATION_FALLBACK_BACKEND": "settings.ai_model.GENERATION_FALLBACK_BACKEND",
+        }
+        for key, help_key in expected.items():
+            field = get_field_definition(key)
+            self.assertEqual(field["category"], "ai_model")
+            self.assertEqual(field["ui_control"], "select")
+            self.assertEqual(field["default_value"], "litellm")
+            self.assertEqual(field["validation"], {"enum": ["litellm"]})
+            self.assertEqual(
+                field["options"],
+                [{"label": "Default model settings", "value": "litellm"}],
+            )
+            self.assertEqual(field["help_key"], help_key)
+            self.assertNotEqual(field["display_order"], 9000)
+
+    def test_agent_generation_backend_field_is_agent_select(self):
+        field = get_field_definition("AGENT_GENERATION_BACKEND")
+
+        self.assertEqual(field["category"], "agent")
+        self.assertEqual(field["ui_control"], "select")
+        self.assertEqual(field["default_value"], "auto")
+        self.assertEqual(field["validation"], {"enum": ["auto", "litellm"]})
+        self.assertEqual(
+            field["options"],
+            [
+                {"label": "Auto", "value": "auto"},
+                {"label": "Default model tool calling", "value": "litellm"},
+            ],
+        )
+        self.assertEqual(field["help_key"], "settings.agent.AGENT_GENERATION_BACKEND")
+        self.assertNotEqual(field["display_order"], 9000)
+
+    def test_schema_response_groups_generation_backend_fields(self):
+        schema = build_schema_response()
+        self.assertEqual(schema["schema_version"], SCHEMA_VERSION)
+        self.assertEqual(SCHEMA_VERSION, "2026-06-22")
+
+        categories = {
+            category["category"]: {field["key"] for field in category["fields"]}
+            for category in schema["categories"]
+        }
+
+        self.assertIn("GENERATION_BACKEND", categories["ai_model"])
+        self.assertIn("GENERATION_FALLBACK_BACKEND", categories["ai_model"])
+        self.assertIn("AGENT_GENERATION_BACKEND", categories["agent"])
+
+
+class TestScheduleTimesFieldRegistered(unittest.TestCase):
+    def test_schedule_times_pattern_accepts_documented_empty_fallback(self):
+        field = get_field_definition("SCHEDULE_TIMES")
+        pattern = re.compile(field["validation"]["pattern"])
+
+        self.assertIsNotNone(pattern.fullmatch(""))
+        self.assertIsNotNone(pattern.fullmatch("   "))
+        self.assertIsNotNone(pattern.fullmatch("09:20,12:30,15:10"))
+        self.assertIsNone(pattern.fullmatch("09:20,"))
+        self.assertIsNone(pattern.fullmatch("25:70"))
+
+
+class TestLLMPromptCacheFieldsRegistered(unittest.TestCase):
+    def test_prompt_cache_telemetry_default_enabled(self):
+        field = get_field_definition("LLM_PROMPT_CACHE_TELEMETRY_ENABLED")
+
+        self.assertEqual(field["category"], "ai_model")
+        self.assertEqual(field["ui_control"], "switch")
+        self.assertEqual(field["data_type"], "boolean")
+        self.assertEqual(field["default_value"], "true")
+        self.assertEqual(field["help_key"], "settings.ai_model.LLM_PROMPT_CACHE_TELEMETRY_ENABLED")
+
+    def test_prompt_cache_hints_default_disabled(self):
+        field = get_field_definition("LLM_PROMPT_CACHE_HINTS_ENABLED")
+
+        self.assertEqual(field["category"], "ai_model")
+        self.assertEqual(field["ui_control"], "switch")
+        self.assertEqual(field["data_type"], "boolean")
+        self.assertEqual(field["default_value"], "false")
+        self.assertEqual(field["help_key"], "settings.ai_model.LLM_PROMPT_CACHE_HINTS_ENABLED")
+
+    def test_prompt_cache_diagnostics_is_select(self):
+        field = get_field_definition("LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL")
+
+        self.assertEqual(field["category"], "ai_model")
+        self.assertEqual(field["ui_control"], "select")
+        self.assertEqual(field["default_value"], "off")
+        self.assertEqual(
+            [option["value"] for option in field["options"]],
+            ["off", "basic", "debug"],
+        )
+        self.assertEqual(field["validation"], {"enum": ["off", "basic", "debug"]})
+        self.assertEqual(field["help_key"], "settings.ai_model.LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL")
+
+
 class TestSettingsHelpMetadata(unittest.TestCase):
     """Field help metadata should be available for covered settings help slices."""
 
@@ -184,10 +313,13 @@ class TestSettingsHelpMetadata(unittest.TestCase):
 
     _HELP_KEYS = (
         "STOCK_LIST",
+        "GENERATION_BACKEND",
+        "GENERATION_FALLBACK_BACKEND",
         "LITELLM_MODEL",
         "LLM_CHANNELS",
         "FEISHU_WEBHOOK_URL",
         "WEBUI_HOST",
+        "AGENT_GENERATION_BACKEND",
         "AGENT_LITELLM_MODEL",
         "LITELLM_FALLBACK_MODELS",
         "TUSHARE_TOKEN",
@@ -250,9 +382,17 @@ class TestSettingsHelpMetadata(unittest.TestCase):
         "DEBUG",
         "MAX_WORKERS",
         "ANALYSIS_DELAY",
+        "SAVE_CONTEXT_SNAPSHOT",
         "MARKET_REVIEW_ENABLED",
+        "DAILY_MARKET_CONTEXT_ENABLED",
         "MARKET_REVIEW_REGION",
         "MARKET_REVIEW_COLOR_SCHEME",
+        # Issue #1512: stream, log, and WebUI startup fields
+        "DINGTALK_STREAM_ENABLED",
+        "FEISHU_STREAM_ENABLED",
+        "LOG_DIR",
+        "WEBUI_ENABLED",
+        "WEBUI_AUTO_BUILD",
     )
 
     def test_representative_fields_have_help_metadata(self):
@@ -285,6 +425,21 @@ class TestSettingsHelpMetadata(unittest.TestCase):
         self.assertEqual(field["category"], "system")
         self.assertNotEqual(field["display_order"], 9000)
 
+    def test_save_context_snapshot_is_explicitly_registered(self):
+        field = get_field_definition("SAVE_CONTEXT_SNAPSHOT")
+
+        self.assertEqual(field["category"], "system")
+        self.assertEqual(field["data_type"], "boolean")
+        self.assertEqual(field["ui_control"], "switch")
+        self.assertFalse(field["is_sensitive"])
+        self.assertTrue(field["is_editable"])
+        self.assertEqual(field["default_value"], "true")
+        self.assertEqual(field["display_order"], 52)
+        self.assertEqual(field["help_key"], "settings.system.SAVE_CONTEXT_SNAPSHOT")
+        self.assertTrue(field.get("examples"))
+        self.assertTrue(field.get("docs"))
+        self.assertIn("analysis-context-pack.md#p6-", field["docs"][0]["href"])
+
     def test_restart_warning_codes_match_runtime_behavior(self):
         restart_required_keys = (
             "RUN_IMMEDIATELY",
@@ -292,6 +447,11 @@ class TestSettingsHelpMetadata(unittest.TestCase):
             "SCHEDULE_RUN_IMMEDIATELY",
             "WEBUI_HOST",
             "WEBUI_PORT",
+            "WEBUI_ENABLED",
+            "WEBUI_AUTO_BUILD",
+            "LOG_DIR",
+            "DINGTALK_STREAM_ENABLED",
+            "FEISHU_STREAM_ENABLED",
             "LOG_LEVEL",
         )
         for key in restart_required_keys:
@@ -316,6 +476,67 @@ class TestSettingsHelpMetadata(unittest.TestCase):
         field = get_field_definition("ADMIN_AUTH_ENABLED")
         self.assertFalse(field["is_editable"])
         self.assertIn("auth_settings_endpoint_required", field.get("warning_codes", []))
+
+
+class TestIssue1512SettingsFields(unittest.TestCase):
+    """Issue #1512 visible fields must be explicitly registered."""
+
+    def test_stream_fields_are_registered_as_notification_switches(self) -> None:
+        expected = {
+            "FEISHU_STREAM_ENABLED": 17,
+            "DINGTALK_STREAM_ENABLED": 35,
+        }
+        for key, display_order in expected.items():
+            field = get_field_definition(key)
+            self.assertEqual(field["category"], "notification")
+            self.assertEqual(field["data_type"], "boolean")
+            self.assertEqual(field["ui_control"], "switch")
+            self.assertEqual(field["default_value"], "false")
+            self.assertEqual(field["display_order"], display_order)
+            self.assertTrue(field.get("help_key"))
+            self.assertTrue(field.get("examples"))
+            self.assertTrue(field.get("docs"))
+            self.assertIn("not_webhook_delivery", field.get("warning_codes", []))
+            self.assertIn("restart_required", field.get("warning_codes", []))
+
+    def test_system_runtime_fields_are_registered_with_restart_boundary(self) -> None:
+        expected = {
+            "LOG_DIR": ("string", "text", "./logs", 31),
+            "WEBUI_ENABLED": ("boolean", "switch", "false", 37),
+            "WEBUI_AUTO_BUILD": ("boolean", "switch", "true", 38),
+        }
+        for key, (data_type, ui_control, default_value, display_order) in expected.items():
+            field = get_field_definition(key)
+            self.assertEqual(field["category"], "system")
+            self.assertEqual(field["data_type"], data_type)
+            self.assertEqual(field["ui_control"], ui_control)
+            self.assertEqual(field["default_value"], default_value)
+            self.assertEqual(field["display_order"], display_order)
+            self.assertTrue(field.get("help_key"))
+            self.assertTrue(field.get("examples"))
+            self.assertTrue(field.get("docs"))
+            self.assertIn("restart_required", field.get("warning_codes", []))
+
+
+class TestEnvExampleWebSettingsCoverage(unittest.TestCase):
+    """Active .env.example keys must be registered or intentionally hidden."""
+
+    _ENV_EXAMPLE = Path(__file__).resolve().parents[1] / ".env.example"
+    _ACTIVE_ENV_ASSIGNMENT_RE = re.compile(r"^([A-Z][A-Z0-9_]*)=")
+
+    def test_active_env_example_keys_are_registered_or_hidden_from_web_ui(self) -> None:
+        active_keys = {
+            match.group(1)
+            for line in self._ENV_EXAMPLE.read_text(encoding="utf-8").splitlines()
+            for match in [self._ACTIVE_ENV_ASSIGNMENT_RE.match(line.strip())]
+            if match
+        }
+        registered_keys = set(get_registered_field_keys())
+
+        self.assertEqual(
+            sorted(active_keys - registered_keys - WEB_SETTINGS_HIDDEN_FROM_UI),
+            [],
+        )
 
 
 class TestSettingsHelpContract(unittest.TestCase):
@@ -539,12 +760,21 @@ class TestMarketReviewFieldsRegistered(unittest.TestCase):
         self.assertEqual(field["validation"]["enum"], ["green_up", "red_up"])
         self.assertFalse(field["is_sensitive"])
 
+    def test_daily_market_context_field_definition_exists(self):
+        field = get_field_definition("DAILY_MARKET_CONTEXT_ENABLED")
+        self.assertEqual(field["category"], "system")
+        self.assertEqual(field["data_type"], "boolean")
+        self.assertEqual(field["ui_control"], "switch")
+        self.assertEqual(field["default_value"], "true")
+        self.assertFalse(field["is_sensitive"])
+
     def test_schema_response_includes_market_review_color_scheme(self):
         schema = build_schema_response()
         system_cat = next((c for c in schema["categories"] if c["category"] == "system"), None)
         self.assertIsNotNone(system_cat, "system category missing")
         field_keys = {f["key"] for f in system_cat["fields"]}
         self.assertIn("MARKET_REVIEW_COLOR_SCHEME", field_keys)
+        self.assertIn("DAILY_MARKET_CONTEXT_ENABLED", field_keys)
 
 
 if __name__ == "__main__":
