@@ -66,8 +66,10 @@ PERF_CONFIG = {
 # ── Tushare 配置 ──
 TUSHARE_TOKEN = os.environ.get('TUSHARE_TOKEN', '')
 TUSHARE_API_URL = os.environ.get('TUSHARE_API_URL', 'http://api.tushare.pro')
-# Tushare 免费用户每分钟最多 80 次请求
-TUSHARE_RATE_LIMIT = int(os.environ.get('TUSHARE_RATE_LIMIT', '80'))
+# Tushare 每分钟请求次数限制（可通过环境变量覆盖）
+TUSHARE_RATE_LIMIT = int(os.environ.get('TUSHARE_RATE_LIMIT', '200'))
+# 速率限制触发时最大等待间隔（秒）
+TUSHARE_RATE_MAX_WAIT = int(os.environ.get('TUSHARE_RATE_MAX_WAIT', '10'))
 
 # ── 目标表名 ──
 TABLE_NAME = 'baostock_daily_history_xr'
@@ -120,33 +122,54 @@ class TushareHttpClient:
 class RateLimiter:
     """Tushare API 速率限制器。
 
-    免费用户配额：80 次/分钟。
+    默认配额：300 次/分钟（可通过 TUSHARE_RATE_LIMIT 环境变量配置）。
+    速率触发时最大等待间隔：10 秒（可通过 TUSHARE_RATE_MAX_WAIT 配置）。
     """
 
-    def __init__(self, max_calls_per_minute: int = TUSHARE_RATE_LIMIT):
+    def __init__(
+        self,
+        max_calls_per_minute: int = TUSHARE_RATE_LIMIT,
+        max_wait_sec: int = TUSHARE_RATE_MAX_WAIT,
+    ):
         self._max_calls = max_calls_per_minute
+        self._max_wait = max_wait_sec
         self._call_count = 0
         self._minute_start: float | None = None
         self._lock = threading.Lock()
 
     def acquire(self):
-        """获取一次调用许可，必要时等待。"""
+        """获取一次调用许可，均匀间隔请求以避免触发服务端限流。
+
+        策略：
+        - 300 次/分钟 = 每 0.2 秒一次调用，多线程通过全局锁串行化。
+        - 若本地计数器已达上限，等待到下一分钟窗口（最长 max_wait 秒）。
+        """
         with self._lock:
             now = time.time()
             if self._minute_start is None or now - self._minute_start >= 60:
                 self._minute_start = now
                 self._call_count = 0
 
+            # 当本地计数器达到上限时，等待下一个 60 秒窗口
             if self._call_count >= self._max_calls:
-                elapsed = now - self._minute_start
-                sleep_sec = max(0, 60 - elapsed) + 1
+                need_wait = max(0, 60 - (now - self._minute_start))
+                sleep_sec = min(need_wait, self._max_wait)
                 logger.warning(
                     f"Tushare 速率限制触发 ({self._call_count}/{self._max_calls})，"
-                    f"等待 {sleep_sec:.1f} 秒…"
+                    f"等待 {sleep_sec:.1f} 秒（上限 {self._max_wait} 秒）…"
                 )
                 time.sleep(sleep_sec)
                 self._minute_start = time.time()
                 self._call_count = 0
+
+            # 最小间隔：将 300 次均匀分布在 60 秒内
+            min_interval = 60.0 / self._max_calls
+            if self._call_count > 0:
+                expected_next = self._minute_start + (self._call_count * min_interval)
+                if now < expected_next:
+                    wait = expected_next - now
+                    if wait > 0:
+                        time.sleep(wait)
 
             self._call_count += 1
 
@@ -690,13 +713,32 @@ class TushareAPI:
                 return df
 
             except Exception as e:
-                logger.error(f"Tushare daily 调用失败 ({ts_code}): {e}")
-                retry_count += 1
-                if retry_count >= max_retries:
-                    raise RuntimeError(
-                        f"{ts_code} Tushare daily 获取数据失败，重试耗尽: {e}"
-                    ) from e
-                time.sleep(2 ** retry_count)
+                error_msg = str(e)
+                is_rate_limit = '频率超限' in error_msg or '频率' in error_msg
+
+                if is_rate_limit:
+                    # Tushare 服务端限流：等待 60 秒让计数器重置后再重试
+                    logger.warning(
+                        f"Tushare daily 服务端限流 ({ts_code})，等待 60 秒后重试…"
+                    )
+                    retry_count += 1
+                    if retry_count >= max_retries:
+                        raise RuntimeError(
+                            f"{ts_code} Tushare daily 获取数据失败（限流重试耗尽）: {e}"
+                        ) from e
+                    time.sleep(60)
+                    # 重置本地计数器以与服务端同步
+                    with _rate_limiter._lock:
+                        _rate_limiter._minute_start = time.time()
+                        _rate_limiter._call_count = 0
+                else:
+                    logger.error(f"Tushare daily 调用失败 ({ts_code}): {e}")
+                    retry_count += 1
+                    if retry_count >= max_retries:
+                        raise RuntimeError(
+                            f"{ts_code} Tushare daily 获取数据失败，重试耗尽: {e}"
+                        ) from e
+                    time.sleep(2 ** retry_count)
 
         raise RuntimeError(f"{ts_code} Tushare daily 获取数据失败，重试耗尽")
 
