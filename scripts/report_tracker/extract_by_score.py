@@ -1,11 +1,9 @@
 #!/opt/daily_stock_analysis/venv/bin/python3
 # -*- coding: utf-8 -*-
 """
-回测报告推荐股票追踪脚本
-每天从 QQ 邮箱读取5月20号之后的股票智能分析报告，
-从个股决策仪表盘中提取评分超过60分的股票，
-用 baostock 查询历史收盘价，更新到 Excel 中。
-展示：首次入选日期 + 后续每个交易日的股价
+按评分筛选股票追踪脚本
+从 QQ 邮箱读取5月20号之后的股票智能分析报告邮件，
+提取评分超过60分的股票，生成追踪Excel。
 """
 
 import imaplib, re, base64, os, sys, glob, shutil, json
@@ -27,6 +25,7 @@ OUTPUT_DIR = "/opt/daily_stock_analysis/scripts/report_tracker"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 CACHE_FILE = os.path.join(OUTPUT_DIR, "price_cache.json")
+SCORE_CACHE_FILE = os.path.join(OUTPUT_DIR, "score_cache.json")
 CONFIG_FILE = os.path.join(OUTPUT_DIR, "stock_config.json")
 
 # ── 工具函数 ──────────────────────────────────────────────────────────
@@ -46,22 +45,31 @@ def decode_mixed_payload(msg):
             return payload
     return ""
 
-def extract_stocks_with_scores(html, min_score=60):
+def extract_stocks_with_scores(html):
     """
     从邮件 HTML 中提取个股决策仪表盘中的股票代码和评分
-    返回: [(code, score, name), ...] 评分>=min_score的股票列表
+    返回: [(code, score, name), ...] 评分>=60的股票列表
+    
+    邮件结构:
+    ## ⚪ 股票名称 (股票代码)
+    > 日期 | 评分: **XX** | 状态
     """
     stocks = []
     
+    # 查找"个股决策仪表盘"部分
     dashboard_idx = html.find('个股决策仪表盘')
     if dashboard_idx < 0:
+        print(f"    Warning: 未找到'个股决策仪表盘'部分")
         return []
     
+    # 只分析仪表盘部分的内容
     dashboard_html = html[dashboard_idx:]
     
+    # 查找所有股票区块 - 模式: ## ⚪ 股票名称 (股票代码)
+    # 或者: <h2>⚪ 股票名称 (股票代码)</h2>
     stock_patterns = [
-        r'<h2[^>]*>[⚪🔴🟢🟡\s]*([^<(]+)\s*\((\d{6})\)</h2>',
-        r'<h2[^>]*>[⚪🔴🟢🟡\s]*([^<(]+)\s*（(\d{6})）',
+        r'<h2[^>]*>[⚪🔴🟢🟡\s]*([^<(]+)\s*\((\d{6})\)</h2>',  # <h2>股票名称 (代码)</h2>
+        r'<h2[^>]*>[⚪🔴🟢🟡\s]*([^<(]+)\s*（(\d{6})）',  # 中文括号
     ]
     
     stock_blocks = []
@@ -70,14 +78,24 @@ def extract_stocks_with_scores(html, min_score=60):
         for match in matches:
             name = match.group(1).strip()
             code = match.group(2)
+            # 验证股票代码
             if code[0] in '02367':
                 start_pos = match.start()
+                # 找到下一个h2或h1作为结束位置
                 next_h = re.search(r'<h[12][^>]*>', dashboard_html[start_pos+10:])
                 end_pos = start_pos + 10 + next_h.start() if next_h else len(dashboard_html)
                 block = dashboard_html[start_pos:end_pos]
                 stock_blocks.append((name, code, block))
     
+    if not stock_blocks:
+        print(f"    Warning: 未找到股票区块")
+        return []
+    
+    print(f"    找到 {len(stock_blocks)} 只股票")
+    
+    # 从每个区块中提取评分
     for name, code, block in stock_blocks:
+        # 查找评分模式: 评分: **XX** 或 评分: <strong>XX</strong>
         score_patterns = [
             r'评分[:\s]*(?:<strong>|\*\*)(\d+)(?:</strong>|\*\*)',
             r'评分[:\s]*(\d+)',
@@ -90,9 +108,14 @@ def extract_stocks_with_scores(html, min_score=60):
                 score = int(match.group(1))
                 break
         
-        if score is not None and score >= min_score:
-            stocks.append((code, score, name))
+        if score is not None:
+            print(f"      {name}({code}): 评分={score}")
+            if score >= 60:
+                stocks.append((code, score, name))
+        else:
+            print(f"      {name}({code}): 未找到评分")
     
+    print(f"    评分>=60的股票: {len(stocks)} 只")
     return stocks
 
 def get_date_from_subject(subject):
@@ -102,33 +125,24 @@ def get_date_from_subject(subject):
 def is_trading_day(date_str):
     return datetime.strptime(date_str, '%Y-%m-%d').weekday() < 5
 
-def get_trading_dates(start_date, end_date):
-    """生成两个日期之间的所有交易日列表"""
-    dates = []
-    start = datetime.strptime(start_date, '%Y-%m-%d')
-    end = datetime.strptime(end_date, '%Y-%m-%d')
-    current = start
-    while current <= end:
-        date_str = current.strftime('%Y-%m-%d')
-        if is_trading_day(date_str):
-            dates.append(date_str)
-        current += timedelta(days=1)
-    return dates
-
 # ── 读取邮件 ─────────────────────────────────────────────────────────────
 
-def read_reports():
+def read_reports_with_scores():
+    """读取邮件并提取带评分的股票数据"""
     conn = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
     conn.login(EMAIL_USER, EMAIL_PASS)
     conn.select('"Sent Messages"', readonly=True)
     status, msgs = conn.search(None, 'ALL')
     all_ids = msgs[0].split()
 
-    reports = {}
+    reports = {}  # {date: [(code, score, name), ...]}
     
-    for mid_bytes in reversed(all_ids):
+    print(f"    总共 {len(all_ids)} 封邮件")
+    
+    for mid_bytes in reversed(all_ids):  # 从最新的开始
         mid = mid_bytes.decode() if isinstance(mid_bytes, bytes) else str(mid_bytes)
         try:
+            # 获取邮件头部
             status, data = conn.fetch(mid, 'BODY.PEEK[HEADER]')
             if status != 'OK':
                 continue
@@ -154,9 +168,12 @@ def read_reports():
             if not report_date or report_date < '2026-05-20':
                 continue
             
+            # 如果已经处理过这个日期的邮件，跳过（只保留最后一封）
             if report_date in reports:
                 continue
 
+            print(f"\n  处理邮件: {subj_decoded}")
+            
             status, data = conn.fetch(mid, 'BODY[]')
             raw_email = data[0][1]
             raw_str = raw_email.decode('utf-8', errors='replace') if isinstance(raw_email, bytes) else raw_email
@@ -166,10 +183,14 @@ def read_reports():
             msg = message_from_bytes(raw_str.encode('utf-8'))
             html = decode_mixed_payload(msg)
             
-            stocks = extract_stocks_with_scores(html, min_score=60)
+            stocks = extract_stocks_with_scores(html)
             if stocks:
                 reports[report_date] = stocks
-        except:
+                print(f"  [{report_date}] 保存 {len(stocks)} 只股票")
+        except Exception as e:
+            print(f"    Error processing email {mid}: {e}")
+            import traceback
+            traceback.print_exc()
             continue
     
     conn.logout()
@@ -228,13 +249,19 @@ def save_json(path, data):
 # ── Excel 生成 ─────────────────────────────────────────────────────────
 
 def make_excel(stock_list, price_cache, dates, stock_names, first_rec, scores, out_path):
+    """
+    生成Excel，包含评分列
+    stock_list: [code, ...]
+    scores: {code: score}
+    """
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = "推荐股票追踪"
+    ws.title = "高分股票追踪"
 
     hdr_fill   = PatternFill("solid", fgColor="1F4E79")
     hdr_font   = Font(color="FFFFFF", bold=True, size=10)
-    score_fill = PatternFill("solid", fgColor="FFD700")
+    score_fill = PatternFill("solid", fgColor="FFD700")  # 金色背景用于评分
+    alt_fill   = PatternFill("solid", fgColor="EEF4FA")
     green_fill = PatternFill("solid", fgColor="E2EFDA")
     red_fill   = PatternFill("solid", fgColor="FCE4D6")
     thin       = Side(style='thin', color='BBBBBB')
@@ -264,7 +291,7 @@ def make_excel(stock_list, price_cache, dates, stock_names, first_rec, scores, o
         c3 = ws.cell(row=row, column=3, value=scores.get(code, ''))
         c3.alignment = center
         c3.border = border
-        c3.fill = score_fill
+        c3.fill = score_fill  # 评分列用金色背景
 
         c4 = ws.cell(row=row, column=4, value=first_rec.get(code, ''))
         c4.alignment = center
@@ -297,7 +324,7 @@ def make_excel(stock_list, price_cache, dates, stock_names, first_rec, scores, o
 
     ws.column_dimensions['A'].width = 14
     ws.column_dimensions['B'].width = 11
-    ws.column_dimensions['C'].width = 8
+    ws.column_dimensions['C'].width = 8   # 评分列
     ws.column_dimensions['D'].width = 12
     for i in range(5, 5 + len(dates)):
         ws.column_dimensions[get_column_letter(i)].width = 12
@@ -308,20 +335,21 @@ def make_excel(stock_list, price_cache, dates, stock_names, first_rec, scores, o
 
 def main():
     t0 = datetime.now()
-    print(f"[{t0.strftime('%H:%M:%S')}] === Report Tracker ===")
+    print(f"[{t0.strftime('%H:%M:%S')}] === Score-based Stock Tracker ===")
 
-    # 1. 读邮件
-    print("[1] Reading emails...")
-    all_reports = read_reports()
-    trading_reports = {d: c for d, c in all_reports.items() if is_trading_day(d)}
-    print(f"    Reports: {sorted(trading_reports.keys())}")
+    # 1. 读邮件，提取带评分的股票
+    print("[1] Reading emails and extracting scores...")
+    reports = read_reports_with_scores()  # {date: [(code, score, name), ...]}
+    trading_reports = {d: c for d, c in reports.items() if is_trading_day(d)}
+    print(f"\n    Reports found: {sorted(trading_reports.keys())}")
 
-    # 2. 收集股票
+    # 2. 收集所有股票（按首次推荐日期排序）
     first_rec = {}
     stock_scores = {}
     stock_names = {}
     stock_list = []
     seen = set()
+    
     for date in sorted(trading_reports.keys()):
         for code, score, name in trading_reports[date]:
             if code not in seen:
@@ -331,7 +359,10 @@ def main():
                 stock_scores[code] = score
                 if name:
                     stock_names[code] = name
-    print(f"    Total stocks (score>=60): {len(stock_list)}")
+    
+    print(f"    Total unique stocks (score>=60): {len(stock_list)}")
+    if stock_list:
+        print(f"    Stocks: {stock_list}")
 
     # 3. 加载缓存
     price_cache = load_json(CACHE_FILE)
@@ -345,24 +376,20 @@ def main():
     start_d = trading_dates[0] if trading_dates else today
     end_d = today
 
-    # 5. 生成所有交易日列表
-    all_trading_dates = get_trading_dates(start_d, end_d)
-    print(f"    Trading dates from {start_d} to {end_d}: {len(all_trading_dates)} days")
-
-    # 6. 查询所有缺失的交易日价格
-    dates_to_fetch = [d for d in all_trading_dates if d not in price_cache or len(price_cache.get(d, {})) < len(stock_list)]
-    if dates_to_fetch:
-        print(f"[2] Fetching prices for {len(dates_to_fetch)} missing dates...")
+    # 5. 查询新价格
+    dates_to_fetch = [d for d in [start_d, end_d] if d not in price_cache or len(price_cache.get(d, {})) < len(stock_list)]
+    if not dates_to_fetch:
+        print(f"[2] No new prices needed")
+    else:
+        print(f"[2] Fetching prices for {dates_to_fetch} ...")
         for d in dates_to_fetch:
             new_prices = fetch_prices(stock_list, d, d)
             if new_prices:
                 price_cache[d] = price_cache.get(d, {})
                 price_cache[d].update({code: p for (code, _), p in new_prices.items()})
                 print(f"    {d}: {len(new_prices)} records")
-    else:
-        print(f"[2] All prices cached, no fetch needed")
 
-    # 7. 查询股票名称
+    # 6. 查询缺失的股票名称
     missing_names = [c for c in stock_list if c not in stock_names]
     if missing_names:
         print(f"[3] Fetching {len(missing_names)} names...")
@@ -370,21 +397,25 @@ def main():
         stock_names.update(new_names)
         print(f"    Got {len(new_names)} names")
 
-    # 8. 保存
+    # 7. 保存
     save_json(CACHE_FILE, price_cache)
+    save_json(SCORE_CACHE_FILE, stock_scores)
     save_json(CONFIG_FILE, {'names': stock_names, 'first_rec': first_rec, 'scores': stock_scores})
-    print(f"    Saved cache ({len(price_cache)} dates) and config")
+    print(f"    Saved cache and config")
 
-    # 9. 生成 Excel - 展示所有交易日
+    # 8. 生成 Excel
     exclude_dates = ['2026-04-21', '2026-04-22', '2026-04-23', '2026-04-24', '2026-04-27']
-    display_dates = [d for d in all_trading_dates if d not in exclude_dates]
+    cached_dates = sorted([d for d in price_cache if is_trading_day(d) and d <= today and d not in exclude_dates],
+                         key=lambda x: x)
     
-    latest = os.path.join(OUTPUT_DIR, "stock_tracker_latest.xlsx")
-    archive = os.path.join(OUTPUT_DIR, f"stock_tracker_{datetime.now().strftime('%Y%m%d')}.xlsx")
-    make_excel(stock_list, price_cache, display_dates, stock_names, first_rec, stock_scores, latest)
+    latest = os.path.join(OUTPUT_DIR, "stock_tracker_by_score.xlsx")
+    archive = os.path.join(OUTPUT_DIR, f"stock_tracker_by_score_{datetime.now().strftime('%Y%m%d')}.xlsx")
+    
+    make_excel(stock_list, price_cache, cached_dates, stock_names, first_rec, stock_scores, latest)
     shutil.copy2(latest, archive)
+    
     print(f"[4] Excel: {latest}")
-    print(f"    Display dates: {display_dates}")
+    print(f"    Dates: {cached_dates}")
     print(f"[DONE] {datetime.now().strftime('%H:%M:%S')} ({(datetime.now()-t0).seconds}s)")
 
 if __name__ == "__main__":

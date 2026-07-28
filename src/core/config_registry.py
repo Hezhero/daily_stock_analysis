@@ -759,13 +759,13 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "is_sensitive": False,
         "is_required": False,
         "is_editable": True,
-        "default_value": "tencent,akshare_sina,efinance,akshare_em",
+        "default_value": "tencent,efinance,tushare",
         "options": [],
         "validation": {},
         "display_order": 20,
         "help_key": "settings.data_source.REALTIME_SOURCE_PRIORITY",
         "examples": [
-            "REALTIME_SOURCE_PRIORITY=tencent,akshare_sina,efinance,akshare_em",
+            "REALTIME_SOURCE_PRIORITY=tencent,efinance,tushare",
         ],
         "docs": [
             {

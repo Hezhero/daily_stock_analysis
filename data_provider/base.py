@@ -17,6 +17,7 @@
 import logging
 import random
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from threading import BoundedSemaphore, RLock, Thread
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
@@ -724,11 +725,43 @@ class DataFetcherManager:
                 self._fetcher_call_locks[fetcher_id] = lock
             return lock
 
-    def _call_fetcher_method(self, fetcher: BaseFetcher, method_name: str, *args, **kwargs):
-        """Serialize shared fetcher state access through manager-owned per-instance locks."""
+    _FETCHER_TIMEOUT = 60.0
+
+    def _call_fetcher_method(
+        self,
+        fetcher: BaseFetcher,
+        method_name: str,
+        *args,
+        _call_timeout: Optional[float] = None,
+        **kwargs,
+    ):
+        """Serialize shared fetcher state access through manager-owned per-instance locks.
+
+        ``_call_timeout`` seconds bound per call (default: class-level _FETCHER_TIMEOUT).
+        Pass ``_call_timeout=0`` to disable the timeout and block indefinitely.
+        """
         method = getattr(fetcher, method_name)
+        fetcher_name = getattr(fetcher, "name", method_name)
+        timeout = _call_timeout if _call_timeout is not None else self._FETCHER_TIMEOUT
+
         with self._get_fetcher_call_lock(fetcher):
-            return method(*args, **kwargs)
+            if timeout <= 0:
+                return method(*args, **kwargs)
+
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(method, *args, **kwargs)
+                try:
+                    return future.result(timeout=timeout)
+                except TimeoutError:
+                    logger.warning(
+                        "[%s] %s() 调用超时 (%.1fs)",
+                        fetcher_name,
+                        method_name,
+                        timeout,
+                    )
+                    raise DataFetchError(
+                        f"{fetcher_name}.{method_name}() timed out after {timeout:.0f}s"
+                    )
 
     @classmethod
     def _filter_daily_fetchers_for_market(
@@ -1765,7 +1798,7 @@ class DataFetcherManager:
                             provider=fetcher.name,
                             operation="get_realtime_quote",
                         )
-                        quote = self._call_fetcher_method(fetcher, 'get_realtime_quote', stock_code)
+                        quote = self._call_fetcher_method(fetcher, 'get_realtime_quote', stock_code, _call_timeout=15.0)
                 
                 elif source == "akshare_em":
                     fetcher = self._get_fetcher_by_name("AkshareFetcher", capability="realtime_quote")
@@ -1775,7 +1808,7 @@ class DataFetcherManager:
                             provider=fetcher.name,
                             operation="get_realtime_quote",
                         )
-                        quote = self._call_fetcher_method(fetcher, 'get_realtime_quote', stock_code, source="em")
+                        quote = self._call_fetcher_method(fetcher, 'get_realtime_quote', stock_code, source="em", _call_timeout=15.0)
                 
                 elif source == "akshare_sina":
                     fetcher = self._get_fetcher_by_name("AkshareFetcher", capability="realtime_quote")
@@ -1785,7 +1818,7 @@ class DataFetcherManager:
                             provider=fetcher.name,
                             operation="get_realtime_quote",
                         )
-                        quote = self._call_fetcher_method(fetcher, 'get_realtime_quote', stock_code, source="sina")
+                        quote = self._call_fetcher_method(fetcher, 'get_realtime_quote', stock_code, source="sina", _call_timeout=15.0)
                 
                 elif source in ("tencent", "akshare_qq"):
                     fetcher = self._get_fetcher_by_name("AkshareFetcher", capability="realtime_quote")
@@ -1795,7 +1828,7 @@ class DataFetcherManager:
                             provider=fetcher.name,
                             operation="get_realtime_quote",
                         )
-                        quote = self._call_fetcher_method(fetcher, 'get_realtime_quote', stock_code, source="tencent")
+                        quote = self._call_fetcher_method(fetcher, 'get_realtime_quote', stock_code, source="tencent", _call_timeout=15.0)
                 
                 elif source == "tushare":
                     fetcher = self._get_fetcher_by_name("TushareFetcher", capability="realtime_quote")
@@ -1805,7 +1838,7 @@ class DataFetcherManager:
                             provider=fetcher.name,
                             operation="get_realtime_quote",
                         )
-                        quote = self._call_fetcher_method(fetcher, 'get_realtime_quote', raw_stock_code or stock_code)
+                        quote = self._call_fetcher_method(fetcher, 'get_realtime_quote', raw_stock_code or stock_code, _call_timeout=15.0)
 
                 provider_name = fetcher.name if fetcher is not None else source
                 
@@ -1959,7 +1992,7 @@ class DataFetcherManager:
                 provider=fetcher.name,
                 operation="get_realtime_quote",
             )
-            q = self._call_fetcher_method(fetcher, 'get_realtime_quote', stock_code, **kw)
+            q = self._call_fetcher_method(fetcher, 'get_realtime_quote', stock_code, _call_timeout=15.0, **kw)
             if q is not None and q.has_basic_data():
                 record_provider_run(
                     data_type="realtime_quote",
