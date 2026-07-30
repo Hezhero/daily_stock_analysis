@@ -68,8 +68,8 @@ TUSHARE_TOKEN = os.environ.get('TUSHARE_TOKEN', '')
 TUSHARE_API_URL = os.environ.get('TUSHARE_API_URL', 'http://api.tushare.pro')
 # Tushare 每分钟请求次数限制（可通过环境变量覆盖）
 TUSHARE_RATE_LIMIT = int(os.environ.get('TUSHARE_RATE_LIMIT', '200'))
-# 速率限制触发时最大等待间隔（秒）
-TUSHARE_RATE_MAX_WAIT = int(os.environ.get('TUSHARE_RATE_MAX_WAIT', '10'))
+# acquire() 超时等待时间（秒），令牌桶无令牌时最多等待此时间
+TUSHARE_RATE_MAX_WAIT = float(os.environ.get('TUSHARE_RATE_MAX_WAIT', '30'))
 
 # ── 目标表名 ──
 TABLE_NAME = 'baostock_daily_history_xr'
@@ -120,58 +120,82 @@ class TushareHttpClient:
 
 
 class RateLimiter:
-    """Tushare API 速率限制器。
+    """Tushare API 令牌桶速率限制器。
 
-    默认配额：300 次/分钟（可通过 TUSHARE_RATE_LIMIT 环境变量配置）。
-    速率触发时最大等待间隔：10 秒（可通过 TUSHARE_RATE_MAX_WAIT 配置）。
+    使用令牌桶算法：
+    - 桶容量 = max_calls_per_minute（默认 200）
+    - 令牌填充速率 = max_calls_per_minute / 60（≈3.33 个/秒）
+    - acquire() 获取一个令牌，无令牌时等待（带超时）
+    - 锁只在更新内部状态时短暂持有，不在锁内 sleep，避免阻塞其他线程
+
+    默认配额：200 次/分钟（可通过 TUSHARE_RATE_LIMIT 环境变量配置）。
+    acquire 超时：30 秒（可通过 TUSHARE_RATE_MAX_WAIT 环境变量配置）。
     """
 
     def __init__(
         self,
         max_calls_per_minute: int = TUSHARE_RATE_LIMIT,
-        max_wait_sec: int = TUSHARE_RATE_MAX_WAIT,
+        acquire_timeout: float = TUSHARE_RATE_MAX_WAIT,
     ):
-        self._max_calls = max_calls_per_minute
-        self._max_wait = max_wait_sec
-        self._call_count = 0
-        self._minute_start: float | None = None
+        self._rate = max_calls_per_minute / 60.0  # tokens per second
+        self._capacity = max_calls_per_minute
+        self._tokens = float(max_calls_per_minute)
+        self._last_refill = time.monotonic()
         self._lock = threading.Lock()
+        self._acquire_timeout = acquire_timeout
 
-    def acquire(self):
-        """获取一次调用许可，均匀间隔请求以避免触发服务端限流。
+    def _refill(self):
+        """补充令牌（必须在锁内调用）。"""
+        now = time.monotonic()
+        elapsed = now - self._last_refill
+        self._tokens = min(self._capacity, self._tokens + elapsed * self._rate)
+        self._last_refill = now
 
-        策略：
-        - 300 次/分钟 = 每 0.2 秒一次调用，多线程通过全局锁串行化。
-        - 若本地计数器已达上限，等待到下一分钟窗口（最长 max_wait 秒）。
+    def acquire(self, timeout: float | None = None):
+        """获取一个令牌，必要时在锁外等待。
+
+        Args:
+            timeout: 最大等待时间（秒），None 使用构造时的默认值
+
+        Raises:
+            RuntimeError: 等待超时
         """
-        with self._lock:
-            now = time.time()
-            if self._minute_start is None or now - self._minute_start >= 60:
-                self._minute_start = now
-                self._call_count = 0
+        if timeout is None:
+            timeout = self._acquire_timeout
 
-            # 当本地计数器达到上限时，等待下一个 60 秒窗口
-            if self._call_count >= self._max_calls:
-                need_wait = max(0, 60 - (now - self._minute_start))
-                sleep_sec = min(need_wait, self._max_wait)
-                logger.warning(
-                    f"Tushare 速率限制触发 ({self._call_count}/{self._max_calls})，"
-                    f"等待 {sleep_sec:.1f} 秒（上限 {self._max_wait} 秒）…"
+        deadline = time.monotonic() + timeout
+
+        while True:
+            with self._lock:
+                self._refill()
+                if self._tokens >= 1.0:
+                    self._tokens -= 1.0
+                    return
+
+            # 锁外等待，不阻塞其他线程
+            now = time.monotonic()
+            if now >= deadline:
+                raise RuntimeError(
+                    f"RateLimiter.acquire() 等待超时 ({timeout}秒)，"
+                    f"当前速率上限={self._rate * 60:.0f} 次/分钟"
                 )
-                time.sleep(sleep_sec)
-                self._minute_start = time.time()
-                self._call_count = 0
 
-            # 最小间隔：将 300 次均匀分布在 60 秒内
-            min_interval = 60.0 / self._max_calls
-            if self._call_count > 0:
-                expected_next = self._minute_start + (self._call_count * min_interval)
-                if now < expected_next:
-                    wait = expected_next - now
-                    if wait > 0:
-                        time.sleep(wait)
+            # 计算需要等待多久才有 1 个完整 token
+            with self._lock:
+                tokens_needed = max(0.0, 1.0 - self._tokens)
+                # 由于刚 _refill 过且 tokens < 1，直接按速率计算到达下一个 token 的时间
+                wait_time = tokens_needed / self._rate if self._rate > 0 else 1.0
 
-            self._call_count += 1
+            remaining = max(0.0, deadline - time.monotonic())
+            sleep_time = min(wait_time, remaining, 0.5)
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+
+    def reset(self):
+        """重置令牌桶至满容量（用于服务端限流恢复后同步）。"""
+        with self._lock:
+            self._tokens = float(self._capacity)
+            self._last_refill = time.monotonic()
 
 
 # 全局速率限制器（所有线程共享）
@@ -727,10 +751,8 @@ class TushareAPI:
                             f"{ts_code} Tushare daily 获取数据失败（限流重试耗尽）: {e}"
                         ) from e
                     time.sleep(60)
-                    # 重置本地计数器以与服务端同步
-                    with _rate_limiter._lock:
-                        _rate_limiter._minute_start = time.time()
-                        _rate_limiter._call_count = 0
+                    # 重置本地令牌桶以与服务端同步
+                    _rate_limiter.reset()
                 else:
                     logger.error(f"Tushare daily 调用失败 ({ts_code}): {e}")
                     retry_count += 1
