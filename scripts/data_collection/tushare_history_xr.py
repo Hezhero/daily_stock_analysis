@@ -689,7 +689,7 @@ class TushareAPI:
 
                 # ── 补充静态字段 ──
                 df['name'] = name
-                df['adjust_flag'] = '2'  # Tushare daily 默认输出前复权数据
+                df['adjust_flag'] = '3'  # Tushare daily 默认输出前复权数据 此处获取除权数据
                 # 以下字段 Tushare daily 不提供，留空
                 # (turn, trade_status, pe_ttm, pb_mrq, ps_ttm, pcf_ncf_ttm)
                 df['is_st'] = is_st
