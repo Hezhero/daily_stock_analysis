@@ -6,15 +6,17 @@
 验证区间: 最近第5个交易日 ~ 最近第1个交易日
 
 优化点:
-1. 并行回测: ThreadPoolExecutor (23策略并行，向量化释放GIL)
-2. 向量化验证: 移除 validate_week 中的 iterrows()
+1. 并行回测: ThreadPoolExecutor（向量化释放GIL）
+2. 向量化验证: 移除 iterrows()
 3. 预计算共享指标: vol_std_20d 等
 4. Numba加速: calc_metrics
 5. 全量 float32 降精度节省内存
+6. 自动资源检测: 根据 CPU/GPU/内存 自动选择串行/并行模式
 
 修改点:
 - 移除邮件发送功能
 - 移除三步过滤功能
+- 移除多级缓存机制，每次运行重新计算
 - 移除 baostock 依赖，全部替换为 Tushare Pro API
 - 回测完成后自动执行主程序进行大盘复盘和个股决策
 """
@@ -26,7 +28,7 @@ import sys
 import time
 import gc
 import subprocess
-from urllib.parse import quote_plus
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from dotenv import load_dotenv
@@ -37,9 +39,8 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-import requests
-import json as _json
-from pathlib import Path
+from sqlalchemy import create_engine
+from urllib.parse import quote_plus
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BASE_DIR))
@@ -53,105 +54,266 @@ VALIDATE_DAYS = 5
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%H:%M:%S",
+    datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger("backtest")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Tushare Pro HTTP 客户端（无需 tushare SDK）
+# 代码格式转换 & 数据库连接
 # ═══════════════════════════════════════════════════════════════════════════════
-
-class _TushareClient:
-    def __init__(self, token: str, api_url: str = "http://api.tushare.pro") -> None:
-        self._token = token
-        self._api_url = api_url
-        self._call_count = 0
-        self._minute_start: float | None = None
-
-    def _rate_limit_wait(self) -> None:
-        now = time.time()
-        if self._minute_start is None:
-            self._minute_start = now
-            self._call_count = 0
-        elif now - self._minute_start >= 60:
-            self._minute_start = now
-            self._call_count = 0
-        if self._call_count >= 180:
-            wait_sec = max(0, 60 - (now - self._minute_start)) + 1
-            logger.info("Tushare 速率限制等待 %.0f 秒", wait_sec)
-            time.sleep(wait_sec)
-            self._minute_start = time.time()
-            self._call_count = 0
-        self._call_count += 1
-
-    def query(self, api_name: str, fields: str = "", **kwargs) -> pd.DataFrame:
-        self._rate_limit_wait()
-        payload = {
-            "api_name": api_name,
-            "token": self._token,
-            "params": kwargs,
-            "fields": fields,
-        }
-        try:
-            res = requests.post(self._api_url, json=payload, timeout=60)
-            if res.status_code != 200:
-                raise Exception(f"Tushare API HTTP {res.status_code}")
-            result = _json.loads(res.text)
-            if result.get("code") != 0:
-                raise Exception(result.get("msg") or f"Tushare API error code {result.get('code')}")
-            data = result.get("data") or {}
-            columns = data.get("fields") or []
-            items = data.get("items") or []
-            if not items:
-                return pd.DataFrame(columns=columns)
-            return pd.DataFrame(items, columns=columns)
-        except Exception:
-            time.sleep(1)
-            return pd.DataFrame()
-
-
-_tushare_client: Optional[_TushareClient] = None
-
-
-def _get_tushare_client() -> _TushareClient:
-    global _tushare_client
-    if _tushare_client is not None:
-        return _tushare_client
-    token = os.environ.get("TUSHARE_TOKEN", "").strip()
-    if not token:
-        raise RuntimeError("TUSHARE_TOKEN 未设置，请检查 .env 文件")
-    api_url = os.environ.get("TUSHARE_HTTP_URL", "http://api.tushare.pro").strip()
-    _tushare_client = _TushareClient(token, api_url)
-    return _tushare_client
-
-
-def _to_ts_code(code: str) -> str:
-    market, num = code.split(".")
-    return f"{num}.{market.upper()}"
-
 
 def _from_ts_code(ts_code: str) -> str:
     num, suffix = ts_code.split(".")
     return f"{suffix.lower()}.{num}"
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 数据加载
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def get_postgres_engine():
-    from sqlalchemy import create_engine
-
+def _get_pg_engine():
     host = os.environ.get("PG_HOST", "127.0.0.1")
-    port = int(os.environ.get("PG_PORT", 5431))
-    database = os.environ.get("PG_DATABASE", "baostock")
+    port = os.environ.get("PG_PORT", "5432")
+    dbname = os.environ.get("PG_DBNAME", "tushare")
     user = os.environ.get("PG_USER", "root")
     password = os.environ.get("PG_PASSWORD", "")
+    if not password:
+        raise RuntimeError("PG_PASSWORD 未设置，请检查 .env 文件")
     quoted_user = quote_plus(user)
     quoted_password = quote_plus(password)
-    return create_engine(f"postgresql+psycopg2://{quoted_user}:{quoted_password}@{host}:{port}/{database}")
+    return create_engine(f"postgresql+psycopg2://{quoted_user}:{quoted_password}@{host}:{port}/{dbname}")
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 系统资源检测
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _detect_total_memory_gb() -> Optional[float]:
+    try:
+        import psutil
+        return psutil.virtual_memory().total / (1024 ** 3)
+    except ImportError:
+        pass
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        class MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+        mem_status = MEMORYSTATUSEX()
+        mem_status.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+        kernel32.GlobalMemoryStatusEx(ctypes.byref(mem_status))
+        return mem_status.ullTotalPhys / (1024 ** 3)
+    except Exception:
+        pass
+    return None
+
+
+def _detect_available_memory_gb() -> Optional[float]:
+    try:
+        import psutil
+        return psutil.virtual_memory().available / (1024 ** 3)
+    except ImportError:
+        pass
+    return None
+
+
+def _detect_swap_memory_gb() -> Optional[Dict[str, float]]:
+    """返回 {'total': float, 'free': float, 'used': float, 'pct': float} 或 None"""
+    try:
+        import psutil
+        swap = psutil.swap_memory()
+        return {
+            "total": swap.total / (1024 ** 3),
+            "free": swap.free / (1024 ** 3),
+            "used": swap.used / (1024 ** 3),
+            "pct": swap.percent,
+        }
+    except ImportError:
+        pass
+    try:
+        import ctypes
+        class MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+        mem_status = MEMORYSTATUSEX()
+        mem_status.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(mem_status))
+        total = mem_status.ullTotalPageFile / (1024 ** 3)
+        free = mem_status.ullAvailPageFile / (1024 ** 3)
+        used = total - free
+        pct = (used / total * 100) if total > 0 else 0
+        return {"total": total, "free": free, "used": used, "pct": pct}
+    except Exception:
+        pass
+    return None
+
+
+def _detect_extended_available_memory_gb() -> Dict[str, float]:
+    """返回 {'ram_available': float|None, 'swap_free': float|None, 'total_effective': float|None}"""
+    ram = _detect_available_memory_gb()
+    swap = _detect_swap_memory_gb()
+    swap_free = swap["free"] if swap else None
+    effective = None
+    if ram is not None:
+        effective = ram + (swap_free or 0)
+    return {
+        "ram_available": ram,
+        "swap_free": swap_free,
+        "total_effective": effective,
+    }
+
+
+def _detect_gpu() -> Tuple[bool, str]:
+    """
+    返回 (has_gpu, gpu_description)。
+    检测 NVIDIA GPU（通过 nvidia-smi）和 CUDA 可用性。
+    """
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            lines = result.stdout.strip().split("\n")
+            gpu_names = []
+            for line in lines:
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) >= 2:
+                    gpu_names.append(f"{parts[0]} ({parts[1]}MB)")
+            return True, "; ".join(gpu_names)
+    except Exception:
+        pass
+    return False, ""
+
+
+def detect_resource_config() -> dict:
+    """
+    自动检测系统资源配置并返回推荐配置。
+
+    返回 dict:
+      - enable_parallel: bool
+      - max_workers: int
+      - cpu_count: int
+      - total_memory_gb: float | None
+      - available_memory_gb: float | None
+      - total_swap_gb: float | None
+      - free_swap_gb: float | None
+      - has_gpu: bool
+      - gpu_description: str
+      - mode_description: str
+    """
+    cpu_count = os.cpu_count() or 1
+    total_memory_gb = _detect_total_memory_gb()
+    available_memory_gb = _detect_available_memory_gb()
+    swap = _detect_swap_memory_gb()
+    total_swap_gb = swap["total"] if swap else None
+    free_swap_gb = swap["free"] if swap else None
+    has_gpu, gpu_description = _detect_gpu()
+
+    # 有效可用内存 = RAM 可用 + Swap 空闲（含 swap 信息）
+    if available_memory_gb is not None:
+        effective_memory = available_memory_gb + (free_swap_gb or 0)
+    else:
+        effective_memory = total_memory_gb
+
+    swap_note = ""
+    if free_swap_gb is not None and free_swap_gb > 0.5 and effective_memory is not None:
+        ram_only = available_memory_gb or 0
+        ram_pct = (ram_only / effective_memory * 100) if effective_memory > 0 else 100
+        if ram_pct < 60:
+            swap_note = f" (RAM仅{ram_only:.1f}GB，Swap补充{effective_memory - ram_only:.1f}GB，性能可能下降)"
+
+    if effective_memory is not None and effective_memory < 4:
+        enable_parallel = False
+        max_workers = 1
+        reason = f"可用内存仅 {effective_memory:.1f}GB{swap_note}，强制串行避免 OOM"
+    elif effective_memory is not None and effective_memory < 8:
+        enable_parallel = True
+        max_workers = max(1, min(cpu_count, 2))
+        reason = f"可用内存 {effective_memory:.1f}GB{swap_note}，受限并行 ({max_workers} 线程)"
+    elif effective_memory is not None and effective_memory < 16:
+        enable_parallel = True
+        max_workers = max(1, min(cpu_count, 4))
+        reason = f"可用内存 {effective_memory:.1f}GB{swap_note}，标准并行 ({max_workers} 线程)"
+    elif cpu_count >= 8:
+        enable_parallel = True
+        max_workers = max(1, min(cpu_count, 8))
+        reason = f"{cpu_count} 核 + {effective_memory:.1f}GB{' 有效内存' if swap_note else ' 内存'}{swap_note}，全速并行 ({max_workers} 线程)"
+    elif cpu_count >= 2:
+        enable_parallel = True
+        max_workers = min(cpu_count, 4)
+        reason = f"{cpu_count} 核 CPU，并行 ({max_workers} 线程)"
+    else:
+        enable_parallel = False
+        max_workers = 1
+        reason = "单核 CPU，串行运行"
+
+    return {
+        "enable_parallel": enable_parallel,
+        "max_workers": max_workers,
+        "cpu_count": cpu_count,
+        "total_memory_gb": total_memory_gb,
+        "available_memory_gb": available_memory_gb,
+        "total_swap_gb": total_swap_gb,
+        "free_swap_gb": free_swap_gb,
+        "has_gpu": has_gpu,
+        "gpu_description": gpu_description,
+        "mode_description": reason,
+    }
+
+
+def resolve_parallel_config() -> Tuple[bool, int]:
+    env_parallel = os.environ.get("BACKTEST_ENABLE_PARALLEL", "").strip().lower()
+    env_workers = os.environ.get("BACKTEST_MAX_WORKERS", "").strip()
+
+    has_env_override = bool(env_parallel or env_workers)
+
+    if has_env_override:
+        if env_parallel == "false":
+            enable = False
+        elif env_parallel == "true":
+            enable = True
+        else:
+            enable = True
+
+        if env_workers:
+            try:
+                workers = max(1, int(env_workers))
+            except ValueError:
+                logger.warning("BACKTEST_MAX_WORKERS=%s 无效，使用自动检测", env_workers)
+                workers = None
+        else:
+            workers = None
+
+        if enable and workers is None:
+            config = detect_resource_config()
+            workers = config["max_workers"]
+
+        return enable, workers if workers else 1
+
+    config = detect_resource_config()
+    return config["enable_parallel"], config["max_workers"]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 数据加载（Tushare PostgreSQL 本地数据库）
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def _convert_columns_to_float32(df: pd.DataFrame) -> pd.DataFrame:
     float_columns = [
@@ -167,29 +329,42 @@ def _convert_columns_to_float32(df: pd.DataFrame) -> pd.DataFrame:
 
 def load_data(start: str, end: str) -> pd.DataFrame:
     t0 = time.time()
-    engine = get_postgres_engine()
-    logger.info(f"加载数据 {start} ~ {end} (PostgreSQL)...")
+    logger.info(f"加载数据 {start} ~ {end} (Tushare PostgreSQL)...")
 
+    sql = """
+        SELECT
+            d.ts_code,
+            s.name,
+            d.trade_date AS date,
+            d.open,
+            d.high,
+            d.low,
+            d.close,
+            (d.vol * 100)::DOUBLE PRECISION AS volume,
+            (d.amount * 1000)::DOUBLE PRECISION AS amount,
+            d.pct_chg,
+            d.turnover_ratio AS turn,
+            b.pe_ttm,
+            b.pb AS pb_mrq
+        FROM tushare_daily d
+        JOIN tushare_stock_basic s ON d.ts_code = s.ts_code
+        LEFT JOIN tushare_daily_basic b ON d.ts_code = b.ts_code AND d.trade_date = b.trade_date
+        WHERE d.trade_date BETWEEN %s AND %s
+          AND s.list_status = 'L'
+          AND s.exchange IN ('SSE', 'SZSE')
+          AND s.market IN ('主板', '中小板', '创业板')
+        ORDER BY d.ts_code, d.trade_date
+    """
+
+    engine = _get_pg_engine()
     try:
         with engine.connect() as conn:
-            df = pd.read_sql(
-                r"""
-                SELECT code, name, date, open, high, low, close,
-                       volume, amount, pct_chg, turn, pe_ttm, pb_mrq
-                FROM baostock_daily_history_xr
-                WHERE date BETWEEN %s AND %s
-                  AND trade_status = '1'
-                  AND is_st = '0'
-                  AND adjust_flag = '3'
-                  AND code ~ '^(sh\.6(?!88)|sh\.8|sh\.4|sz\.0|sz\.2|sz\.3(?!9))'
-                ORDER BY code, date
-                """,
-                conn,
-                params=(start, end),
-                parse_dates=["date"],
-            )
+            df = pd.read_sql(sql, conn, params=(start, end), parse_dates=["date"])
     finally:
         engine.dispose()
+
+    df["code"] = df["ts_code"].apply(_from_ts_code)
+    df.drop(columns=["ts_code"], inplace=True)
 
     for col in ["open", "high", "low", "close", "volume", "amount",
                 "pct_chg", "turn", "pe_ttm", "pb_mrq"]:
@@ -201,89 +376,37 @@ def load_data(start: str, end: str) -> pd.DataFrame:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 复权因子（Tushare adj_factor API）
+# 复权因子（Tushare 本地数据库 tushare_adj_factor）
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def fetch_adjust_factors_from_tushare(codes: List[str], start: str, end: str) -> pd.DataFrame:
-    client = _get_tushare_client()
-    total_codes = len(codes)
-    batch_size = 100
-    all_factors = []
-    processed = 0
-    failed_batches = 0
+def load_adj_factors_from_db(start: str, end: str) -> pd.DataFrame:
+    t0 = time.time()
+    logger.info(f"从本地数据库加载复权因子 {start} ~ {end}...")
 
-    years = list(range(int(start[:4]), int(end[:4]) + 1))
+    sql = """
+        SELECT ts_code, trade_date AS "dividOperateDate", adj_factor AS "foreAdjustFactor"
+        FROM tushare_adj_factor
+        WHERE trade_date BETWEEN %s AND %s
+        ORDER BY ts_code, trade_date
+    """
 
-    logger.info(f"开始获取复权因子，共 {total_codes} 只股票，{len(years)} 个年份，每批 {batch_size} 只")
+    engine = _get_pg_engine()
+    try:
+        with engine.connect() as conn:
+            df = pd.read_sql(sql, conn, params=(start, end), parse_dates=["dividOperateDate"])
+    finally:
+        engine.dispose()
 
-    for code_batch_start in range(0, total_codes, batch_size):
-        code_batch = codes[code_batch_start:code_batch_start + batch_size]
-        batch_num = code_batch_start // batch_size + 1
-        total_batches = (total_codes + batch_size - 1) // batch_size
-
-        ts_codes = [_to_ts_code(c) for c in code_batch]
-        ts_code_str = ",".join(ts_codes)
-
-        for year in years:
-            year_start = f"{year}-01-01"
-            year_end = f"{year}-12-31"
-            retry_count = 0
-            max_retries = 3
-            success = False
-
-            while retry_count < max_retries and not success:
-                try:
-                    df_factor = client.query(
-                        "adj_factor",
-                        ts_code=ts_code_str,
-                        start_date=year_start,
-                        end_date=year_end,
-                    )
-                    if not df_factor.empty:
-                        df_factor["code"] = df_factor["ts_code"].apply(_from_ts_code)
-                        df_factor.rename(
-                            columns={
-                                "trade_date": "dividOperateDate",
-                                "adj_factor": "foreAdjustFactor",
-                            },
-                            inplace=True,
-                        )
-                        df_factor["foreAdjustFactor"] = pd.to_numeric(
-                            df_factor["foreAdjustFactor"], errors="coerce"
-                        ).fillna(1.0)
-                        all_factors.append(df_factor[["code", "dividOperateDate", "foreAdjustFactor"]])
-                    success = True
-                except Exception as e:
-                    retry_count += 1
-                    if retry_count < max_retries:
-                        logger.warning(
-                            f"批次 {batch_num}/{total_batches} 年份 {year} 重试 {retry_count}/{max_retries}: {e}"
-                        )
-                        time.sleep(1)
-                    else:
-                        failed_batches += 1
-                        logger.error(
-                            f"批次 {batch_num}/{total_batches} 年份 {year} 获取失败: {e}"
-                        )
-
-            processed += len(code_batch)
-            if processed % 500 == 0:
-                logger.info(f"已处理 {processed}/{total_codes} 只股票")
-
-        gc.collect()
-
-    if failed_batches:
-        logger.warning(f"共有 {failed_batches} 个批次获取复权因子失败")
-
-    logger.info(f"复权因子获取完成，共 {sum(len(f) for f in all_factors):,} 条记录")
-
-    if not all_factors:
+    if df.empty:
         return pd.DataFrame(columns=["code", "dividOperateDate", "foreAdjustFactor"])
 
-    df_result = pd.concat(all_factors, ignore_index=True)
-    df_result["dividOperateDate"] = pd.to_datetime(df_result["dividOperateDate"])
-    df_result.sort_values(["code", "dividOperateDate"], inplace=True)
-    return df_result
+    df["code"] = df["ts_code"].apply(_from_ts_code)
+    df.drop(columns=["ts_code"], inplace=True)
+    df["foreAdjustFactor"] = pd.to_numeric(df["foreAdjustFactor"], errors="coerce").fillna(1.0)
+    df = df[["code", "dividOperateDate", "foreAdjustFactor"]]
+
+    logger.info(f"复权因子加载完成，共 {len(df):,} 条记录，耗时 {time.time()-t0:.1f}s")
+    return df
 
 
 def apply_forward_adjustment(df: pd.DataFrame, df_factor: pd.DataFrame) -> pd.DataFrame:
@@ -320,7 +443,7 @@ def apply_forward_adjustment(df: pd.DataFrame, df_factor: pd.DataFrame) -> pd.Da
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 技术指标（向量化 + float32）
+# 指标计算（每次全量重新计算）
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -792,7 +915,21 @@ def calc_metrics(returns: np.ndarray) -> Dict:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 并行回测
+# 内存监控辅助
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def log_memory_usage(stage: str):
+    try:
+        import psutil
+        process = psutil.Process()
+        mem_info = process.memory_info()
+        logger.info(f"[{stage}] 内存使用: {mem_info.rss / 1024 / 1024:.1f} MB")
+    except ImportError:
+        logger.debug("psutil not installed, skipping memory usage logging")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 回测（自动串行/并行）
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _backtest_single(name: str, df: pd.DataFrame) -> Dict:
@@ -826,22 +963,40 @@ def _backtest_single(name: str, df: pd.DataFrame) -> Dict:
 def run_backtests(df_bt: pd.DataFrame) -> List[Dict]:
     t0 = time.time()
     n_strategies = len(STRATEGIES)
-    n_workers = min(os.cpu_count() or 8, n_strategies)
-    logger.info(f"并行回测 {n_strategies} 策略（{n_workers} 线程）...")
+
+    enable_parallel, max_workers = resolve_parallel_config()
+    n_workers = min(max_workers, n_strategies)
+
+    if enable_parallel and n_workers > 1:
+        logger.info(f"并行回测 {n_strategies} 策略（{n_workers} 线程）...")
+    else:
+        logger.info(f"串行回测 {n_strategies} 策略...")
 
     strategy_names = list(STRATEGIES.keys())
     results = []
 
-    with ThreadPoolExecutor(max_workers=n_workers) as executor:
-        futures = {executor.submit(_backtest_single, name, df_bt): name for name in strategy_names}
-        for i, future in enumerate(as_completed(futures)):
-            r = future.result()
+    if enable_parallel and n_workers > 1:
+        with ThreadPoolExecutor(max_workers=n_workers) as executor:
+            futures = {executor.submit(_backtest_single, name, df_bt): name for name in strategy_names}
+            for i, future in enumerate(as_completed(futures)):
+                r = future.result()
+                results.append(r)
+                if "error" not in r:
+                    logger.info(f"  [{i+1}/{n_strategies}] {r['strategy']}: {r['total_trades']} 笔, "
+                                f"胜率{r['win_rate']:.1f}%, 总收益{r['total_return']:.1f}%")
+                else:
+                    logger.error(f"  [{i+1}/{n_strategies}] {r['strategy']}: {r['error']}")
+                log_memory_usage(f"策略 {i+1} 完成后")
+    else:
+        for i, name in enumerate(strategy_names):
+            r = _backtest_single(name, df_bt)
             results.append(r)
             if "error" not in r:
                 logger.info(f"  [{i+1}/{n_strategies}] {r['strategy']}: {r['total_trades']} 笔, "
                             f"胜率{r['win_rate']:.1f}%, 总收益{r['total_return']:.1f}%")
             else:
                 logger.error(f"  [{i+1}/{n_strategies}] {r['strategy']}: {r['error']}")
+            log_memory_usage(f"策略 {i+1} 完成后")
 
     valid = sorted([r for r in results if "error" not in r],
                    key=lambda x: x.get("total_return", 0), reverse=True)
@@ -880,12 +1035,12 @@ def validate_week(df_week, top_results, top_n=5):
             buy_prices = df_week.loc[df_week["date"] == buy_date, ["code", "open"]].rename(columns={"open": "buy_price"})
             sell_prices = df_week.loc[df_week["date"] == sell_date, ["code", "close"]].rename(columns={"close": "sell_price"})
 
-            merged_df = matched_stocks[["code"]].merge(buy_prices, on="code", how="left") \
-                                               .merge(sell_prices, on="code", how="left")
+            merged_df = matched_stocks[["code", "name"]].merge(buy_prices, on="code", how="left") \
+                                                       .merge(sell_prices, on="code", how="left")
 
             valid_df = merged_df.dropna(subset=["buy_price", "sell_price"])
             valid_df = valid_df[valid_df["buy_price"] > 0]
-            rets = (valid_df["sell_price"] / valid_df["buy_price"] - 1).values if len(valid_df) > 0 else np.array([])
+            rets = (valid_df["sell_price"] / valid_df["buy_price"] - 1).values
 
             if len(rets) > 0:
                 win_rate = (rets > 0).sum() / len(rets) * 100
@@ -958,7 +1113,7 @@ def print_results(results, val_results, backtest_start, backtest_end):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 胜率前10股票
+# 胜率前10股票 & 推荐
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def get_top_stocks_by_win_rate(df_week, results, top_n=10):
@@ -1057,6 +1212,83 @@ def get_top_stocks_by_win_rate(df_week, results, top_n=10):
     return stock_list[:top_n]
 
 
+def get_unique_strategies_from_results(results, top_n=10):
+    return [r["strategy"] for r in results[:top_n] if r.get("total_trades", 0) > 0]
+
+
+def get_next_day_recommendations(df_latest, top_stocks_or_results, results=None, top_n=10):
+    strategy_results = results if results is not None else top_stocks_or_results
+    unique_strategies = get_unique_strategies_from_results(strategy_results, top_n=top_n)
+    logger.info(f"回测前{top_n}策略: {unique_strategies}")
+
+    strategy_win_rate = {r["strategy"]: r.get("win_rate", 0) for r in strategy_results}
+
+    if df_latest is None or df_latest.empty:
+        logger.warning("没有最新数据可用于推荐")
+        return [], []
+
+    latest_date = df_latest["date"].max()
+    logger.info(f"最新交易日: {latest_date.date()}, 股票数: {(df_latest['date'] == latest_date).sum()}")
+
+    recommendations = []
+    stock_strategy_scores: Dict[str, dict] = {}
+
+    for strategy_name in unique_strategies:
+        try:
+            sig = STRATEGIES[strategy_name](df_latest)
+            latest_mask = sig.values & (df_latest["date"] == latest_date).values
+            if latest_mask.sum() == 0:
+                continue
+
+            matched = df_latest.loc[latest_mask, ["code", "name", "close", "pct_chg", "volume", "ma5", "ma20", "rsi6"]]
+            win_rate = strategy_win_rate.get(strategy_name, 0)
+
+            for _, row in matched.iterrows():
+                code = row["code"]
+                if code not in stock_strategy_scores:
+                    stock_strategy_scores[code] = {
+                        "code": code,
+                        "name": row["name"],
+                        "close": row["close"],
+                        "pct_chg": row["pct_chg"],
+                        "volume": row["volume"],
+                        "rsi6": row["rsi6"],
+                        "matched_strategies": [],
+                        "win_rates": [],
+                        "total_score": 0,
+                    }
+                stock_strategy_scores[code]["matched_strategies"].append(strategy_name)
+                stock_strategy_scores[code]["win_rates"].append(win_rate)
+                stock_strategy_scores[code]["total_score"] += win_rate
+
+        except Exception as e:
+            logger.error(f"策略 {strategy_name} 应用失败: {e}")
+            continue
+
+    for code, info in stock_strategy_scores.items():
+        if not info["matched_strategies"]:
+            continue
+
+        avg_win_rate = sum(info["win_rates"]) / len(info["win_rates"])
+        strategy_count = len(info["matched_strategies"])
+
+        recommendations.append({
+            "code": code,
+            "name": info["name"],
+            "close": info["close"],
+            "pct_chg": info["pct_chg"],
+            "rsi6": info["rsi6"],
+            "matched_strategies": info["matched_strategies"],
+            "avg_win_rate": round(avg_win_rate, 2),
+            "strategy_count": strategy_count,
+            "total_score": round(info["total_score"], 2),
+        })
+
+    recommendations.sort(key=lambda x: (x["strategy_count"], x["avg_win_rate"]), reverse=True)
+
+    return recommendations[:top_n], unique_strategies
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # 执行主程序进行大盘复盘和个股决策
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1103,40 +1335,47 @@ def run_main_program_for_stocks(stocks: List[Dict]):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 交易日判断（Tushare trade_cal API）
+# 交易日判断（本地 tushare_trade_cal 表）
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def is_trading_day(date):
-    try:
-        client = _get_tushare_client()
-    except RuntimeError as e:
-        logger.warning(f"Tushare 客户端初始化失败: {e}")
-        return True
-
     if isinstance(date, datetime):
         date_str = date.strftime("%Y-%m-%d")
     else:
         date_str = str(date)
 
     try:
-        df = client.query("trade_cal", exchange="SSE", start_date=date_str, end_date=date_str)
+        engine = _get_pg_engine()
+    except RuntimeError as e:
+        logger.warning(f"数据库连接失败: {e}")
+        return True
+
+    try:
+        with engine.connect() as conn:
+            df = pd.read_sql(
+                "SELECT is_open FROM tushare_trade_cal WHERE exchange = 'SSE' AND cal_date = %s",
+                conn,
+                params=(date_str,),
+            )
         if df.empty:
-            logger.warning(f"未获取到交易日数据: {date_str}")
+            logger.info(f"未找到交易日数据: {date_str}，假定为交易日")
             return True
         return int(df.iloc[0]["is_open"]) == 1
     except Exception as e:
-        logger.warning(f"查询交易日失败: {e}")
+        logger.warning(f"查询交易日失败: {e}，假定为交易日")
         return True
+    finally:
+        engine.dispose()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 主函数
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--force", action="store_true", help="强制运行（非交易日也执行）")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if not args.force and not is_trading_day(datetime.now()):
         logger.error("非交易日，程序退出（使用 --force 可强制运行）")
@@ -1144,23 +1383,44 @@ def main():
 
     five_years_ago = (datetime.now() - pd.DateOffset(years=5)).strftime("%Y-%m-%d")
     today_str = datetime.now().strftime("%Y-%m-%d")
+    anchored_start = f"{five_years_ago[:4]}-01-01"
+
+    enable_parallel, max_workers = resolve_parallel_config()
+    config = detect_resource_config()
 
     logger.info("=" * 60)
     logger.info("23 策略 5 年回测 + 最近5日验证")
     logger.info(f"Numba加速: {'启用' if _HAS_NUMBA else '未安装（pip install numba）'}")
-    logger.info(f"CPU核心: {os.cpu_count()}")
+    logger.info(f"CPU核心: {config['cpu_count']}")
+    if config["total_memory_gb"] is not None:
+        logger.info(f"总内存: {config['total_memory_gb']:.1f} GB")
+    if config["available_memory_gb"] is not None:
+        logger.info(f"可用内存: {config['available_memory_gb']:.1f} GB")
+    if config["total_swap_gb"] is not None and config["total_swap_gb"] > 0:
+        logger.info(f"Swap 总量: {config['total_swap_gb']:.1f} GB  空闲: {config['free_swap_gb']:.1f} GB")
+    if config["has_gpu"]:
+        logger.info(f"GPU: {config['gpu_description']}")
+    logger.info(f"回测模式: {'并行 ' + str(max_workers) + ' 线程' if enable_parallel and max_workers > 1 else '串行'}")
+    logger.info(f"模式说明: {config['mode_description']}")
+    logger.info(f"回测起始: {anchored_start} ~ {today_str}")
     logger.info("=" * 60)
 
-    df_all = load_data(five_years_ago, today_str)
+    log_memory_usage("开始")
 
-    logger.info("获取复权因子并计算前复权价格...")
-    codes = df_all["code"].unique().tolist()
-    logger.info(f"共 {len(codes)} 只股票需要获取复权因子...")
-    df_factors = fetch_adjust_factors_from_tushare(codes, five_years_ago, today_str)
-    logger.info(f"获取到 {len(df_factors)} 条复权因子记录")
-    df_all = apply_forward_adjustment(df_all, df_factors)
+    df_market = load_data(anchored_start, today_str)
 
-    df_all = compute_indicators(df_all)
+    logger.info("从数据库加载复权因子并计算前复权价格...")
+    df_factor = load_adj_factors_from_db(anchored_start, today_str)
+    logger.info(f"获取到 {len(df_factor)} 条复权因子记录")
+    df_adjusted = apply_forward_adjustment(df_market, df_factor)
+    del df_market, df_factor
+    gc.collect()
+    log_memory_usage("复权计算后")
+
+    df_all = compute_indicators(df_adjusted)
+    del df_adjusted
+    gc.collect()
+    log_memory_usage("指标计算后")
 
     all_dates = sorted(df_all["date"].unique())
     if len(all_dates) < 6:
@@ -1175,10 +1435,13 @@ def main():
     logger.info(f"回测区间: {backtest_start_date.date()} ~ {backtest_end_date.date()}")
     logger.info(f"验证区间: {validate_start_date.date()} ~ {validate_end_date.date()}")
 
-    df_bt = df_all[df_all["date"] <= pd.Timestamp(backtest_end_date)].copy()
     df_week = df_all[df_all["date"] >= pd.Timestamp(validate_start_date)].copy()
+    log_memory_usage("验证数据拆分后")
+    mask_bt = df_all["date"] <= pd.Timestamp(backtest_end_date)
+    df_bt = df_all.loc[mask_bt].reset_index(drop=True)
     del df_all
     gc.collect()
+    log_memory_usage("回测数据准备后")
 
     results = run_backtests(df_bt)
     val_results = validate_week(df_week, results, TOP_N_VALIDATE)

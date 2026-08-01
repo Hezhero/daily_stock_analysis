@@ -60,6 +60,27 @@ CREATE INDEX IF NOT EXISTS ix_ts_stock_basic_industry ON tushare_stock_basic(ind
 CREATE INDEX IF NOT EXISTS ix_ts_stock_basic_status ON tushare_stock_basic(list_status);
 COMMENT ON TABLE tushare_stock_basic IS 'Tushare stock_basic 股票基础信息缓存';
 
+COMMENT ON COLUMN tushare_stock_basic.id IS '自增主键';
+COMMENT ON COLUMN tushare_stock_basic.ts_code IS '股票代码（Tushare 格式，如 600519.SH）';
+COMMENT ON COLUMN tushare_stock_basic.symbol IS '6位纯数字代码（如 600519）';
+COMMENT ON COLUMN tushare_stock_basic.name IS '股票名称';
+COMMENT ON COLUMN tushare_stock_basic.area IS '所在地区';
+COMMENT ON COLUMN tushare_stock_basic.industry IS '所属行业';
+COMMENT ON COLUMN tushare_stock_basic.cnspell IS '拼音缩写';
+COMMENT ON COLUMN tushare_stock_basic.market IS '市场类型（主板/创业板/科创板/北交所）';
+COMMENT ON COLUMN tushare_stock_basic.list_status IS '上市状态（L上市 D退市 P暂停）';
+COMMENT ON COLUMN tushare_stock_basic.list_date IS '上市日期';
+COMMENT ON COLUMN tushare_stock_basic.delist_date IS '退市日期';
+COMMENT ON COLUMN tushare_stock_basic.is_hs IS '是否沪深港通标的（H沪股通 S深股通）';
+COMMENT ON COLUMN tushare_stock_basic.act_name IS '实控人名称';
+COMMENT ON COLUMN tushare_stock_basic.act_ent_type IS '实控人企业性质';
+COMMENT ON COLUMN tushare_stock_basic.fullname IS '公司全称';
+COMMENT ON COLUMN tushare_stock_basic.exchange IS '交易所代码（SSE上交所 SZSE深交所 BSE北交所）';
+COMMENT ON COLUMN tushare_stock_basic.curr_type IS '交易货币';
+COMMENT ON COLUMN tushare_stock_basic.enname IS '英文全称';
+COMMENT ON COLUMN tushare_stock_basic.created_at IS '记录创建时间';
+COMMENT ON COLUMN tushare_stock_basic.updated_at IS '记录最近更新时间';
+
 -- 1.2 交易日历
 -- API: trade_cal
 -- 频次: 基础权限
@@ -79,6 +100,14 @@ CREATE TABLE IF NOT EXISTS tushare_trade_cal (
 CREATE INDEX IF NOT EXISTS ix_ts_trade_cal_date ON tushare_trade_cal(cal_date);
 CREATE INDEX IF NOT EXISTS ix_ts_trade_cal_open ON tushare_trade_cal(exchange, is_open, cal_date);
 COMMENT ON TABLE tushare_trade_cal IS 'Tushare trade_cal 交易日历缓存';
+
+COMMENT ON COLUMN tushare_trade_cal.id IS '自增主键';
+COMMENT ON COLUMN tushare_trade_cal.exchange IS '交易所代码（SSE上交所 SZSE深交所 CFFEX中金所 SHFE上期所等）';
+COMMENT ON COLUMN tushare_trade_cal.cal_date IS '日历日期';
+COMMENT ON COLUMN tushare_trade_cal.is_open IS '是否开市（1开市 0休市）';
+COMMENT ON COLUMN tushare_trade_cal.pretrade_date IS '上一个交易日';
+COMMENT ON COLUMN tushare_trade_cal.created_at IS '记录创建时间';
+COMMENT ON COLUMN tushare_trade_cal.updated_at IS '记录最近更新时间';
 
 -- 1.3 上市公司基本信息
 -- API: stock_company
@@ -110,6 +139,28 @@ CREATE TABLE IF NOT EXISTS tushare_stock_company (
 );
 COMMENT ON TABLE tushare_stock_company IS 'Tushare stock_company 上市公司基本信息缓存';
 
+COMMENT ON COLUMN tushare_stock_company.id IS '自增主键';
+COMMENT ON COLUMN tushare_stock_company.ts_code IS '股票代码';
+COMMENT ON COLUMN tushare_stock_company.com_name IS '公司名称';
+COMMENT ON COLUMN tushare_stock_company.chairman IS '法人代表';
+COMMENT ON COLUMN tushare_stock_company.manager IS '总经理';
+COMMENT ON COLUMN tushare_stock_company.secretary IS '董秘';
+COMMENT ON COLUMN tushare_stock_company.reg_capital IS '注册资本（万元）';
+COMMENT ON COLUMN tushare_stock_company.setup_date IS '注册日期';
+COMMENT ON COLUMN tushare_stock_company.province IS '所在省份';
+COMMENT ON COLUMN tushare_stock_company.city IS '所在城市';
+COMMENT ON COLUMN tushare_stock_company.introduction IS '公司介绍';
+COMMENT ON COLUMN tushare_stock_company.website IS '公司主页';
+COMMENT ON COLUMN tushare_stock_company.email IS '电子邮件';
+COMMENT ON COLUMN tushare_stock_company.office IS '办公地址';
+COMMENT ON COLUMN tushare_stock_company.employees IS '员工人数';
+COMMENT ON COLUMN tushare_stock_company.main_business IS '主要业务及产品';
+COMMENT ON COLUMN tushare_stock_company.business_scope IS '经营范围';
+COMMENT ON COLUMN tushare_stock_company.phone IS '联系电话';
+COMMENT ON COLUMN tushare_stock_company.fax IS '传真';
+COMMENT ON COLUMN tushare_stock_company.created_at IS '记录创建时间';
+COMMENT ON COLUMN tushare_stock_company.updated_at IS '记录最近更新时间';
+
 -- 1.4 股票曾用名
 -- API: namechange
 CREATE TABLE IF NOT EXISTS tushare_namechange (
@@ -128,6 +179,15 @@ CREATE TABLE IF NOT EXISTS tushare_namechange (
 CREATE INDEX IF NOT EXISTS ix_ts_namechange_code ON tushare_namechange(ts_code);
 COMMENT ON TABLE tushare_namechange IS 'Tushare namechange 股票曾用名缓存';
 
+COMMENT ON COLUMN tushare_namechange.id IS '自增主键';
+COMMENT ON COLUMN tushare_namechange.ts_code IS '股票代码';
+COMMENT ON COLUMN tushare_namechange.name IS '股票名称';
+COMMENT ON COLUMN tushare_namechange.start_date IS '名称开始日期';
+COMMENT ON COLUMN tushare_namechange.end_date IS '名称结束日期';
+COMMENT ON COLUMN tushare_namechange.change_reason IS '变更原因';
+COMMENT ON COLUMN tushare_namechange.created_at IS '记录创建时间';
+COMMENT ON COLUMN tushare_namechange.updated_at IS '记录最近更新时间';
+
 -- 1.5 沪深港通成分股
 -- API: hs_const
 CREATE TABLE IF NOT EXISTS tushare_hs_const (
@@ -145,6 +205,15 @@ CREATE TABLE IF NOT EXISTS tushare_hs_const (
 
 CREATE INDEX IF NOT EXISTS ix_ts_hs_const_type ON tushare_hs_const(hs_type, in_date);
 COMMENT ON TABLE tushare_hs_const IS 'Tushare hs_const 沪深港通成分股缓存';
+
+COMMENT ON COLUMN tushare_hs_const.id IS '自增主键';
+COMMENT ON COLUMN tushare_hs_const.ts_code IS '股票代码';
+COMMENT ON COLUMN tushare_hs_const.hs_type IS '沪深港通类型（SH沪股通 SZ深股通）';
+COMMENT ON COLUMN tushare_hs_const.in_date IS '纳入日期';
+COMMENT ON COLUMN tushare_hs_const.out_date IS '剔除日期';
+COMMENT ON COLUMN tushare_hs_const.is_new IS '是否最新（1是 0否）';
+COMMENT ON COLUMN tushare_hs_const.created_at IS '记录创建时间';
+COMMENT ON COLUMN tushare_hs_const.updated_at IS '记录最近更新时间';
 
 -- 1.6 IPO 新股列表
 -- API: ipo_list
@@ -170,6 +239,21 @@ CREATE TABLE IF NOT EXISTS tushare_ipo_list (
 
 CREATE INDEX IF NOT EXISTS ix_ts_ipo_list_date ON tushare_ipo_list(ipo_date);
 COMMENT ON TABLE tushare_ipo_list IS 'Tushare ipo_list IPO新股列表缓存';
+
+COMMENT ON COLUMN tushare_ipo_list.id IS '自增主键';
+COMMENT ON COLUMN tushare_ipo_list.ts_code IS '新股代码';
+COMMENT ON COLUMN tushare_ipo_list.name IS '新股名称';
+COMMENT ON COLUMN tushare_ipo_list.ipo_date IS '上市日期';
+COMMENT ON COLUMN tushare_ipo_list.issue_date IS '申购日期';
+COMMENT ON COLUMN tushare_ipo_list.amount IS '发行数量（万股）';
+COMMENT ON COLUMN tushare_ipo_list.market IS '市场类型';
+COMMENT ON COLUMN tushare_ipo_list.price IS '发行价格（元）';
+COMMENT ON COLUMN tushare_ipo_list.pe IS '发行市盈率';
+COMMENT ON COLUMN tushare_ipo_list.limit_amount IS '网上发行量（万股）';
+COMMENT ON COLUMN tushare_ipo_list.funds IS '募集资金（万元）';
+COMMENT ON COLUMN tushare_ipo_list.ballot IS '中签率';
+COMMENT ON COLUMN tushare_ipo_list.created_at IS '记录创建时间';
+COMMENT ON COLUMN tushare_ipo_list.updated_at IS '记录最近更新时间';
 
 -- ============================================================
 -- 2. 行情数据层（高频增量更新，大表分区）
@@ -203,6 +287,24 @@ CREATE TABLE IF NOT EXISTS tushare_daily (
 ) PARTITION BY RANGE (trade_date);
 
 COMMENT ON TABLE tushare_daily IS 'Tushare daily A股日线行情缓存（分区表）';
+
+COMMENT ON COLUMN tushare_daily.id IS '自增主键';
+COMMENT ON COLUMN tushare_daily.ts_code IS '股票代码（如 600519.SH）';
+COMMENT ON COLUMN tushare_daily.trade_date IS '交易日期（分区键）';
+COMMENT ON COLUMN tushare_daily.open IS '开盘价';
+COMMENT ON COLUMN tushare_daily.high IS '最高价';
+COMMENT ON COLUMN tushare_daily.low IS '最低价';
+COMMENT ON COLUMN tushare_daily.close IS '收盘价';
+COMMENT ON COLUMN tushare_daily.pre_close IS '昨收价';
+COMMENT ON COLUMN tushare_daily.change_val IS '涨跌额';
+COMMENT ON COLUMN tushare_daily.pct_chg IS '涨跌幅（%）';
+COMMENT ON COLUMN tushare_daily.vol IS '成交量（手）';
+COMMENT ON COLUMN tushare_daily.amount IS '成交额（千元）';
+COMMENT ON COLUMN tushare_daily.turnover_ratio IS '换手率（%）';
+COMMENT ON COLUMN tushare_daily.volume_ratio IS '量比';
+COMMENT ON COLUMN tushare_daily.amplitude IS '振幅（%）';
+COMMENT ON COLUMN tushare_daily.created_at IS '记录创建时间';
+COMMENT ON COLUMN tushare_daily.updated_at IS '记录最近更新时间';
 
 -- 创建默认分区（兜底）
 CREATE TABLE IF NOT EXISTS tushare_daily_default PARTITION OF tushare_daily DEFAULT;
@@ -248,6 +350,13 @@ CREATE TABLE IF NOT EXISTS tushare_adj_factor (
 ) PARTITION BY RANGE (trade_date);
 
 COMMENT ON TABLE tushare_adj_factor IS 'Tushare adj_factor 复权因子缓存（分区表）';
+
+COMMENT ON COLUMN tushare_adj_factor.id IS '自增主键';
+COMMENT ON COLUMN tushare_adj_factor.ts_code IS '股票代码';
+COMMENT ON COLUMN tushare_adj_factor.trade_date IS '交易日期（分区键）';
+COMMENT ON COLUMN tushare_adj_factor.adj_factor IS '复权因子';
+COMMENT ON COLUMN tushare_adj_factor.created_at IS '记录创建时间';
+COMMENT ON COLUMN tushare_adj_factor.updated_at IS '记录最近更新时间';
 
 CREATE TABLE IF NOT EXISTS tushare_adj_factor_default PARTITION OF tushare_adj_factor DEFAULT;
 
@@ -303,6 +412,28 @@ CREATE TABLE IF NOT EXISTS tushare_daily_basic (
 ) PARTITION BY RANGE (trade_date);
 
 COMMENT ON TABLE tushare_daily_basic IS 'Tushare daily_basic 每日基本面指标缓存（分区表）';
+
+COMMENT ON COLUMN tushare_daily_basic.id IS '自增主键';
+COMMENT ON COLUMN tushare_daily_basic.ts_code IS '股票代码';
+COMMENT ON COLUMN tushare_daily_basic.trade_date IS '交易日期（分区键）';
+COMMENT ON COLUMN tushare_daily_basic.close IS '当日收盘价';
+COMMENT ON COLUMN tushare_daily_basic.turnover_rate IS '换手率（%）';
+COMMENT ON COLUMN tushare_daily_basic.turnover_rate_f IS '换手率（自由流通股，%）';
+COMMENT ON COLUMN tushare_daily_basic.volume_ratio IS '量比';
+COMMENT ON COLUMN tushare_daily_basic.pe IS '市盈率';
+COMMENT ON COLUMN tushare_daily_basic.pe_ttm IS '市盈率（TTM）';
+COMMENT ON COLUMN tushare_daily_basic.pb IS '市净率';
+COMMENT ON COLUMN tushare_daily_basic.ps IS '市销率';
+COMMENT ON COLUMN tushare_daily_basic.ps_ttm IS '市销率（TTM）';
+COMMENT ON COLUMN tushare_daily_basic.dv_ratio IS '股息率（%）';
+COMMENT ON COLUMN tushare_daily_basic.dv_ttm IS '股息率（TTM）';
+COMMENT ON COLUMN tushare_daily_basic.total_share IS '总股本（万股）';
+COMMENT ON COLUMN tushare_daily_basic.float_share IS '流通股本（万股）';
+COMMENT ON COLUMN tushare_daily_basic.free_share IS '自由流通股本（万股）';
+COMMENT ON COLUMN tushare_daily_basic.total_mv IS '总市值（万元）';
+COMMENT ON COLUMN tushare_daily_basic.circ_mv IS '流通市值（万元）';
+COMMENT ON COLUMN tushare_daily_basic.created_at IS '记录创建时间';
+COMMENT ON COLUMN tushare_daily_basic.updated_at IS '记录最近更新时间';
 
 CREATE TABLE IF NOT EXISTS tushare_daily_basic_default PARTITION OF tushare_daily_basic DEFAULT;
 
@@ -380,6 +511,41 @@ CREATE INDEX IF NOT EXISTS ix_ts_income_end_date ON tushare_income(end_date);
 CREATE INDEX IF NOT EXISTS ix_ts_income_ann_date ON tushare_income(ann_date);
 COMMENT ON TABLE tushare_income IS 'Tushare income 利润表缓存';
 
+COMMENT ON COLUMN tushare_income.id IS '自增主键';
+COMMENT ON COLUMN tushare_income.ts_code IS '股票代码';
+COMMENT ON COLUMN tushare_income.ann_date IS '公告日期';
+COMMENT ON COLUMN tushare_income.f_ann_date IS '实际公告日期';
+COMMENT ON COLUMN tushare_income.end_date IS '报告期截止日';
+COMMENT ON COLUMN tushare_income.report_type IS '报告类型（Q1/Q2半/Q3/年报）';
+COMMENT ON COLUMN tushare_income.comp_type IS '公司类型（1一般工商业 2银行 3保险 4证券）';
+COMMENT ON COLUMN tushare_income.end_type IS '报告期类型（1合并 2母公司）';
+COMMENT ON COLUMN tushare_income.total_revenue IS '营业总收入';
+COMMENT ON COLUMN tushare_income.revenue IS '营业收入';
+COMMENT ON COLUMN tushare_income.int_income IS '利息收入';
+COMMENT ON COLUMN tushare_income.prem_earned IS '已赚保费';
+COMMENT ON COLUMN tushare_income.comm_income IS '手续费及佣金收入';
+COMMENT ON COLUMN tushare_income.total_cogs IS '营业总成本';
+COMMENT ON COLUMN tushare_income.oper_cost IS '营业成本';
+COMMENT ON COLUMN tushare_income.sell_exp IS '销售费用';
+COMMENT ON COLUMN tushare_income.admin_exp IS '管理费用';
+COMMENT ON COLUMN tushare_income.fin_exp IS '财务费用';
+COMMENT ON COLUMN tushare_income.assets_impair_loss IS '资产减值损失';
+COMMENT ON COLUMN tushare_income.fair_value_inter_gain IS '公允价值变动收益';
+COMMENT ON COLUMN tushare_income.invest_income IS '投资收益';
+COMMENT ON COLUMN tushare_income.oper_profit IS '营业利润';
+COMMENT ON COLUMN tushare_income.non_oper_income IS '营业外收入';
+COMMENT ON COLUMN tushare_income.non_oper_exp IS '营业外支出';
+COMMENT ON COLUMN tushare_income.total_profit IS '利润总额';
+COMMENT ON COLUMN tushare_income.income_tax IS '所得税费用';
+COMMENT ON COLUMN tushare_income.n_income IS '净利润';
+COMMENT ON COLUMN tushare_income.n_income_attr_p IS '归母净利润';
+COMMENT ON COLUMN tushare_income.minority_gain IS '少数股东损益';
+COMMENT ON COLUMN tushare_income.basic_eps IS '基本每股收益';
+COMMENT ON COLUMN tushare_income.diluted_eps IS '稀释每股收益';
+COMMENT ON COLUMN tushare_income.extra_fields IS 'Tushare 返回的扩展字段（JSONB）';
+COMMENT ON COLUMN tushare_income.created_at IS '记录创建时间';
+COMMENT ON COLUMN tushare_income.updated_at IS '记录最近更新时间';
+
 -- 3.2 资产负债表
 -- API: balancesheet
 CREATE TABLE IF NOT EXISTS tushare_balancesheet (
@@ -426,6 +592,41 @@ CREATE INDEX IF NOT EXISTS ix_ts_balancesheet_code ON tushare_balancesheet(ts_co
 CREATE INDEX IF NOT EXISTS ix_ts_balancesheet_end_date ON tushare_balancesheet(end_date);
 COMMENT ON TABLE tushare_balancesheet IS 'Tushare balancesheet 资产负债表缓存';
 
+COMMENT ON COLUMN tushare_balancesheet.id IS '自增主键';
+COMMENT ON COLUMN tushare_balancesheet.ts_code IS '股票代码';
+COMMENT ON COLUMN tushare_balancesheet.ann_date IS '公告日期';
+COMMENT ON COLUMN tushare_balancesheet.f_ann_date IS '实际公告日期';
+COMMENT ON COLUMN tushare_balancesheet.end_date IS '报告期截止日';
+COMMENT ON COLUMN tushare_balancesheet.report_type IS '报告类型（Q1/Q2半/Q3/年报）';
+COMMENT ON COLUMN tushare_balancesheet.comp_type IS '公司类型（1一般工商业 2银行 3保险 4证券）';
+COMMENT ON COLUMN tushare_balancesheet.end_type IS '报告期类型（1合并 2母公司）';
+COMMENT ON COLUMN tushare_balancesheet.total_assets IS '资产总计';
+COMMENT ON COLUMN tushare_balancesheet.total_cur_assets IS '流动资产合计';
+COMMENT ON COLUMN tushare_balancesheet.money_cap IS '货币资金';
+COMMENT ON COLUMN tushare_balancesheet.trad_asset IS '交易性金融资产';
+COMMENT ON COLUMN tushare_balancesheet.notes_receiv IS '应收票据';
+COMMENT ON COLUMN tushare_balancesheet.accounts_receiv IS '应收账款';
+COMMENT ON COLUMN tushare_balancesheet.prepayment IS '预付款项';
+COMMENT ON COLUMN tushare_balancesheet.inventories IS '存货';
+COMMENT ON COLUMN tushare_balancesheet.total_non_cur_assets IS '非流动资产合计';
+COMMENT ON COLUMN tushare_balancesheet.fix_assets IS '固定资产';
+COMMENT ON COLUMN tushare_balancesheet.constru_in_process IS '在建工程';
+COMMENT ON COLUMN tushare_balancesheet.intangible_assets IS '无形资产';
+COMMENT ON COLUMN tushare_balancesheet.goodwill IS '商誉';
+COMMENT ON COLUMN tushare_balancesheet.total_liab IS '负债合计';
+COMMENT ON COLUMN tushare_balancesheet.total_cur_liab IS '流动负债合计';
+COMMENT ON COLUMN tushare_balancesheet.short_borrow IS '短期借款';
+COMMENT ON COLUMN tushare_balancesheet.notes_payable IS '应付票据';
+COMMENT ON COLUMN tushare_balancesheet.accounts_payable IS '应付账款';
+COMMENT ON COLUMN tushare_balancesheet.total_non_cur_liab IS '非流动负债合计';
+COMMENT ON COLUMN tushare_balancesheet.long_borrow IS '长期借款';
+COMMENT ON COLUMN tushare_balancesheet.total_hldr_eqy_exc_min IS '股东权益合计（不含少数股东权益）';
+COMMENT ON COLUMN tushare_balancesheet.minority_int IS '少数股东权益';
+COMMENT ON COLUMN tushare_balancesheet.total_hldr_eqy_inc_min IS '股东权益合计（含少数股东权益）';
+COMMENT ON COLUMN tushare_balancesheet.extra_fields IS 'Tushare 返回的扩展字段（JSONB）';
+COMMENT ON COLUMN tushare_balancesheet.created_at IS '记录创建时间';
+COMMENT ON COLUMN tushare_balancesheet.updated_at IS '记录最近更新时间';
+
 -- 3.3 现金流量表
 -- API: cashflow
 CREATE TABLE IF NOT EXISTS tushare_cashflow (
@@ -466,6 +667,32 @@ CREATE INDEX IF NOT EXISTS ix_ts_cashflow_code ON tushare_cashflow(ts_code);
 CREATE INDEX IF NOT EXISTS ix_ts_cashflow_end_date ON tushare_cashflow(end_date);
 COMMENT ON TABLE tushare_cashflow IS 'Tushare cashflow 现金流量表缓存';
 
+COMMENT ON COLUMN tushare_cashflow.id IS '自增主键';
+COMMENT ON COLUMN tushare_cashflow.ts_code IS '股票代码';
+COMMENT ON COLUMN tushare_cashflow.ann_date IS '公告日期';
+COMMENT ON COLUMN tushare_cashflow.f_ann_date IS '实际公告日期';
+COMMENT ON COLUMN tushare_cashflow.end_date IS '报告期截止日';
+COMMENT ON COLUMN tushare_cashflow.report_type IS '报告类型（Q1/Q2半/Q3/年报）';
+COMMENT ON COLUMN tushare_cashflow.comp_type IS '公司类型（1一般工商业 2银行 3保险 4证券）';
+COMMENT ON COLUMN tushare_cashflow.end_type IS '报告期类型（1合并 2母公司）';
+COMMENT ON COLUMN tushare_cashflow.c_fr_sale_sg IS '销售商品、提供劳务收到的现金';
+COMMENT ON COLUMN tushare_cashflow.net_cf_oper_act IS '经营活动产生的现金流量净额';
+COMMENT ON COLUMN tushare_cashflow.net_cf_inv_act IS '投资活动产生的现金流量净额';
+COMMENT ON COLUMN tushare_cashflow.net_cf_fin_act IS '筹资活动产生的现金流量净额';
+COMMENT ON COLUMN tushare_cashflow.free_cf IS '企业自由现金流';
+COMMENT ON COLUMN tushare_cashflow.st_cash_out_act IS '经营活动现金流出小计';
+COMMENT ON COLUMN tushare_cashflow.st_cash_in_act IS '经营活动现金流入小计';
+COMMENT ON COLUMN tushare_cashflow.st_cash_out_inv IS '投资活动现金流出小计';
+COMMENT ON COLUMN tushare_cashflow.st_cash_in_inv IS '投资活动现金流入小计';
+COMMENT ON COLUMN tushare_cashflow.st_cash_out_fin IS '筹资活动现金流出小计';
+COMMENT ON COLUMN tushare_cashflow.st_cash_in_fin IS '筹资活动现金流入小计';
+COMMENT ON COLUMN tushare_cashflow.n_cashflow_act IS '汇率变动对现金的影响';
+COMMENT ON COLUMN tushare_cashflow.c_change IS '现金及现金等价物净增加额';
+COMMENT ON COLUMN tushare_cashflow.c_bal_end IS '期末现金及现金等价物余额';
+COMMENT ON COLUMN tushare_cashflow.extra_fields IS 'Tushare 返回的扩展字段（JSONB）';
+COMMENT ON COLUMN tushare_cashflow.created_at IS '记录创建时间';
+COMMENT ON COLUMN tushare_cashflow.updated_at IS '记录最近更新时间';
+
 -- 3.4 业绩预告
 -- API: forecast
 CREATE TABLE IF NOT EXISTS tushare_forecast (
@@ -491,6 +718,21 @@ CREATE INDEX IF NOT EXISTS ix_ts_forecast_code ON tushare_forecast(ts_code);
 CREATE INDEX IF NOT EXISTS ix_ts_forecast_end_date ON tushare_forecast(end_date);
 COMMENT ON TABLE tushare_forecast IS 'Tushare forecast 业绩预告缓存';
 
+COMMENT ON COLUMN tushare_forecast.id IS '自增主键';
+COMMENT ON COLUMN tushare_forecast.ts_code IS '股票代码';
+COMMENT ON COLUMN tushare_forecast.ann_date IS '公告日期';
+COMMENT ON COLUMN tushare_forecast.end_date IS '报告期';
+COMMENT ON COLUMN tushare_forecast.type IS '预告类型（预增/预减/扭亏/首亏/续盈/略增/略减/不确定）';
+COMMENT ON COLUMN tushare_forecast.p_change_min IS '净利润变动下限（%）';
+COMMENT ON COLUMN tushare_forecast.p_change_max IS '净利润变动上限（%）';
+COMMENT ON COLUMN tushare_forecast.net_profit_min IS '净利润下限（万元）';
+COMMENT ON COLUMN tushare_forecast.net_profit_max IS '净利润上限（万元）';
+COMMENT ON COLUMN tushare_forecast.last_parent_net IS '上年同期归母净利润';
+COMMENT ON COLUMN tushare_forecast.notice_date IS '公告日期';
+COMMENT ON COLUMN tushare_forecast.notice_reason IS '业绩变动原因';
+COMMENT ON COLUMN tushare_forecast.created_at IS '记录创建时间';
+COMMENT ON COLUMN tushare_forecast.updated_at IS '记录最近更新时间';
+
 -- 3.5 业绩快报
 -- API: express
 CREATE TABLE IF NOT EXISTS tushare_express (
@@ -515,6 +757,21 @@ CREATE TABLE IF NOT EXISTS tushare_express (
 CREATE INDEX IF NOT EXISTS ix_ts_express_code ON tushare_express(ts_code);
 CREATE INDEX IF NOT EXISTS ix_ts_express_end_date ON tushare_express(end_date);
 COMMENT ON TABLE tushare_express IS 'Tushare express 业绩快报缓存';
+
+COMMENT ON COLUMN tushare_express.id IS '自增主键';
+COMMENT ON COLUMN tushare_express.ts_code IS '股票代码';
+COMMENT ON COLUMN tushare_express.ann_date IS '公告日期';
+COMMENT ON COLUMN tushare_express.end_date IS '报告期';
+COMMENT ON COLUMN tushare_express.revenue IS '营业收入（元）';
+COMMENT ON COLUMN tushare_express.operate_profit IS '营业利润（元）';
+COMMENT ON COLUMN tushare_express.total_profit IS '利润总额（元）';
+COMMENT ON COLUMN tushare_express.n_income IS '净利润（元）';
+COMMENT ON COLUMN tushare_express.total_assets IS '总资产（元）';
+COMMENT ON COLUMN tushare_express.total_hldr_eqy IS '股东权益合计（不含少数股东权益）';
+COMMENT ON COLUMN tushare_express.diluted_eps IS '稀释每股收益';
+COMMENT ON COLUMN tushare_express.weighted_roe IS '加权平均净资产收益率';
+COMMENT ON COLUMN tushare_express.created_at IS '记录创建时间';
+COMMENT ON COLUMN tushare_express.updated_at IS '记录最近更新时间';
 
 -- 3.6 分红送股
 -- API: dividend
@@ -545,6 +802,26 @@ CREATE TABLE IF NOT EXISTS tushare_dividend (
 CREATE INDEX IF NOT EXISTS ix_ts_dividend_code ON tushare_dividend(ts_code);
 CREATE INDEX IF NOT EXISTS ix_ts_dividend_ex_date ON tushare_dividend(ex_date);
 COMMENT ON TABLE tushare_dividend IS 'Tushare dividend 分红送股缓存';
+
+COMMENT ON COLUMN tushare_dividend.id IS '自增主键';
+COMMENT ON COLUMN tushare_dividend.ts_code IS '股票代码';
+COMMENT ON COLUMN tushare_dividend.end_date IS '分红年度';
+COMMENT ON COLUMN tushare_dividend.ann_date IS '预案公告日';
+COMMENT ON COLUMN tushare_dividend.div_proc IS '方案进度（预案/决案/实施）';
+COMMENT ON COLUMN tushare_dividend.stk_div IS '每股送转（股）';
+COMMENT ON COLUMN tushare_dividend.stk_bo_rate IS '每股送股';
+COMMENT ON COLUMN tushare_dividend.stk_co_rate IS '每股转增';
+COMMENT ON COLUMN tushare_dividend.cash_div IS '每股派息（税前，元）';
+COMMENT ON COLUMN tushare_dividend.cash_div_tax IS '每股派息（税后，元）';
+COMMENT ON COLUMN tushare_dividend.record_date IS '股权登记日';
+COMMENT ON COLUMN tushare_dividend.ex_date IS '除权除息日';
+COMMENT ON COLUMN tushare_dividend.pay_date IS '派息日';
+COMMENT ON COLUMN tushare_dividend.div_listdate IS '红股上市日';
+COMMENT ON COLUMN tushare_dividend.imp_ann_date IS '实施公告日';
+COMMENT ON COLUMN tushare_dividend.base_date IS '基准日';
+COMMENT ON COLUMN tushare_dividend.base_share IS '实施基准股本（万股）';
+COMMENT ON COLUMN tushare_dividend.created_at IS '记录创建时间';
+COMMENT ON COLUMN tushare_dividend.updated_at IS '记录最近更新时间';
 
 -- 3.7 财务指标
 -- API: fina_indicator
@@ -595,6 +872,39 @@ CREATE INDEX IF NOT EXISTS ix_ts_fina_indicator_code ON tushare_fina_indicator(t
 CREATE INDEX IF NOT EXISTS ix_ts_fina_indicator_end_date ON tushare_fina_indicator(end_date);
 COMMENT ON TABLE tushare_fina_indicator IS 'Tushare fina_indicator 财务指标缓存';
 
+COMMENT ON COLUMN tushare_fina_indicator.id IS '自增主键';
+COMMENT ON COLUMN tushare_fina_indicator.ts_code IS '股票代码';
+COMMENT ON COLUMN tushare_fina_indicator.ann_date IS '公告日期';
+COMMENT ON COLUMN tushare_fina_indicator.end_date IS '报告期';
+COMMENT ON COLUMN tushare_fina_indicator.eps IS '基本每股收益';
+COMMENT ON COLUMN tushare_fina_indicator.dt_eps IS '稀释每股收益';
+COMMENT ON COLUMN tushare_fina_indicator.total_revenue_ps IS '每股营业收入';
+COMMENT ON COLUMN tushare_fina_indicator.revenue_ps IS '每股营业收入（TTM）';
+COMMENT ON COLUMN tushare_fina_indicator.capital_rese_ps IS '每股资本公积';
+COMMENT ON COLUMN tushare_fina_indicator.surplus_rese_ps IS '每股盈余公积';
+COMMENT ON COLUMN tushare_fina_indicator.undist_profit_ps IS '每股未分配利润';
+COMMENT ON COLUMN tushare_fina_indicator.grossprofit_margin IS '销售毛利率（%）';
+COMMENT ON COLUMN tushare_fina_indicator.netprofit_margin IS '销售净利率（%）';
+COMMENT ON COLUMN tushare_fina_indicator.roe IS '净资产收益率（%）';
+COMMENT ON COLUMN tushare_fina_indicator.roe_dt IS '净资产收益率（摊薄，%）';
+COMMENT ON COLUMN tushare_fina_indicator.roa IS '总资产净利率（%）';
+COMMENT ON COLUMN tushare_fina_indicator.roa_yearly IS '年化总资产净利率（%）';
+COMMENT ON COLUMN tushare_fina_indicator.roic IS '投入资本回报率（%）';
+COMMENT ON COLUMN tushare_fina_indicator.or_yoy IS '营业收入同比增长率（%）';
+COMMENT ON COLUMN tushare_fina_indicator.op_yoy IS '营业利润同比增长率（%）';
+COMMENT ON COLUMN tushare_fina_indicator.profit_yoy IS '归属净利润同比增长率（%）';
+COMMENT ON COLUMN tushare_fina_indicator.equity_yoy IS '净资产同比增长率（%）';
+COMMENT ON COLUMN tushare_fina_indicator.assets_yoy IS '总资产同比增长率（%）';
+COMMENT ON COLUMN tushare_fina_indicator.debt_to_assets IS '资产负债率（%）';
+COMMENT ON COLUMN tushare_fina_indicator.current_ratio IS '流动比率';
+COMMENT ON COLUMN tushare_fina_indicator.quick_ratio IS '速动比率';
+COMMENT ON COLUMN tushare_fina_indicator.equity_ratio IS '产权比率';
+COMMENT ON COLUMN tushare_fina_indicator.inv_turn IS '存货周转率（次）';
+COMMENT ON COLUMN tushare_fina_indicator.ar_turn IS '应收账款周转率（次）';
+COMMENT ON COLUMN tushare_fina_indicator.assets_turn IS '总资产周转率（次）';
+COMMENT ON COLUMN tushare_fina_indicator.created_at IS '记录创建时间';
+COMMENT ON COLUMN tushare_fina_indicator.updated_at IS '记录最近更新时间';
+
 -- 3.8 财务审计意见
 -- API: fina_audit
 CREATE TABLE IF NOT EXISTS tushare_fina_audit (
@@ -615,6 +925,17 @@ CREATE TABLE IF NOT EXISTS tushare_fina_audit (
 CREATE INDEX IF NOT EXISTS ix_ts_fina_audit_code ON tushare_fina_audit(ts_code);
 CREATE INDEX IF NOT EXISTS ix_ts_fina_audit_end_date ON tushare_fina_audit(end_date);
 COMMENT ON TABLE tushare_fina_audit IS 'Tushare fina_audit 财务审计意见缓存';
+
+COMMENT ON COLUMN tushare_fina_audit.id IS '自增主键';
+COMMENT ON COLUMN tushare_fina_audit.ts_code IS '股票代码';
+COMMENT ON COLUMN tushare_fina_audit.ann_date IS '公告日期';
+COMMENT ON COLUMN tushare_fina_audit.end_date IS '报告期';
+COMMENT ON COLUMN tushare_fina_audit.audit_result IS '审计结果（标准无保留意见/保留意见/否定意见/无法表示意见）';
+COMMENT ON COLUMN tushare_fina_audit.audit_fees IS '审计费用（元）';
+COMMENT ON COLUMN tushare_fina_audit.audit_agency IS '审计机构';
+COMMENT ON COLUMN tushare_fina_audit.audit_sign IS '签字会计师';
+COMMENT ON COLUMN tushare_fina_audit.created_at IS '记录创建时间';
+COMMENT ON COLUMN tushare_fina_audit.updated_at IS '记录最近更新时间';
 
 -- 3.9 主营业务构成
 -- API: fina_mainbz
@@ -638,6 +959,19 @@ CREATE TABLE IF NOT EXISTS tushare_fina_mainbz (
 CREATE INDEX IF NOT EXISTS ix_ts_fina_mainbz_code ON tushare_fina_mainbz(ts_code);
 CREATE INDEX IF NOT EXISTS ix_ts_fina_mainbz_end_date ON tushare_fina_mainbz(end_date);
 COMMENT ON TABLE tushare_fina_mainbz IS 'Tushare fina_mainbz 主营业务构成缓存';
+
+COMMENT ON COLUMN tushare_fina_mainbz.id IS '自增主键';
+COMMENT ON COLUMN tushare_fina_mainbz.ts_code IS '股票代码';
+COMMENT ON COLUMN tushare_fina_mainbz.end_date IS '报告期';
+COMMENT ON COLUMN tushare_fina_mainbz.bz_item IS '主营业务项目';
+COMMENT ON COLUMN tushare_fina_mainbz.bz_code IS '项目代码';
+COMMENT ON COLUMN tushare_fina_mainbz.bz_sales IS '主营业务收入（元）';
+COMMENT ON COLUMN tushare_fina_mainbz.bz_profit IS '主营业务利润（元）';
+COMMENT ON COLUMN tushare_fina_mainbz.bz_cost IS '主营业务成本（元）';
+COMMENT ON COLUMN tushare_fina_mainbz.curr_type IS '货币代码';
+COMMENT ON COLUMN tushare_fina_mainbz.update_date IS '更新日期';
+COMMENT ON COLUMN tushare_fina_mainbz.created_at IS '记录创建时间';
+COMMENT ON COLUMN tushare_fina_mainbz.updated_at IS '记录最近更新时间';
 
 -- ============================================================
 -- 4. 辅助视图：合并日线 + 复权因子 → 前/后复权价格
@@ -725,6 +1059,19 @@ CREATE TABLE IF NOT EXISTS tushare_sync_log (
 CREATE INDEX IF NOT EXISTS ix_ts_sync_log_api ON tushare_sync_log(api_name, sync_type);
 CREATE INDEX IF NOT EXISTS ix_ts_sync_log_started ON tushare_sync_log(started_at);
 COMMENT ON TABLE tushare_sync_log IS 'Tushare 数据同步日志';
+
+COMMENT ON COLUMN tushare_sync_log.id IS '自增主键';
+COMMENT ON COLUMN tushare_sync_log.api_name IS 'API 名称（如 daily、income）';
+COMMENT ON COLUMN tushare_sync_log.sync_type IS '同步类型（full 全量 / incremental 增量）';
+COMMENT ON COLUMN tushare_sync_log.ts_code IS '股票代码（null 表示全市场）';
+COMMENT ON COLUMN tushare_sync_log.start_date IS '拉取起始日期';
+COMMENT ON COLUMN tushare_sync_log.end_date IS '拉取截止日期';
+COMMENT ON COLUMN tushare_sync_log.record_count IS '本次拉取记录数';
+COMMENT ON COLUMN tushare_sync_log.status IS '同步状态（success/failed/partial）';
+COMMENT ON COLUMN tushare_sync_log.error_msg IS '错误信息';
+COMMENT ON COLUMN tushare_sync_log.started_at IS '同步开始时间';
+COMMENT ON COLUMN tushare_sync_log.finished_at IS '同步结束时间';
+COMMENT ON COLUMN tushare_sync_log.created_at IS '记录创建时间';
 
 -- ============================================================
 -- 6. updated_at 自动更新触发器

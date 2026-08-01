@@ -15,14 +15,18 @@ import os
 import requests
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), ".env"))
 
 TOKEN = os.getenv("TUSHARE_TOKEN")
 URL = os.getenv("TUSHARE_HTTP_URL", "http://api.tushare.pro")
 if not URL.startswith("http"):
     URL = "http://api.tushare.pro"
 
-with open("result/test_db.txt", "w") as f:
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+RESULT_DIR = os.path.join(PROJECT_ROOT, "result")
+os.makedirs(RESULT_DIR, exist_ok=True)
+
+with open(os.path.join(RESULT_DIR, "test_db.txt"), "w") as f:
     # Test1: 按日全市场（不传ts_code，这是最优方案）
     req = {
         "api_name": "daily_basic",

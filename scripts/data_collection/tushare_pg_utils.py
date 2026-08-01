@@ -25,7 +25,7 @@ import psycopg2.extras
 import requests
 from dotenv import load_dotenv
 
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
 
 TUSHARE_TOKEN = os.getenv("TUSHARE_TOKEN", "").strip()

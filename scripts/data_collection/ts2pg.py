@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 
 import pandas as pd
 
-from scripts.tushare_pg_utils import (
+from tushare_pg_utils import (
     TushareClient,
     execute_sql_file,
     get_pg_connection,
@@ -23,7 +23,7 @@ from scripts.tushare_pg_utils import (
     TUSHARE_TOKEN,
 )
 
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 logging.basicConfig(
     level=logging.INFO,
