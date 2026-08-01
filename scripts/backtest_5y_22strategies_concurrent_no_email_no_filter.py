@@ -1,19 +1,21 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-22 策略 5 年回测 + 本周验证
-回测区间: 2021-01-01 ~ 2026-03-20
-验证区间: 2026-03-20 ~ 2026-03-27
+23 策略 5 年回测 + 本周验证
+回测区间: 2021-01-01 ~ 最近第6个交易日
+验证区间: 最近第5个交易日 ~ 最近第1个交易日
 
 优化点:
-1. 并行回测: ThreadPoolExecutor (19策略并行，向量化释放GIL)
+1. 并行回测: ThreadPoolExecutor (23策略并行，向量化释放GIL)
 2. 向量化验证: 移除 validate_week 中的 iterrows()
 3. 预计算共享指标: vol_std_20d 等
 4. Numba加速: calc_metrics
+5. 全量 float32 降精度节省内存
 
 修改点:
 - 移除邮件发送功能
 - 移除三步过滤功能
+- 移除 baostock 依赖，全部替换为 Tushare Pro API
 - 回测完成后自动执行主程序进行大盘复盘和个股决策
 """
 
@@ -26,43 +28,27 @@ import gc
 import subprocess
 from urllib.parse import quote_plus
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.mime.base import MIMEBase
-from email import encoders
 from datetime import datetime
 from dotenv import load_dotenv
 
-# 加载环境变量
 load_dotenv()
 
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-import baostock as bs
+import requests
+import json as _json
 from pathlib import Path
 
-# 添加项目根目录到路径
 BASE_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BASE_DIR))
 
-from pathlib import Path
-
-# ─── 配置 ─────────────────────────────────────────────────────────────────────
+# ─── 配置 ──────────────────────────────────────────────────────────────────────
 INITIAL_CAPITAL = 1000000.0
 TOP_N_VALIDATE = 5
 HOLDING_PERIODS = [1, 3, 5, 10]
 VALIDATE_DAYS = 5
-
-# ─── 策略阈值常量 ───────────────────────────────────────────────────────────
-LIMIT_UP_PCT = 9.5
-CLOSE_MA20_THRESHOLD = 0.97
-VOL_BREAKOUT_MULTIPLIER = 1.2
-BOLL_MID_THRESHOLD = 0.02
-RSI_OVERSOLD = 35
-RSI_OVERBOUGHT = 70
-MA_SUPPORT_RATIO = 0.98
 
 logging.basicConfig(
     level=logging.INFO,
@@ -72,7 +58,87 @@ logging.basicConfig(
 logger = logging.getLogger("backtest")
 
 
-# ─── 数据加载 ─────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# Tushare Pro HTTP 客户端（无需 tushare SDK）
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class _TushareClient:
+    def __init__(self, token: str, api_url: str = "http://api.tushare.pro") -> None:
+        self._token = token
+        self._api_url = api_url
+        self._call_count = 0
+        self._minute_start: float | None = None
+
+    def _rate_limit_wait(self) -> None:
+        now = time.time()
+        if self._minute_start is None:
+            self._minute_start = now
+            self._call_count = 0
+        elif now - self._minute_start >= 60:
+            self._minute_start = now
+            self._call_count = 0
+        if self._call_count >= 180:
+            wait_sec = max(0, 60 - (now - self._minute_start)) + 1
+            logger.info("Tushare 速率限制等待 %.0f 秒", wait_sec)
+            time.sleep(wait_sec)
+            self._minute_start = time.time()
+            self._call_count = 0
+        self._call_count += 1
+
+    def query(self, api_name: str, fields: str = "", **kwargs) -> pd.DataFrame:
+        self._rate_limit_wait()
+        payload = {
+            "api_name": api_name,
+            "token": self._token,
+            "params": kwargs,
+            "fields": fields,
+        }
+        try:
+            res = requests.post(self._api_url, json=payload, timeout=60)
+            if res.status_code != 200:
+                raise Exception(f"Tushare API HTTP {res.status_code}")
+            result = _json.loads(res.text)
+            if result.get("code") != 0:
+                raise Exception(result.get("msg") or f"Tushare API error code {result.get('code')}")
+            data = result.get("data") or {}
+            columns = data.get("fields") or []
+            items = data.get("items") or []
+            if not items:
+                return pd.DataFrame(columns=columns)
+            return pd.DataFrame(items, columns=columns)
+        except Exception:
+            time.sleep(1)
+            return pd.DataFrame()
+
+
+_tushare_client: Optional[_TushareClient] = None
+
+
+def _get_tushare_client() -> _TushareClient:
+    global _tushare_client
+    if _tushare_client is not None:
+        return _tushare_client
+    token = os.environ.get("TUSHARE_TOKEN", "").strip()
+    if not token:
+        raise RuntimeError("TUSHARE_TOKEN 未设置，请检查 .env 文件")
+    api_url = os.environ.get("TUSHARE_HTTP_URL", "http://api.tushare.pro").strip()
+    _tushare_client = _TushareClient(token, api_url)
+    return _tushare_client
+
+
+def _to_ts_code(code: str) -> str:
+    market, num = code.split(".")
+    return f"{num}.{market.upper()}"
+
+
+def _from_ts_code(ts_code: str) -> str:
+    num, suffix = ts_code.split(".")
+    return f"{suffix.lower()}.{num}"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 数据加载
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def get_postgres_engine():
     from sqlalchemy import create_engine
@@ -87,12 +153,23 @@ def get_postgres_engine():
     return create_engine(f"postgresql+psycopg2://{quoted_user}:{quoted_password}@{host}:{port}/{database}")
 
 
+def _convert_columns_to_float32(df: pd.DataFrame) -> pd.DataFrame:
+    float_columns = [
+        "open", "high", "low", "close",
+        "volume", "amount", "pct_chg", "turn", "pe_ttm", "pb_mrq",
+    ]
+    converted = df.copy()
+    for col in float_columns:
+        if col in converted.columns:
+            converted[col] = converted[col].astype("float32")
+    return converted
+
+
 def load_data(start: str, end: str) -> pd.DataFrame:
-    """使用 SQLAlchemy connectable 加载 PostgreSQL 数据"""
     t0 = time.time()
     engine = get_postgres_engine()
-
     logger.info(f"加载数据 {start} ~ {end} (PostgreSQL)...")
+
     try:
         with engine.connect() as conn:
             df = pd.read_sql(
@@ -118,187 +195,193 @@ def load_data(start: str, end: str) -> pd.DataFrame:
                 "pct_chg", "turn", "pe_ttm", "pb_mrq"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    logger.info(f"总计 {len(df):,} 行 × {df['code'].nunique()} 只股票，耗时 {time.time()-t0:.1f}s")
+    df = _convert_columns_to_float32(df)
+    logger.info(f"总计 {len(df):,} 行 x {df['code'].nunique()} 只股票，耗时 {time.time()-t0:.1f}s")
     return df
 
 
-# ─── 复权因子获取与前复权价格计算 ─────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# 复权因子（Tushare adj_factor API）
+# ═══════════════════════════════════════════════════════════════════════════════
 
-def get_forward_adjust_factors(codes: List[str], start: str, end: str) -> pd.DataFrame:
-    """
-    通过 baostock query_adjust_factor 获取前复权因子
-    """
-    login_result = bs.login()
-    if login_result.error_code != '0':
-        raise RuntimeError(f"BaoStock 登录失败: {login_result.error_msg}")
-
+def fetch_adjust_factors_from_tushare(codes: List[str], start: str, end: str) -> pd.DataFrame:
+    client = _get_tushare_client()
+    total_codes = len(codes)
+    batch_size = 100
     all_factors = []
-    failed_codes = []
-    try:
-        for code in codes:
+    processed = 0
+    failed_batches = 0
+
+    years = list(range(int(start[:4]), int(end[:4]) + 1))
+
+    logger.info(f"开始获取复权因子，共 {total_codes} 只股票，{len(years)} 个年份，每批 {batch_size} 只")
+
+    for code_batch_start in range(0, total_codes, batch_size):
+        code_batch = codes[code_batch_start:code_batch_start + batch_size]
+        batch_num = code_batch_start // batch_size + 1
+        total_batches = (total_codes + batch_size - 1) // batch_size
+
+        ts_codes = [_to_ts_code(c) for c in code_batch]
+        ts_code_str = ",".join(ts_codes)
+
+        for year in years:
+            year_start = f"{year}-01-01"
+            year_end = f"{year}-12-31"
             retry_count = 0
             max_retries = 3
             success = False
 
             while retry_count < max_retries and not success:
                 try:
-                    rs_factor = bs.query_adjust_factor(code=code, start_date=start, end_date=end)
-
-                    # 检查错误码
-                    if rs_factor.error_code != '0':
-                        error_msg = str(rs_factor.error_msg)
-                        logger.warning(f"获取 {code} 复权因子返回错误: {error_msg}")
-
-                        # 检测登录过期，尝试重新登录
-                        if "用户未登录" in error_msg and retry_count < max_retries - 1:
-                            logger.warning("检测到Baostock登录过期，尝试重新登录...")
-                            bs.logout()
-                            time.sleep(1)
-                            login_result = bs.login()
-                            if login_result.error_code == '0':
-                                logger.info("重新登录成功，继续重试...")
-                                retry_count += 1
-                                continue
-                            else:
-                                logger.error(f"重新登录失败: {login_result.error_msg}")
-
-                        retry_count += 1
-                        time.sleep(0.5)
-                        continue
-
-                    # 成功获取数据
-                    while rs_factor.next():
-                        row = rs_factor.get_row_data()
-                        if len(row) >= 3:
-                            all_factors.append({
-                                "code": row[0],
-                                "dividOperateDate": row[1],
-                                "foreAdjustFactor": float(row[2]) if row[2] else 1.0,
-                            })
+                    df_factor = client.query(
+                        "adj_factor",
+                        ts_code=ts_code_str,
+                        start_date=year_start,
+                        end_date=year_end,
+                    )
+                    if not df_factor.empty:
+                        df_factor["code"] = df_factor["ts_code"].apply(_from_ts_code)
+                        df_factor.rename(
+                            columns={
+                                "trade_date": "dividOperateDate",
+                                "adj_factor": "foreAdjustFactor",
+                            },
+                            inplace=True,
+                        )
+                        df_factor["foreAdjustFactor"] = pd.to_numeric(
+                            df_factor["foreAdjustFactor"], errors="coerce"
+                        ).fillna(1.0)
+                        all_factors.append(df_factor[["code", "dividOperateDate", "foreAdjustFactor"]])
                     success = True
-
                 except Exception as e:
-                    logger.warning(f"获取 {code} 前复权因子失败: {e}")
                     retry_count += 1
-                    time.sleep(0.5)
+                    if retry_count < max_retries:
+                        logger.warning(
+                            f"批次 {batch_num}/{total_batches} 年份 {year} 重试 {retry_count}/{max_retries}: {e}"
+                        )
+                        time.sleep(1)
+                    else:
+                        failed_batches += 1
+                        logger.error(
+                            f"批次 {batch_num}/{total_batches} 年份 {year} 获取失败: {e}"
+                        )
 
-            if not success:
-                failed_codes.append(code)
-                logger.error(f"获取 {code} 复权因子失败，已达最大重试次数")
+            processed += len(code_batch)
+            if processed % 500 == 0:
+                logger.info(f"已处理 {processed}/{total_codes} 只股票")
 
-    finally:
-        bs.logout()
+        gc.collect()
 
-    if failed_codes:
-        logger.warning(f"共有 {len(failed_codes)} 只股票获取复权因子失败")
+    if failed_batches:
+        logger.warning(f"共有 {failed_batches} 个批次获取复权因子失败")
+
+    logger.info(f"复权因子获取完成，共 {sum(len(f) for f in all_factors):,} 条记录")
 
     if not all_factors:
         return pd.DataFrame(columns=["code", "dividOperateDate", "foreAdjustFactor"])
 
-    df_factor = pd.DataFrame(all_factors)
-    df_factor["dividOperateDate"] = pd.to_datetime(df_factor["dividOperateDate"])
-    return df_factor
+    df_result = pd.concat(all_factors, ignore_index=True)
+    df_result["dividOperateDate"] = pd.to_datetime(df_result["dividOperateDate"])
+    df_result.sort_values(["code", "dividOperateDate"], inplace=True)
+    return df_result
 
 
 def apply_forward_adjustment(df: pd.DataFrame, df_factor: pd.DataFrame) -> pd.DataFrame:
-    """
-    基于复权因子将不复权价格转换为前复权价格
-    """
     df = df.sort_values(["code", "date"]).reset_index(drop=True)
-    adjusted_rows = []
+    df["date"] = pd.to_datetime(df["date"]).astype("datetime64[ns]")
 
-    for code, stock_df in df.groupby("code", sort=False):
-        stock_df = stock_df.sort_values("date").copy()
-        factor_subset = df_factor[df_factor["code"] == code][["dividOperateDate", "foreAdjustFactor"]].sort_values("dividOperateDate")
+    if not df_factor.empty:
+        factor_subset = df_factor[["code", "dividOperateDate", "foreAdjustFactor"]].copy()
+        factor_subset["dividOperateDate"] = pd.to_datetime(
+            factor_subset["dividOperateDate"]
+        ).astype("datetime64[ns]")
+        factor_subset.sort_values("dividOperateDate", inplace=True)
 
-        if factor_subset.empty:
-            stock_df["adjust_factor"] = 1.0
-        else:
-            stock_df = pd.merge_asof(
-                stock_df,
-                factor_subset,
-                left_on="date",
-                right_on="dividOperateDate",
-                direction="backward",
-            )
-            stock_df["adjust_factor"] = stock_df["foreAdjustFactor"].fillna(1.0)
-            stock_df.drop(columns=["dividOperateDate", "foreAdjustFactor"], inplace=True)
+        df = pd.merge_asof(
+            df.sort_values("date"),
+            factor_subset,
+            left_on="date",
+            right_on="dividOperateDate",
+            by="code",
+            direction="backward",
+        )
+        df["foreAdjustFactor"] = df["foreAdjustFactor"].fillna(1.0)
+        df.drop(columns=["dividOperateDate"], inplace=True, errors="ignore")
 
         for col in ["open", "high", "low", "close"]:
-            stock_df[col] = stock_df[col] * stock_df["adjust_factor"]
+            df[col] = df[col] * df["foreAdjustFactor"]
+        df.drop(columns=["foreAdjustFactor"], inplace=True)
 
-        stock_df["pre_close"] = stock_df["close"].shift(1)
-        stock_df["pct_chg"] = (stock_df["close"] / stock_df["pre_close"] - 1) * 100
-        stock_df.drop(columns=["adjust_factor"], inplace=True)
-        adjusted_rows.append(stock_df)
+    g = df.groupby("code", sort=False)
+    df["pre_close"] = g["close"].shift(1)
+    df["pct_chg"] = (df["close"] / df["pre_close"] - 1) * 100
 
-    return pd.concat(adjusted_rows, ignore_index=True)
+    return df
 
 
-# ─── 技术指标（向量化 + 预计算共享指标）────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# 技术指标（向量化 + float32）
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     t0 = time.time()
     df = df.sort_values(["code", "date"]).reset_index(drop=True)
-
     g = df.groupby("code", group_keys=False)
 
-    # ─── 移动平均线 ─────────────────────────────────────────────────────────────
     for w in [5, 10, 20, 60, 90, 120]:
         df[f"ma{w}"] = g["close"].transform(lambda x: x.rolling(w, min_periods=1).mean())
 
-    # ─── 成交量移动平均 ─────────────────────────────────────────────────────────
     for w in [5, 10, 20]:
         df[f"vol_ma{w}"] = g["volume"].transform(lambda x: x.rolling(w, min_periods=1).mean())
 
-    # ─── 共享指标（预计算）────────────────────────────────────────────────────────
     df["vol_std_20d"] = g["volume"].transform(lambda x: x.rolling(20, min_periods=1).std())
     df["vol_threshold"] = df["vol_ma20"] + 2 * df["vol_std_20d"]
-
     df["high_20d_max"] = g["high"].transform(lambda x: x.shift(1).rolling(20, min_periods=1).max())
     df["vol_60d_min"] = g["volume"].transform(lambda x: x.rolling(60, min_periods=20).min())
     df["vol_10d_mean"] = g["volume"].transform(lambda x: x.rolling(10, min_periods=1).mean())
     df["close_4d_ago"] = g["close"].shift(4)
 
-    # ─── RSI ───────────────────────────────────────────────────────────────────
     for w in [6, 12, 24]:
         delta = g["close"].diff()
         gain = delta.where(delta > 0, 0).transform(lambda x: x.rolling(w, min_periods=1).mean())
         loss = (-delta.where(delta < 0, 0)).transform(lambda x: x.rolling(w, min_periods=1).mean())
         df[f"rsi{w}"] = 100 - (100 / (1 + gain / loss.replace(0, 1e-10)))
 
-    # ─── MACD (12, 26, 9) ─────────────────────────────────────────────────────────
     ema12 = g["close"].transform(lambda x: x.ewm(span=12, adjust=False).mean())
     ema26 = g["close"].transform(lambda x: x.ewm(span=26, adjust=False).mean())
     df["macd_dif"] = ema12 - ema26
     df["macd_dea"] = g["macd_dif"].transform(lambda x: x.ewm(span=9, adjust=False).mean())
     df["macd_hist"] = 2 * (df["macd_dif"] - df["macd_dea"])
 
-    # ─── MACD (14, 53, 5) ─────────────────────────────────────────────────────────
     ema14 = g["close"].transform(lambda x: x.ewm(span=14, adjust=False).mean())
     ema53 = g["close"].transform(lambda x: x.ewm(span=53, adjust=False).mean())
     df["macd_dif2"] = ema14 - ema53
     df["macd_dea2"] = g["macd_dif2"].transform(lambda x: x.ewm(span=5, adjust=False).mean())
     df["macd_hist2"] = 2 * (df["macd_dif2"] - df["macd_dea2"])
 
-    # ─── Bollinger Bands ──────────────────────────────────────────────────────────
     df["boll_mid"] = g["close"].transform(lambda x: x.rolling(20, min_periods=1).mean())
     std20 = g["close"].transform(lambda x: x.rolling(20, min_periods=1).std())
     df["boll_upper"] = df["boll_mid"] + 2 * std20
     df["boll_lower"] = df["boll_mid"] - 2 * std20
 
-    # ─── 未来收益率 ─────────────────────────────────────────────────────────────
     for p in HOLDING_PERIODS:
         df[f"ret_{p}d"] = g["close"].transform(lambda x: x.pct_change(p, fill_method=None).shift(-p))
 
     df["ret_5d_open_to_close"] = (g["close"].shift(-4) / df["open"] - 1)
+
+    indicator_cols = [c for c in df.columns if c not in ("code", "name", "date")]
+    for c in indicator_cols:
+        if df[c].dtype == "float64":
+            df[c] = df[c].astype("float32")
 
     logger.info(f"指标计算完成，耗时 {time.time()-t0:.1f}s")
     gc.collect()
     return df
 
 
-# ─── 策略信号函数 ─────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# 策略信号函数（23 个策略）
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def _ma_cross(df):
     ma5 = df["ma5"]
@@ -330,7 +413,6 @@ def sig_volume_surge_std(df):
 
 def sig_wonderful_9_turn(df):
     close = df["close"]
-    close_4d = df["close_4d_ago"]
     streak = close.groupby(df["code"]).transform(
         lambda x: (x < x.shift(4)).rolling(9, min_periods=9).min().fillna(0).astype(bool)
     )
@@ -392,7 +474,9 @@ def sig_monthly_macd_20ma(df):
 def sig_low_position_limit_up(df):
     pct = df["pct_chg"]
     h20 = df["high_20d_max"]
-    no_lim = ~(df.groupby("code")["pct_chg"].transform(lambda x: (x >= 9.5).rolling(20, min_periods=1).max().shift(1).fillna(0).astype(bool)))
+    no_lim = ~(df.groupby("code")["pct_chg"].transform(
+        lambda x: (x >= 9.5).rolling(20, min_periods=1).max().shift(1).fillna(0).astype(bool)
+    ))
     return (pct >= 9.5) & (df["close"] < h20 * 0.9) & (df["turn"] >= 5) & (df["close"] < 50) & no_lim
 
 
@@ -542,8 +626,6 @@ def sig_chan_theory(df):
     return new_low & macd_not_new_low & vol_ok & rsi_oversold & close_above_open
 
 
-# ─── 策略注册表 ───────────────────────────────────────────────────────────────
-
 STRATEGIES = {
     "ma_crossover": sig_ma_crossover,
     "volume_surge_std": sig_volume_surge_std,
@@ -571,7 +653,9 @@ STRATEGIES = {
 }
 
 
-# ─── 绩效计算（Numba加速）────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# 绩效计算（Numba 加速）
+# ═══════════════════════════════════════════════════════════════════════════════
 
 try:
     import numba
@@ -692,10 +776,7 @@ def calc_metrics(returns: np.ndarray) -> Dict:
 
     avg_holding = sum(HOLDING_PERIODS) / len(HOLDING_PERIODS)
 
-    if _HAS_NUMBA:
-        wr, aw, al, pl, tr, ann, mxd, sr, n_valid = _calc_metrics_core(r, n, avg_holding)
-    else:
-        wr, aw, al, pl, tr, ann, mxd, sr, n_valid = _calc_metrics_core(r, n, avg_holding)
+    wr, aw, al, pl, tr, ann, mxd, sr, n_valid = _calc_metrics_core(r, n, avg_holding)
 
     return {
         "total_trades": int(n_valid),
@@ -710,7 +791,9 @@ def calc_metrics(returns: np.ndarray) -> Dict:
     }
 
 
-# ─── 并行回测函数 ──────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# 并行回测
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def _backtest_single(name: str, df: pd.DataFrame) -> Dict:
     t0 = time.time()
@@ -766,7 +849,9 @@ def run_backtests(df_bt: pd.DataFrame) -> List[Dict]:
     return valid
 
 
-# ─── 最近5日验证 ──────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# 最近5日验证
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def validate_week(df_week, top_results, top_n=5):
     top_names = [r["strategy"] for r in top_results[:top_n]]
@@ -824,7 +909,9 @@ def validate_week(df_week, top_results, top_n=5):
     return val
 
 
-# ─── 输出函数 ─────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# 输出
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def print_results(results, val_results, backtest_start, backtest_end):
     print("\n" + "=" * 110)
@@ -870,7 +957,9 @@ def print_results(results, val_results, backtest_start, backtest_end):
         print("=" * 75)
 
 
-# ─── 获取胜率前10股票 ─────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# 胜率前10股票
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def get_top_stocks_by_win_rate(df_week, results, top_n=10):
     stock_info: Dict[str, dict] = {}
@@ -968,16 +1057,11 @@ def get_top_stocks_by_win_rate(df_week, results, top_n=10):
     return stock_list[:top_n]
 
 
-def get_unique_strategies_from_results(results, top_n=10):
-    return [r["strategy"] for r in results[:top_n] if r.get("total_trades", 0) > 0]
-
-
-# ─── 执行主程序进行大盘复盘和个股决策 ─────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# 执行主程序进行大盘复盘和个股决策
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def run_main_program_for_stocks(stocks: List[Dict]):
-    """
-    将股票代码转换为不带前缀的格式，然后执行主程序
-    """
     if not stocks:
         logger.warning("没有股票需要分析")
         return False
@@ -1001,7 +1085,7 @@ def run_main_program_for_stocks(stocks: List[Dict]):
     cmd = [
         sys.executable,
         str(main_script),
-        "--stocks", stock_code_str,"--force-run"
+        "--stocks", stock_code_str, "--force-run"
     ]
 
     logger.info(f"执行命令: {' '.join(cmd)}")
@@ -1018,38 +1102,36 @@ def run_main_program_for_stocks(stocks: List[Dict]):
         return False
 
 
-# ─── 交易日判断 ─────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# 交易日判断（Tushare trade_cal API）
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def is_trading_day(date):
-    lg = bs.login()
-    if lg.error_code != '0':
-        logger.warning("baostock未正确初始化，无法判断交易日")
+    try:
+        client = _get_tushare_client()
+    except RuntimeError as e:
+        logger.warning(f"Tushare 客户端初始化失败: {e}")
         return True
 
     if isinstance(date, datetime):
-        date_str = date.strftime('%Y-%m-%d')
+        date_str = date.strftime("%Y-%m-%d")
     else:
         date_str = str(date)
 
-    rs = bs.query_trade_dates(start_date=date_str, end_date=date_str)
-
-    if rs.error_code != '0':
-        logger.warning(f"查询交易日失败: {rs.error_msg}")
+    try:
+        df = client.query("trade_cal", exchange="SSE", start_date=date_str, end_date=date_str)
+        if df.empty:
+            logger.warning(f"未获取到交易日数据: {date_str}")
+            return True
+        return int(df.iloc[0]["is_open"]) == 1
+    except Exception as e:
+        logger.warning(f"查询交易日失败: {e}")
         return True
 
-    data_list = []
-    while (rs.error_code == '0') & rs.next():
-        data_list.append(rs.get_row_data())
 
-    if not data_list:
-        logger.warning(f"未获取到交易日数据: {date_str}")
-        return True
-
-    is_trading = data_list[0][1] == '1'
-    return is_trading
-
-
-# ─── 主函数 ─────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# 主函数
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def main():
     parser = argparse.ArgumentParser()
@@ -1060,36 +1142,31 @@ def main():
         logger.error("非交易日，程序退出（使用 --force 可强制运行）")
         return
 
-    # 计算日期
     five_years_ago = (datetime.now() - pd.DateOffset(years=5)).strftime("%Y-%m-%d")
     today_str = datetime.now().strftime("%Y-%m-%d")
 
     logger.info("=" * 60)
-    logger.info("22 策略 5 年回测 + 最近5日验证")
+    logger.info("23 策略 5 年回测 + 最近5日验证")
     logger.info(f"Numba加速: {'启用' if _HAS_NUMBA else '未安装（pip install numba）'}")
     logger.info(f"CPU核心: {os.cpu_count()}")
     logger.info("=" * 60)
 
-    # 加载数据
     df_all = load_data(five_years_ago, today_str)
 
-    # 获取复权因子并计算前复权价格
     logger.info("获取复权因子并计算前复权价格...")
     codes = df_all["code"].unique().tolist()
     logger.info(f"共 {len(codes)} 只股票需要获取复权因子...")
-    df_factors = get_forward_adjust_factors(codes, five_years_ago, today_str)
+    df_factors = fetch_adjust_factors_from_tushare(codes, five_years_ago, today_str)
     logger.info(f"获取到 {len(df_factors)} 条复权因子记录")
     df_all = apply_forward_adjustment(df_all, df_factors)
 
     df_all = compute_indicators(df_all)
 
-    # 获取所有交易日并排序
     all_dates = sorted(df_all["date"].unique())
     if len(all_dates) < 6:
         logger.error(f"数据不足，最近交易日数量: {len(all_dates)}，需要至少6个")
         return
 
-    # 动态计算日期
     backtest_end_date = all_dates[-6]
     backtest_start_date = all_dates[0]
     validate_start_date = all_dates[-5]
@@ -1107,7 +1184,6 @@ def main():
     val_results = validate_week(df_week, results, TOP_N_VALIDATE)
     print_results(results, val_results, backtest_start_date, backtest_end_date)
 
-    # 获取胜率前10股票
     top_stocks = get_top_stocks_by_win_rate(df_week, results, top_n=10)
     logger.info(f"5日验证胜率前10股票: {len(top_stocks)} 只")
 
@@ -1115,7 +1191,6 @@ def main():
         ret_str = f"{s['sell_return'] * 100:.2f}%" if s['sell_return'] is not None and pd.notna(s['sell_return']) else "N/A"
         logger.info(f"  [{idx}] {s['code']} {s['name']} - 胜率{s['win_rate']:.1f}% - 策略数{s['strategy_count']} - 收益{ret_str}")
 
-    # 执行主程序进行大盘复盘和个股决策
     if top_stocks:
         logger.info("\n" + "=" * 60)
         logger.info("开始执行主程序进行大盘复盘和个股决策")
