@@ -214,29 +214,28 @@ def insert_dataframe(
     # 列名统一小写
     df.columns = [col.lower() for col in df.columns]
 
-    # 获取表中实际存在的列
+    # 获取表中实际存在的列及其类型（以 PG 真实列类型为准，不靠列名后缀猜测）
     cur = conn.cursor()
     try:
         cur.execute(
-            "SELECT column_name FROM information_schema.columns "
+            "SELECT column_name, data_type FROM information_schema.columns "
             "WHERE table_name=%s AND table_schema='public'",
             (table_name,),
         )
-        valid_columns = {row[0] for row in cur.fetchall()}
+        col_types = dict(cur.fetchall())
     finally:
         cur.close()
 
-    cols = [col for col in df.columns if col in valid_columns]
+    cols = [col for col in df.columns if col in col_types]
     if not cols:
         return 0
 
     df = df[cols].copy()
 
-    # 日期列转换
-    date_column_suffixes = ("_date",)
-    date_column_names = ("cal_date", "update_date", "setup_date")
+    # 日期列转换：凡 PG 中 data_type='date' 的列统一转换
+    # （兼容 div_listdate 等不以 _date 结尾的列名，修复 dividend 批量插入丢数据 bug）
     for col in cols:
-        if col.endswith(date_column_suffixes) or col in date_column_names:
+        if col_types[col] == "date":
             df[col] = df[col].apply(_parse_date)
 
     # NaN → None
