@@ -343,7 +343,7 @@ def load_data(start: str, end: str) -> pd.DataFrame:
             (d.vol * 100)::DOUBLE PRECISION AS volume,
             (d.amount * 1000)::DOUBLE PRECISION AS amount,
             d.pct_chg,
-            d.turnover_ratio AS turn,
+            b.turnover_rate AS turn,
             b.pe_ttm,
             b.pb AS pb_mrq
         FROM tushare_daily d
