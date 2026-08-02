@@ -123,7 +123,7 @@ def phase2_basic(client: TushareClient, conn):
             "stock_company",
             fields="ts_code,com_name,chairman,manager,secretary,reg_capital,"
                    "setup_date,province,city,introduction,website,email,office,"
-                   "employees,main_business,business_scope,phone,fax",
+                   "employees,main_business,business_scope",
         )
         n = insert_dataframe(conn, "tushare_stock_company", df, "(ts_code)")
         logger.info("  stock_company: %d", n)
@@ -241,7 +241,7 @@ def phase4_financial(client: TushareClient, conn):
             "ts_code,ann_date,f_ann_date,end_date,report_type,comp_type,end_type,"
             "total_revenue,revenue,int_income,prem_earned,comm_income,total_cogs,"
             "oper_cost,sell_exp,admin_exp,fin_exp,assets_impair_loss,"
-            "fair_value_inter_gain,invest_income,oper_profit,non_oper_income,"
+            "invest_income,non_oper_income,"
             "non_oper_exp,total_profit,income_tax,n_income,n_income_attr_p,"
             "minority_gain,basic_eps,diluted_eps",
             "(ts_code, end_date, report_type, comp_type)",
@@ -250,19 +250,17 @@ def phase4_financial(client: TushareClient, conn):
             "balancesheet", "tushare_balancesheet",
             "ts_code,ann_date,f_ann_date,end_date,report_type,comp_type,end_type,"
             "total_assets,total_cur_assets,money_cap,trad_asset,notes_receiv,"
-            "accounts_receiv,prepayment,inventories,total_non_cur_assets,"
-            "fix_assets,constru_in_process,intangible_assets,goodwill,"
-            "total_liab,total_cur_liab,short_borrow,notes_payable,"
-            "accounts_payable,total_non_cur_liab,long_borrow,"
-            "total_hldr_eqy_exc_min,minority_int,total_hldr_eqy_inc_min",
+            "accounts_receiv,prepayment,inventories,"
+            "fix_assets,goodwill,"
+            "total_liab,total_cur_liab,notes_payable,"
+            "minority_int",
             "(ts_code, end_date, report_type, comp_type)",
         ),
         (
             "cashflow", "tushare_cashflow",
             "ts_code,ann_date,f_ann_date,end_date,report_type,comp_type,end_type,"
-            "c_fr_sale_sg,net_cf_oper_act,net_cf_inv_act,net_cf_fin_act,free_cf,"
-            "st_cash_out_act,st_cash_in_act,st_cash_out_inv,st_cash_in_inv,"
-            "st_cash_out_fin,st_cash_in_fin,n_cashflow_act,c_change,c_bal_end",
+            "c_fr_sale_sg,"
+            "st_cash_out_act,n_cashflow_act",
             "(ts_code, end_date, report_type, comp_type)",
         ),
         (
@@ -270,8 +268,8 @@ def phase4_financial(client: TushareClient, conn):
             "ts_code,ann_date,end_date,eps,dt_eps,total_revenue_ps,revenue_ps,"
             "capital_rese_ps,surplus_rese_ps,undist_profit_ps,grossprofit_margin,"
             "netprofit_margin,roe,roe_dt,roa,roa_yearly,roic,or_yoy,op_yoy,"
-            "profit_yoy,equity_yoy,assets_yoy,debt_to_assets,current_ratio,"
-            "quick_ratio,equity_ratio,inv_turn,ar_turn,assets_turn",
+            "equity_yoy,assets_yoy,debt_to_assets,current_ratio,"
+            "quick_ratio,inv_turn,ar_turn,assets_turn",
             "(ts_code, end_date)",
         ),
         (
@@ -283,7 +281,7 @@ def phase4_financial(client: TushareClient, conn):
         (
             "express", "tushare_express",
             "ts_code,ann_date,end_date,revenue,operate_profit,total_profit,"
-            "n_income,total_assets,total_hldr_eqy,diluted_eps,weighted_roe",
+            "n_income,total_assets,diluted_eps",
             "(ts_code, end_date)",
         ),
         (

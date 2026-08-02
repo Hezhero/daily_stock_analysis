@@ -130,8 +130,6 @@ CREATE TABLE IF NOT EXISTS tushare_stock_company (
     employees       INTEGER,                 -- 员工人数
     main_business   TEXT,                    -- 主要业务及产品
     business_scope  TEXT,                    -- 经营范围
-    phone           VARCHAR(50),             -- 联系电话
-    fax             VARCHAR(50),             -- 传真
     created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
 
@@ -156,8 +154,6 @@ COMMENT ON COLUMN tushare_stock_company.office IS '办公地址';
 COMMENT ON COLUMN tushare_stock_company.employees IS '员工人数';
 COMMENT ON COLUMN tushare_stock_company.main_business IS '主要业务及产品';
 COMMENT ON COLUMN tushare_stock_company.business_scope IS '经营范围';
-COMMENT ON COLUMN tushare_stock_company.phone IS '联系电话';
-COMMENT ON COLUMN tushare_stock_company.fax IS '传真';
 COMMENT ON COLUMN tushare_stock_company.created_at IS '记录创建时间';
 COMMENT ON COLUMN tushare_stock_company.updated_at IS '记录最近更新时间';
 
@@ -276,9 +272,6 @@ CREATE TABLE IF NOT EXISTS tushare_daily (
     pct_chg         NUMERIC(10,4),           -- 涨跌幅（%）
     vol             NUMERIC(20,4),           -- 成交量（手）
     amount          NUMERIC(22,4),           -- 成交额（千元）
-    turnover_ratio  NUMERIC(10,4),           -- 换手率（%）
-    volume_ratio    NUMERIC(10,4),           -- 量比
-    amplitude       NUMERIC(10,4),           -- 振幅（%）
     created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
 
@@ -300,9 +293,6 @@ COMMENT ON COLUMN tushare_daily.change_val IS '涨跌额';
 COMMENT ON COLUMN tushare_daily.pct_chg IS '涨跌幅（%）';
 COMMENT ON COLUMN tushare_daily.vol IS '成交量（手）';
 COMMENT ON COLUMN tushare_daily.amount IS '成交额（千元）';
-COMMENT ON COLUMN tushare_daily.turnover_ratio IS '换手率（%）';
-COMMENT ON COLUMN tushare_daily.volume_ratio IS '量比';
-COMMENT ON COLUMN tushare_daily.amplitude IS '振幅（%）';
 COMMENT ON COLUMN tushare_daily.created_at IS '记录创建时间';
 COMMENT ON COLUMN tushare_daily.updated_at IS '记录最近更新时间';
 
@@ -486,9 +476,7 @@ CREATE TABLE IF NOT EXISTS tushare_income (
     admin_exp               NUMERIC(22,4),   -- 管理费用
     fin_exp                 NUMERIC(22,4),   -- 财务费用
     assets_impair_loss      NUMERIC(22,4),   -- 资产减值损失
-    fair_value_inter_gain   NUMERIC(22,4),   -- 公允价值变动收益
     invest_income           NUMERIC(22,4),   -- 投资收益
-    oper_profit             NUMERIC(22,4),   -- 营业利润
     non_oper_income         NUMERIC(22,4),   -- 营业外收入
     non_oper_exp            NUMERIC(22,4),   -- 营业外支出
     total_profit            NUMERIC(22,4),   -- 利润总额
@@ -530,9 +518,7 @@ COMMENT ON COLUMN tushare_income.sell_exp IS '销售费用';
 COMMENT ON COLUMN tushare_income.admin_exp IS '管理费用';
 COMMENT ON COLUMN tushare_income.fin_exp IS '财务费用';
 COMMENT ON COLUMN tushare_income.assets_impair_loss IS '资产减值损失';
-COMMENT ON COLUMN tushare_income.fair_value_inter_gain IS '公允价值变动收益';
 COMMENT ON COLUMN tushare_income.invest_income IS '投资收益';
-COMMENT ON COLUMN tushare_income.oper_profit IS '营业利润';
 COMMENT ON COLUMN tushare_income.non_oper_income IS '营业外收入';
 COMMENT ON COLUMN tushare_income.non_oper_exp IS '营业外支出';
 COMMENT ON COLUMN tushare_income.total_profit IS '利润总额';
@@ -566,21 +552,12 @@ CREATE TABLE IF NOT EXISTS tushare_balancesheet (
     accounts_receiv         NUMERIC(22,4),   -- 应收账款
     prepayment              NUMERIC(22,4),   -- 预付款项
     inventories             NUMERIC(22,4),   -- 存货
-    total_non_cur_assets    NUMERIC(22,4),   -- 非流动资产合计
     fix_assets              NUMERIC(22,4),   -- 固定资产
-    constru_in_process      NUMERIC(22,4),   -- 在建工程
-    intangible_assets       NUMERIC(22,4),   -- 无形资产
     goodwill                NUMERIC(22,4),   -- 商誉
     total_liab              NUMERIC(22,4),   -- 负债合计
     total_cur_liab          NUMERIC(22,4),   -- 流动负债合计
-    short_borrow            NUMERIC(22,4),   -- 短期借款
     notes_payable           NUMERIC(22,4),   -- 应付票据
-    accounts_payable        NUMERIC(22,4),   -- 应付账款
-    total_non_cur_liab      NUMERIC(22,4),   -- 非流动负债合计
-    long_borrow             NUMERIC(22,4),   -- 长期借款
-    total_hldr_eqy_exc_min  NUMERIC(22,4),   -- 股东权益合计（不含少数股东权益）
     minority_int            NUMERIC(22,4),   -- 少数股东权益
-    total_hldr_eqy_inc_min  NUMERIC(22,4),   -- 股东权益合计（含少数股东权益）
     extra_fields            JSONB,
     created_at              TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     updated_at              TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
@@ -608,21 +585,12 @@ COMMENT ON COLUMN tushare_balancesheet.notes_receiv IS '应收票据';
 COMMENT ON COLUMN tushare_balancesheet.accounts_receiv IS '应收账款';
 COMMENT ON COLUMN tushare_balancesheet.prepayment IS '预付款项';
 COMMENT ON COLUMN tushare_balancesheet.inventories IS '存货';
-COMMENT ON COLUMN tushare_balancesheet.total_non_cur_assets IS '非流动资产合计';
 COMMENT ON COLUMN tushare_balancesheet.fix_assets IS '固定资产';
-COMMENT ON COLUMN tushare_balancesheet.constru_in_process IS '在建工程';
-COMMENT ON COLUMN tushare_balancesheet.intangible_assets IS '无形资产';
 COMMENT ON COLUMN tushare_balancesheet.goodwill IS '商誉';
 COMMENT ON COLUMN tushare_balancesheet.total_liab IS '负债合计';
 COMMENT ON COLUMN tushare_balancesheet.total_cur_liab IS '流动负债合计';
-COMMENT ON COLUMN tushare_balancesheet.short_borrow IS '短期借款';
 COMMENT ON COLUMN tushare_balancesheet.notes_payable IS '应付票据';
-COMMENT ON COLUMN tushare_balancesheet.accounts_payable IS '应付账款';
-COMMENT ON COLUMN tushare_balancesheet.total_non_cur_liab IS '非流动负债合计';
-COMMENT ON COLUMN tushare_balancesheet.long_borrow IS '长期借款';
-COMMENT ON COLUMN tushare_balancesheet.total_hldr_eqy_exc_min IS '股东权益合计（不含少数股东权益）';
 COMMENT ON COLUMN tushare_balancesheet.minority_int IS '少数股东权益';
-COMMENT ON COLUMN tushare_balancesheet.total_hldr_eqy_inc_min IS '股东权益合计（含少数股东权益）';
 COMMENT ON COLUMN tushare_balancesheet.extra_fields IS 'Tushare 返回的扩展字段（JSONB）';
 COMMENT ON COLUMN tushare_balancesheet.created_at IS '记录创建时间';
 COMMENT ON COLUMN tushare_balancesheet.updated_at IS '记录最近更新时间';
@@ -640,22 +608,8 @@ CREATE TABLE IF NOT EXISTS tushare_cashflow (
     end_type        VARCHAR(2),
     -- 核心现金流量表字段
     c_fr_sale_sg            NUMERIC(22,4),   -- 销售商品、提供劳务收到的现金
-    net_cf_oper_act         NUMERIC(22,4),   -- 经营活动产生的现金流量净额
-    net_cf_inv_act          NUMERIC(22,4),   -- 投资活动产生的现金流量净额
-    net_cf_fin_act          NUMERIC(22,4),   -- 筹资活动产生的现金流量净额
-    free_cf                 NUMERIC(22,4),   -- 企业自由现金流
-    -- 经营活动明细
     st_cash_out_act         NUMERIC(22,4),   -- 经营活动现金流出小计
-    st_cash_in_act          NUMERIC(22,4),   -- 经营活动现金流入小计
-    -- 投资活动明细
-    st_cash_out_inv         NUMERIC(22,4),   -- 投资活动现金流出小计
-    st_cash_in_inv          NUMERIC(22,4),   -- 投资活动现金流入小计
-    -- 筹资活动明细
-    st_cash_out_fin         NUMERIC(22,4),   -- 筹资活动现金流出小计
-    st_cash_in_fin          NUMERIC(22,4),   -- 筹资活动现金流入小计
     n_cashflow_act          NUMERIC(22,4),   -- 汇率变动对现金的影响
-    c_change                NUMERIC(22,4),   -- 现金及现金等价物净增加额
-    c_bal_end               NUMERIC(22,4),   -- 期末现金及现金等价物余额
     extra_fields            JSONB,
     created_at              TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     updated_at              TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
@@ -676,19 +630,8 @@ COMMENT ON COLUMN tushare_cashflow.report_type IS '报告类型（Q1/Q2半/Q3/�
 COMMENT ON COLUMN tushare_cashflow.comp_type IS '公司类型（1一般工商业 2银行 3保险 4证券）';
 COMMENT ON COLUMN tushare_cashflow.end_type IS '报告期类型（1合并 2母公司）';
 COMMENT ON COLUMN tushare_cashflow.c_fr_sale_sg IS '销售商品、提供劳务收到的现金';
-COMMENT ON COLUMN tushare_cashflow.net_cf_oper_act IS '经营活动产生的现金流量净额';
-COMMENT ON COLUMN tushare_cashflow.net_cf_inv_act IS '投资活动产生的现金流量净额';
-COMMENT ON COLUMN tushare_cashflow.net_cf_fin_act IS '筹资活动产生的现金流量净额';
-COMMENT ON COLUMN tushare_cashflow.free_cf IS '企业自由现金流';
 COMMENT ON COLUMN tushare_cashflow.st_cash_out_act IS '经营活动现金流出小计';
-COMMENT ON COLUMN tushare_cashflow.st_cash_in_act IS '经营活动现金流入小计';
-COMMENT ON COLUMN tushare_cashflow.st_cash_out_inv IS '投资活动现金流出小计';
-COMMENT ON COLUMN tushare_cashflow.st_cash_in_inv IS '投资活动现金流入小计';
-COMMENT ON COLUMN tushare_cashflow.st_cash_out_fin IS '筹资活动现金流出小计';
-COMMENT ON COLUMN tushare_cashflow.st_cash_in_fin IS '筹资活动现金流入小计';
 COMMENT ON COLUMN tushare_cashflow.n_cashflow_act IS '汇率变动对现金的影响';
-COMMENT ON COLUMN tushare_cashflow.c_change IS '现金及现金等价物净增加额';
-COMMENT ON COLUMN tushare_cashflow.c_bal_end IS '期末现金及现金等价物余额';
 COMMENT ON COLUMN tushare_cashflow.extra_fields IS 'Tushare 返回的扩展字段（JSONB）';
 COMMENT ON COLUMN tushare_cashflow.created_at IS '记录创建时间';
 COMMENT ON COLUMN tushare_cashflow.updated_at IS '记录最近更新时间';
@@ -745,9 +688,7 @@ CREATE TABLE IF NOT EXISTS tushare_express (
     total_profit    NUMERIC(22,4),           -- 利润总额（元）
     n_income        NUMERIC(22,4),           -- 净利润（元）
     total_assets    NUMERIC(22,4),           -- 总资产（元）
-    total_hldr_eqy  NUMERIC(22,4),           -- 股东权益合计（不含少数股东权益）
     diluted_eps     NUMERIC(16,6),           -- 稀释每股收益
-    weighted_roe    NUMERIC(16,6),           -- 加权平均净资产收益率
     created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
 
@@ -767,9 +708,7 @@ COMMENT ON COLUMN tushare_express.operate_profit IS '营业利润（元）';
 COMMENT ON COLUMN tushare_express.total_profit IS '利润总额（元）';
 COMMENT ON COLUMN tushare_express.n_income IS '净利润（元）';
 COMMENT ON COLUMN tushare_express.total_assets IS '总资产（元）';
-COMMENT ON COLUMN tushare_express.total_hldr_eqy IS '股东权益合计（不含少数股东权益）';
 COMMENT ON COLUMN tushare_express.diluted_eps IS '稀释每股收益';
-COMMENT ON COLUMN tushare_express.weighted_roe IS '加权平均净资产收益率';
 COMMENT ON COLUMN tushare_express.created_at IS '记录创建时间';
 COMMENT ON COLUMN tushare_express.updated_at IS '记录最近更新时间';
 
@@ -850,15 +789,12 @@ CREATE TABLE IF NOT EXISTS tushare_fina_indicator (
     -- 成长能力
     or_yoy              NUMERIC(16,6),       -- 营业收入同比增长率（%）
     op_yoy              NUMERIC(16,6),       -- 营业利润同比增长率（%）
-    profit_yoy          NUMERIC(16,6),       -- 归属净利润同比增长率（%）
     equity_yoy          NUMERIC(16,6),       -- 净资产同比增长率（%）
     assets_yoy          NUMERIC(16,6),       -- 总资产同比增长率（%）
     -- 偿债能力
     debt_to_assets      NUMERIC(16,6),       -- 资产负债率（%）
     current_ratio       NUMERIC(16,6),       -- 流动比率
     quick_ratio         NUMERIC(16,6),       -- 速动比率
-    equity_ratio        NUMERIC(16,6),       -- 产权比率
-    -- 营运能力
     inv_turn            NUMERIC(16,6),       -- 存货周转率（次）
     ar_turn             NUMERIC(16,6),       -- 应收账款周转率（次）
     assets_turn         NUMERIC(16,6),       -- 总资产周转率（次）
@@ -892,13 +828,11 @@ COMMENT ON COLUMN tushare_fina_indicator.roa_yearly IS '年化总资产净利率
 COMMENT ON COLUMN tushare_fina_indicator.roic IS '投入资本回报率（%）';
 COMMENT ON COLUMN tushare_fina_indicator.or_yoy IS '营业收入同比增长率（%）';
 COMMENT ON COLUMN tushare_fina_indicator.op_yoy IS '营业利润同比增长率（%）';
-COMMENT ON COLUMN tushare_fina_indicator.profit_yoy IS '归属净利润同比增长率（%）';
 COMMENT ON COLUMN tushare_fina_indicator.equity_yoy IS '净资产同比增长率（%）';
 COMMENT ON COLUMN tushare_fina_indicator.assets_yoy IS '总资产同比增长率（%）';
 COMMENT ON COLUMN tushare_fina_indicator.debt_to_assets IS '资产负债率（%）';
 COMMENT ON COLUMN tushare_fina_indicator.current_ratio IS '流动比率';
 COMMENT ON COLUMN tushare_fina_indicator.quick_ratio IS '速动比率';
-COMMENT ON COLUMN tushare_fina_indicator.equity_ratio IS '产权比率';
 COMMENT ON COLUMN tushare_fina_indicator.inv_turn IS '存货周转率（次）';
 COMMENT ON COLUMN tushare_fina_indicator.ar_turn IS '应收账款周转率（次）';
 COMMENT ON COLUMN tushare_fina_indicator.assets_turn IS '总资产周转率（次）';
@@ -991,9 +925,6 @@ SELECT
     d.pct_chg,
     d.vol,
     d.amount,
-    d.turnover_ratio,
-    d.volume_ratio,
-    d.amplitude,
     a.adj_factor,
     -- 前复权: 乘最新复权因子 / 当日复权因子
     -- 此处仅提供当日因子，前复权计算需在应用层结合最新因子
@@ -1024,7 +955,6 @@ SELECT
     d.pct_chg,
     d.vol,
     d.amount,
-    d.turnover_ratio,
     db.pe,
     db.pb,
     db.ps,
