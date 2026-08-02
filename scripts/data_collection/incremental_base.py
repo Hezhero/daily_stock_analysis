@@ -2,7 +2,7 @@
 """
 基础数据增量刷新脚本
 
-每周执行，全量刷新以下表（覆盖式更新）：
+每天定时执行，全量刷新以下表（覆盖式更新）：
   - tushare_stock_basic  股票基础信息（新股上市、退市、名称/状态变更）
   - tushare_hs_const     沪深港通成分股（季度调整）
   - tushare_ipo_list      IPO 新股列表
@@ -33,6 +33,7 @@ from tushare_pg_utils import (
     row_count,
     TUSHARE_TOKEN,
 )
+import bootstrap
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -188,6 +189,11 @@ def main():
     conn = get_pg_connection()
 
     try:
+        # ── 自举：首次运行时自动建表 + 填充基础数据 ──
+        bootstrap.ensure_schema(conn)
+        bootstrap.ensure_stock_basic(client, conn)
+        bootstrap.ensure_trade_cal(client, conn)
+
         _print_summary(conn)
 
         refresh_stock_basic(client, conn)

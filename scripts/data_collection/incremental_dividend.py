@@ -30,6 +30,7 @@ from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tushare_pg_utils import TushareClient, get_pg_connection, insert_dataframe, row_count, TUSHARE_TOKEN
+import bootstrap
 
 logging.basicConfig(
     level=logging.INFO,
@@ -90,6 +91,9 @@ def main():
     conn = get_pg_connection()
 
     try:
+        # ── 自举：首次运行时自动建表 ──
+        bootstrap.ensure_schema(conn)
+
         before = row_count(conn, "tushare_dividend")
         logger.info("分红表当前: %s 行  拉取范围: %d~%d 年", f"{before:,}" if before else "空", start_year, end_year)
 

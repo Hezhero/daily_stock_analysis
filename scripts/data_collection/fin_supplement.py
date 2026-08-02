@@ -1,12 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-Tushare 财务数据补充拉取（单股模式，逐只请求）
+[docs/ARCHIVE] Tushare 财务数据补充拉取（单股模式）
 
-当 ts2pg.py 按批量的 P4 阶段因财务接口限制无法完整拉取时，
-使用本脚本逐只请求进行补充。
-
-用法: python scripts/fin_supplement.py
-"""
+状态: 已废弃，功能已合并至 bootstrap.py 的 ensure_financial_data()
+保留: 作为手动补拉财务数据的参考实现（单股模式）"""
 
 import logging
 import os

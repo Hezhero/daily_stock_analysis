@@ -1,11 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-daily_basic 优化拉取脚本
-策略: 按 trade_date 逐日全市场拉取（不传 ts_code）
-      Tushare daily_basic 不支持批量 ts_code，但支持按日全市场返回（单日约5000条）
-      10年约2500个交易日 × 1 API调用 = ~2500次，在 480/min 速率下约5分钟完成
+[docs/ARCHIVE] daily_basic 优化拉取脚本
 
-用法: python scripts/db.py
+状态: 已废弃，功能已合并至 incremental_daily.py + bootstrap.py
+保留: 作为手动补拉 daily_basic 的参考实现
 """
 
 import logging

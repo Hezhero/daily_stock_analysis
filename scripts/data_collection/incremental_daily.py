@@ -33,7 +33,7 @@ from tushare_pg_utils import (
     row_count,
     TUSHARE_TOKEN,
 )
-from incremental_base import ensure_trade_cal
+import bootstrap
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -213,6 +213,12 @@ def main():
     conn = get_pg_connection()
 
     try:
+        # ── 自举：首次运行时自动建表 + 填充基础数据 ──
+        bootstrap.ensure_schema(conn)
+        bootstrap.ensure_stock_basic(client, conn)
+        bootstrap.ensure_trade_cal(client, conn)
+        bootstrap.ensure_market_data(client, conn)
+
         _print_summary(conn)
 
         # ── 确定日期范围 ──
@@ -237,9 +243,6 @@ def main():
 
         until = _fmt(min(today, date(2026, 12, 31)))
         logger.info("今日: %s  拉取范围: daily/adj=%s~%s  basic=%s~%s", today, da_start, until, db_start, until)
-
-        # ── 确保交易日历覆盖到最新 ──
-        ensure_trade_cal(client, conn)
 
         # ── 交易日列表 ──
         da_trade_dates = get_trade_dates(conn, da_start, until)

@@ -2,7 +2,7 @@
 """
 财务数据增量拉取脚本
 
-每周执行，自动补全 9 张财务表中截至当天的所有缺失数据：
+每周三、六执行，自动补全 9 张财务表中截至当天的所有缺失数据：
 
   利润表/资产负债表/现金流量表/财务指标/业绩预告/业绩快报/分红送股/审计意见/主营构成
 
@@ -33,6 +33,7 @@ from tushare_pg_utils import (
     row_count,
     TUSHARE_TOKEN,
 )
+import bootstrap
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -212,6 +213,11 @@ def main():
     conn = get_pg_connection()
 
     try:
+        # ── 自举：首次运行时自动建表 + 填充基础数据 + 财务回填 ──
+        bootstrap.ensure_schema(conn)
+        bootstrap.ensure_stock_basic(client, conn)
+        bootstrap.ensure_financial_data(client, conn)
+
         _print_summary(conn)
 
         codes = get_codes(conn)
