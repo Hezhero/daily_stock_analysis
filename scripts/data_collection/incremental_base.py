@@ -12,6 +12,11 @@
   - 事务内先删后插，确保数据与 Tushare 完全一致
   - trade_cal 仅在新一年到来时补充
 
+容错:
+  - TushareClient.query() 内置 3 次重试（指数退避 1s/2s）
+  - get_pg_connection() 内置 3 次重试（指数退避 1s/2s/4s）
+  - 单品 API 失败不中断整体流程
+
 用法: python scripts/data_collection/incremental_base.py
 """
 

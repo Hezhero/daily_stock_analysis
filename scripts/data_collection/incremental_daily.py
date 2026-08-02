@@ -9,6 +9,12 @@
   - daily_basic: 按 trade_date 逐日全市场拉取（API 支持不传 ts_code）
   - daily / adj_factor: 按股票批次 + 日期范围拉取（API 需要 ts_code）
 
+容错:
+  - TushareClient.query() 内置 3 次重试（指数退避 1s/2s）
+  - get_pg_connection() 内置 3 次重试（指数退避 1s/2s/4s）
+  - insert_dataframe() 批量失败时自动降级为逐行插入
+  - 单品/单日 API 失败不中断整体流程
+
 用法: python scripts/data_collection/incremental_daily.py
 """
 

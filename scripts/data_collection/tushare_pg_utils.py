@@ -13,6 +13,7 @@ Tushare → PostgreSQL 共享工具模块
   PG_DBNAME   - PostgreSQL 数据库名（默认 tushare）
 """
 
+import functools
 import json
 import logging
 import os
@@ -122,8 +123,48 @@ class TushareClient:
                     return pd.DataFrame()
 
 
-def get_pg_connection():
-    """获取 PostgreSQL 连接。
+def retry_call(max_attempts=3, base_delay=1.0, backoff=2.0):
+    """通用重试装饰器，指数退避。
+
+    Args:
+        max_attempts: 最大尝试次数（含首次）。
+        base_delay: 首次重试等待秒数。
+        backoff: 退避倍数。
+    """
+
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            last_exc = None
+            for attempt in range(max_attempts):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as exc:
+                    last_exc = exc
+                    if attempt < max_attempts - 1:
+                        delay = base_delay * (backoff ** attempt)
+                        logger.warning(
+                            "%s 执行失败 (重试 %d/%d)，%.1fs 后重试: %s",
+                            func.__name__, attempt + 1, max_attempts - 1, delay, exc,
+                        )
+                        time.sleep(delay)
+                    else:
+                        logger.error(
+                            "%s 最终失败 (已重试 %d 次): %s",
+                            func.__name__, max_attempts - 1, exc,
+                        )
+            raise last_exc
+
+        return wrapper
+
+    return decorator
+
+
+def get_pg_connection(retries: int = 3):
+    """获取 PostgreSQL 连接，失败时自动重试。
+
+    Args:
+        retries: 最大重试次数（含首次），0 表示不重试。
 
     Returns:
         psycopg2 connection 对象。
@@ -135,7 +176,36 @@ def get_pg_connection():
         raise ValueError(
             "PG_PASSWORD 环境变量未设置，请在 .env 文件中配置数据库密码"
         )
-    return psycopg2.connect(**PG_CONFIG)
+
+    last_exc = None
+    for attempt in range(max(1, retries)):
+        try:
+            conn = psycopg2.connect(**PG_CONFIG)
+            if retries > 1 and attempt > 0:
+                logger.info("数据库连接成功 (第 %d 次尝试)", attempt + 1)
+            return conn
+        except Exception as exc:
+            last_exc = exc
+            if attempt < retries - 1:
+                delay = 2 ** attempt
+                logger.warning(
+                    "数据库连接失败 (重试 %d/%d)，%.0fs 后重试: %s",
+                    attempt + 1, retries - 1, delay, exc,
+                )
+                time.sleep(delay)
+            else:
+                logger.error("数据库连接最终失败 (已重试 %d 次): %s", retries - 1, exc)
+
+    raise last_exc
+
+
+def get_pg_connection_legacy():
+    """获取 PostgreSQL 连接（兼容旧版，无重试）。
+
+    Returns:
+        psycopg2 connection 对象。
+    """
+    return get_pg_connection(retries=1)
 
 
 def table_exists(conn, table_name: str) -> bool:

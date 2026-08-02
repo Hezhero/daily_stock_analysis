@@ -11,6 +11,12 @@
   - 按股票批次（50只/批）＋年度维度逐批请求
   - ON CONFLICT DO NOTHING 防止重复插入
 
+容错:
+  - TushareClient.query() 内置 3 次重试（指数退避 1s/2s）
+  - get_pg_connection() 内置 3 次重试（指数退避 1s/2s/4s）
+  - insert_dataframe() 批量失败时自动降级为逐行插入
+  - 单品/单批次 API 失败不中断整体流程
+
 用法: python scripts/data_collection/incremental_fin.py
 """
 
