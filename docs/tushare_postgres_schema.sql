@@ -447,6 +447,48 @@ CREATE INDEX IF NOT EXISTS ix_ts_daily_basic_code ON tushare_daily_basic(ts_code
 CREATE INDEX IF NOT EXISTS ix_ts_daily_basic_date ON tushare_daily_basic(trade_date);
 CREATE INDEX IF NOT EXISTS ix_ts_daily_basic_date_brin ON tushare_daily_basic USING BRIN(trade_date);
 
+-- 2.4 筹码分布
+-- 来源: akshare stock_cyq_em（东方财富，A 股专属），非 Tushare API
+-- 入参: symbol（6 位纯数字，取自 tushare_stock_basic.symbol），adjust 固定传空（不复权）
+-- 入库: ts_code（Tushare 格式，取自 tushare_stock_basic.ts_code）
+-- 说明: 获利比例 / 集中度均为 0~1 小数；每次返回最近约 90 个交易日
+CREATE TABLE IF NOT EXISTS tushare_cyq (
+    id                  BIGSERIAL PRIMARY KEY,
+    ts_code             VARCHAR(12)  NOT NULL,   -- 股票代码（Tushare 格式，如 600519.SH）
+    trade_date          DATE         NOT NULL,   -- 交易日期
+    profit_ratio        NUMERIC(12,6),           -- 获利比例（0~1 小数）
+    avg_cost            NUMERIC(14,4),           -- 平均成本
+    cost_90_low         NUMERIC(14,4),           -- 90成本-低
+    cost_90_high        NUMERIC(14,4),           -- 90成本-高
+    concentration_90    NUMERIC(12,6),           -- 90集中度（0~1 小数）
+    cost_70_low         NUMERIC(14,4),           -- 70成本-低
+    cost_70_high        NUMERIC(14,4),           -- 70成本-高
+    concentration_70    NUMERIC(12,6),           -- 70集中度（0~1 小数）
+    created_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uix_ts_cyq_code_date UNIQUE (ts_code, trade_date)
+);
+
+COMMENT ON TABLE tushare_cyq IS '筹码分布缓存（akshare stock_cyq_em，东方财富）';
+
+COMMENT ON COLUMN tushare_cyq.id IS '自增主键';
+COMMENT ON COLUMN tushare_cyq.ts_code IS '股票代码（Tushare 格式，如 600519.SH）';
+COMMENT ON COLUMN tushare_cyq.trade_date IS '交易日期';
+COMMENT ON COLUMN tushare_cyq.profit_ratio IS '获利比例（0~1 小数）';
+COMMENT ON COLUMN tushare_cyq.avg_cost IS '平均成本';
+COMMENT ON COLUMN tushare_cyq.cost_90_low IS '90成本-低';
+COMMENT ON COLUMN tushare_cyq.cost_90_high IS '90成本-高';
+COMMENT ON COLUMN tushare_cyq.concentration_90 IS '90集中度（0~1 小数）';
+COMMENT ON COLUMN tushare_cyq.cost_70_low IS '70成本-低';
+COMMENT ON COLUMN tushare_cyq.cost_70_high IS '70成本-高';
+COMMENT ON COLUMN tushare_cyq.concentration_70 IS '70集中度（0~1 小数）';
+COMMENT ON COLUMN tushare_cyq.created_at IS '记录创建时间';
+COMMENT ON COLUMN tushare_cyq.updated_at IS '记录最近更新时间';
+
+CREATE INDEX IF NOT EXISTS ix_ts_cyq_code ON tushare_cyq(ts_code);
+CREATE INDEX IF NOT EXISTS ix_ts_cyq_date ON tushare_cyq(trade_date);
+
 -- ============================================================
 -- 3. 财务数据层（按报告期更新，可按季/年增量拉取）
 -- ============================================================
@@ -1036,7 +1078,8 @@ BEGIN
             'tushare_dividend',
             'tushare_fina_indicator',
             'tushare_fina_audit',
-            'tushare_fina_mainbz'
+            'tushare_fina_mainbz',
+            'tushare_cyq'
         ])
     LOOP
         EXECUTE format('

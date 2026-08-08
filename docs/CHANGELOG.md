@@ -8,8 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [新功能] 新增筹码分布数据采集脚本 `scripts/data_collection/incremental_cyq.py`：读取 `tushare_stock_basic` 的 symbol 调用 akshare `stock_cyq_em`（adjust 固定传空取不复权数据），按 ts_code 入库 PostgreSQL `akshare_cyq` 表。
 - [修复] 统一等价股票代码的本地日线候选与同源窗口解析；冲突沪深交易所代码不再降级匹配裸码，回测仅接受快照或交易日历确认的起点，并在同一起点中优先完整的单一代码窗口。
 - [新功能] 新增按 individual SkillAgent 自身 signal、版本化 engine 与本地已存同源日线窗口计算并持久化 `skill_opinion_outcomes` 的核心服务；本阶段不提供管理员 API、表现统计、样本充足度或权重调整。
+- [改进] 筹码采集脚本 `scripts/data_collection/incremental_cyq.py` 自动接入东财补丁（ENABLE_EASTMONEY_PATCH=true 时注入随机 UA + NID）并为接口调用增加指数退避重试，缓解 RemoteDisconnected 等东财限流断连导致采集失败的问题。
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
 

@@ -27,6 +27,14 @@
 - 移除多级缓存机制，每次运行重新计算
 - 移除 baostock 依赖，全部替换为 Tushare Pro API
 - 回测完成后自动执行主程序进行全市场复盘和个股决策
+- 数据质量过滤: SQL 层剔除日成交额 < 500 万的样本（MIN_DAILY_AMOUNT_K）
+  与上市不足 120 天的次新股（MIN_LISTING_DAYS），减少失真样本
+- 可成交性过滤: 涨停封板日按收盘价无法买入，统一剔除涨停信号
+  （_is_limit_up，主板阈值 9.5% / 创业板 19.5%），回测与 5 日验证/推荐共用
+- 收益统计口径: 各持有期（1/3/5/10 日）独立统计，避免多期收益混合
+  （P0-4）；最大回撤按日期排序后计算，恢复时间序列语义（P0-2）
+- 基准对比: 新增等权市场基准（compute_benchmark_metrics），结果表打印
+  超额收益列与基准行，用于区分 alpha/beta（P1-8）
 """
 
 import argparse
@@ -59,6 +67,12 @@ INITIAL_CAPITAL = 1000000.0   # 初始资金（元），用于回测收益口径
 TOP_N_VALIDATE = 5            # 本周验证取回测收益前 N 个策略
 HOLDING_PERIODS = [1, 3, 5, 10]  # 回测持有期（交易日），每个信号分别统计各持有期收益
 VALIDATE_DAYS = 5             # 本周验证的交易日窗口长度
+
+# ─── 数据质量与可成交性过滤 ────────────────────────────────────────────────────
+MIN_DAILY_AMOUNT_K = 5000        # 最小日成交额（单位：千元，即 500 万元），过滤流动性不足的样本
+MIN_LISTING_DAYS = 120           # 上市最短天数，过滤次新股（上市初期涨跌结构特殊）
+LIMIT_UP_PCT_MAIN = 9.5          # 主板/中小板涨停判定阈值（%）
+LIMIT_UP_PCT_GEM = 19.5          # 创业板涨停判定阈值（%），2020-08 起涨跌幅扩至 20%
 
 logging.basicConfig(
     level=logging.INFO,
@@ -368,10 +382,13 @@ def load_data(start: str, end: str) -> pd.DataFrame:
 
     数据来源：
       - tushare_daily        ：日线行情（开高低收、量额、涨跌幅）
-      - tushare_stock_basic  ：股票名称、上市状态、交易所、市场板块
+      - tushare_stock_basic  ：股票名称、上市状态、交易所、市场板块、上市日期
       - tushare_daily_basic  ：换手率、PE(TTM)、PB
 
-    过滤条件：仅沪深主板/中小板/创业板、上市状态为 L（正常上市）的股票。
+    过滤条件：
+      - 仅沪深主板/中小板/创业板、上市状态为 L（正常上市）的股票
+      - 日成交额不低于 MIN_DAILY_AMOUNT_K（流动性过滤，P2-11）
+      - 上市满 MIN_LISTING_DAYS 天（次新股过滤，P2-12）
     返回字段含 code（内部格式）、name、date 及各行情/基本面数值列。
     """
     t0 = time.time()
@@ -400,13 +417,15 @@ def load_data(start: str, end: str) -> pd.DataFrame:
           AND s.list_status = 'L'
           AND s.exchange IN ('SSE', 'SZSE')
           AND s.market IN ('主板', '中小板', '创业板')
+          AND d.amount >= %s
+          AND d.trade_date >= (s.list_date + %s)
         ORDER BY d.ts_code, d.trade_date
     """
 
     engine = _get_pg_engine()
     try:
         with engine.connect() as conn:
-            df = pd.read_sql(sql, conn, params=(start, end), parse_dates=["date"])
+            df = pd.read_sql(sql, conn, params=(start, end, MIN_DAILY_AMOUNT_K, MIN_LISTING_DAYS), parse_dates=["date"])
     finally:
         engine.dispose()
 
@@ -586,6 +605,22 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     logger.info(f"指标计算完成，耗时 {time.time()-t0:.1f}s")
     gc.collect()
     return df
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 可成交性判断（涨停封板无法买入）
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _is_limit_up(df: pd.DataFrame) -> pd.Series:
+    """判断当日是否涨停封板（涨停时按收盘价无法买入，回测应剔除该类信号）。
+
+    主板/中小板涨跌幅 10%，创业板 2020-08 起涨跌幅扩至 20%，
+    分别用 9.5% / 19.5% 作为近似涨停判定阈值（留出四舍五入余量）。
+    返回布尔 Series（True = 涨停，不可成交）。
+    """
+    gem = df["code"].str.startswith(("sz.300", "sz.301"))
+    threshold = np.where(gem, LIMIT_UP_PCT_GEM, LIMIT_UP_PCT_MAIN)
+    return df["pct_chg"] >= threshold
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1186,11 +1221,13 @@ else:
                 total_return_pct, annualized_return, max_drawdown, sharpe, float(n_valid))
 
 
-def calc_metrics(returns: np.ndarray) -> Dict:
-    """对单策略的全部信号收益序列计算绩效指标字典。
+def calc_metrics(returns: np.ndarray, avg_holding: Optional[float] = None) -> Dict:
+    """对单持有期的信号收益序列计算绩效指标字典。
 
-    收益来源：信号触发日的 ret_{1,3,5,10}d 前瞻收益拼接而成。
-    年化假设：每年 252 个交易日，单笔平均持有期为 HOLDING_PERIODS 均值。
+    收益来源：信号触发日的某个持有期前瞻收益（ret_{p}d）序列，
+    调用方应保证只传入单一持有期的收益（P0-4：避免多期收益混合）。
+    avg_holding 为该持有期天数，用于年化收益与夏普的换算；
+    为 None 时回退到 HOLDING_PERIODS 均值（向后兼容）。
     输出指标：total_trades / win_rate / avg_win / avg_loss /
     profit_loss_ratio / total_return / annualized_return / max_drawdown / sharpe_ratio。
     """
@@ -1199,7 +1236,8 @@ def calc_metrics(returns: np.ndarray) -> Dict:
     if n == 0:
         return {}
 
-    avg_holding = sum(HOLDING_PERIODS) / len(HOLDING_PERIODS)
+    if avg_holding is None:
+        avg_holding = sum(HOLDING_PERIODS) / len(HOLDING_PERIODS)
 
     wr, aw, al, pl, tr, ann, mxd, sr, n_valid = _calc_metrics_core(r, n, avg_holding)
 
@@ -1236,37 +1274,85 @@ def log_memory_usage(stage: str):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _backtest_single(name: str, df: pd.DataFrame) -> Dict:
-    """单策略回测：生成信号 -> 汇总各持有期前瞻收益 -> 计算绩效。
+    """单策略回测：生成信号 -> 剔除不可成交（涨停）信号 -> 按持有期分别统计绩效。
 
+    修复要点：
+      - P2-13：涨停封板日无法按收盘价买入，先剔除涨停信号
+      - P0-4：各持有期收益分开统计，不再混合进同一序列（样本独立）
+      - P0-2：每个持有期的收益按日期排序后再计算最大回撤（时间序列回撤）
     异常时返回 {"strategy": name, "error": ...}，不中断整体回测；
     无信号时返回全 0 指标。
     """
     t0 = time.time()
     try:
         sig = STRATEGIES[name](df)
-        signals = df[sig]
+        signals = df[sig & ~_is_limit_up(df)]
         n = signals["code"].count()
         if n == 0:
             return {"strategy": name, "total_trades": 0, "win_rate": 0,
                     "avg_win": 0, "avg_loss": 0, "profit_loss_ratio": 0,
                     "total_return": 0, "annualized_return": 0,
-                    "max_drawdown": 0, "sharpe_ratio": 0, "time_s": round(time.time()-t0, 1)}
+                    "max_drawdown": 0, "sharpe_ratio": 0, "time_s": round(time.time() - t0, 1)}
 
-        # 汇总全部持有期的前瞻收益，作为该策略的收益样本
-        all_returns = []
+        # 按持有期分别统计（P0-4），每个持有期的收益按日期排序后计算（P0-2）
+        period_metrics: Dict[int, Dict] = {}
         for p in HOLDING_PERIODS:
             col = f"ret_{p}d"
-            if col in signals.columns:
-                vals = signals[col].dropna().values
-                if len(vals) > 0:
-                    all_returns.extend(vals)
+            if col not in signals.columns:
+                continue
+            sub = signals[["date", col]].dropna()
+            if len(sub) == 0:
+                continue
+            sub = sub.sort_values("date")
+            m = calc_metrics(sub[col].values, avg_holding=p)
+            m["total_trades"] = int(len(sub))
+            period_metrics[p] = m
 
-        m = calc_metrics(np.array(all_returns) if all_returns else np.array([0]))
+        if not period_metrics:
+            return {"strategy": name, "total_trades": 0, "win_rate": 0,
+                    "avg_win": 0, "avg_loss": 0, "profit_loss_ratio": 0,
+                    "total_return": 0, "annualized_return": 0,
+                    "max_drawdown": 0, "sharpe_ratio": 0, "time_s": round(time.time() - t0, 1)}
+
+        # 聚合：取最优持有期（总收益最高）作为该策略代表指标，同时保留各持有期明细
+        best_p = max(period_metrics, key=lambda p: period_metrics[p]["total_return"])
+        m = dict(period_metrics[best_p])
         m["strategy"] = name
+        m["total_trades"] = n
+        m["best_period"] = best_p
+        m["periods"] = period_metrics
         m["time_s"] = round(time.time() - t0, 1)
         return m
     except Exception as e:
-        return {"strategy": name, "error": str(e), "time_s": round(time.time()-t0, 1)}
+        return {"strategy": name, "error": str(e), "time_s": round(time.time() - t0, 1)}
+
+
+def compute_benchmark_metrics(df: pd.DataFrame) -> Dict:
+    """计算等权市场基准绩效指标（P1-8：无基准对比修复）。
+
+    由于本地库无指数日线表，使用回测数据中全部股票的日收益率
+    按日期等权平均，构建"全市场等权组合"作为基准，用于区分 alpha/beta。
+    返回：benchmark_return / benchmark_annualized / benchmark_max_drawdown。
+    """
+    if df is None or df.empty or "date" not in df.columns or "pct_chg" not in df.columns:
+        return {}
+
+    daily = df.groupby("date")["pct_chg"].mean().sort_index() / 100.0
+    daily = daily.dropna()
+    if len(daily) < 2:
+        return {}
+
+    bench_returns = daily.values
+    total_return = float((np.prod(1 + bench_returns) - 1) * 100.0)
+    years = len(bench_returns) / 252.0
+    annualized = float((np.prod(1 + bench_returns) ** (1.0 / max(years, 1e-10)) - 1) * 100.0)
+    max_drawdown = float(_calc_max_drawdown(bench_returns))
+
+    return {
+        "benchmark_return": round(total_return, 2),
+        "benchmark_annualized": round(annualized, 2),
+        "benchmark_max_drawdown": round(max_drawdown, 2),
+    }
 
 
 def run_backtests(df_bt: pd.DataFrame) -> List[Dict]:
@@ -1274,6 +1360,10 @@ def run_backtests(df_bt: pd.DataFrame) -> List[Dict]:
 
     依据 resolve_parallel_config 自动选择串行 / ThreadPoolExecutor 并行；
     单个策略失败不影响其他策略（错误结果单独标记）。
+    每个有效结果附加基准对比字段（P1-8）：
+      - benchmark_return：同期等权市场基准总收益
+      - benchmark_annualized：基准年化收益
+      - excess_return：策略总收益 - 基准总收益（超额收益）
     """
     t0 = time.time()
     n_strategies = len(STRATEGIES)
@@ -1285,6 +1375,15 @@ def run_backtests(df_bt: pd.DataFrame) -> List[Dict]:
         logger.info(f"并行回测 {n_strategies} 策略（{n_workers} 线程）...")
     else:
         logger.info(f"串行回测 {n_strategies} 策略...")
+
+    # 等权市场基准（P1-8）
+    benchmark = compute_benchmark_metrics(df_bt)
+    if benchmark:
+        logger.info(f"等权市场基准: 总收益 {benchmark['benchmark_return']:.2f}%, "
+                    f"年化 {benchmark['benchmark_annualized']:.2f}%, "
+                    f"最大回撤 {benchmark['benchmark_max_drawdown']:.2f}%")
+    else:
+        logger.warning("基准计算失败（数据不足），跳过超额收益对比")
 
     strategy_names = list(STRATEGIES.keys())
     results = []
@@ -1311,6 +1410,14 @@ def run_backtests(df_bt: pd.DataFrame) -> List[Dict]:
             else:
                 logger.error(f"  [{i+1}/{n_strategies}] {r['strategy']}: {r['error']}")
             log_memory_usage(f"策略 {i+1} 完成后")
+
+    # 附加基准对比与超额收益字段（P1-8）
+    for r in results:
+        if "error" not in r and benchmark:
+            r["benchmark_return"] = benchmark["benchmark_return"]
+            r["benchmark_annualized"] = benchmark["benchmark_annualized"]
+            r["benchmark_max_drawdown"] = benchmark["benchmark_max_drawdown"]
+            r["excess_return"] = round(r["total_return"] - benchmark["benchmark_return"], 2)
 
     valid = sorted([r for r in results if "error" not in r],
                    key=lambda x: x.get("total_return", 0), reverse=True)
@@ -1345,7 +1452,7 @@ def validate_week(df_week, top_results, top_n=5):
 
     for name in top_names:
         try:
-            sig = STRATEGIES[name](df_week)
+            sig = STRATEGIES[name](df_week) & ~_is_limit_up(df_week)
             matched_rows = df_week.loc[sig.values].copy()
             matched_stocks = matched_rows.loc[matched_rows["date"] == buy_date, ["code", "name"]].drop_duplicates()
             n = len(matched_stocks)
@@ -1391,21 +1498,27 @@ def validate_week(df_week, top_results, top_n=5):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def print_results(results, val_results, backtest_start, backtest_end):
-    """以表格形式打印回测绩效汇总与 5 日验证 Top-5 结果。"""
-    print("\n" + "=" * 110)
+    """以表格形式打印回测绩效汇总与 5 日验证 Top-5 结果。
+
+    回测表新增"超额%"列（策略总收益 - 等权市场基准总收益，P1-8），
+    并打印基准行，用于判断策略收益是否真正跑赢市场（alpha）。
+    """
+    print("\n" + "=" * 120)
     print(f"{'策略':<28} {'交易':>7} {'胜率%':>7} {'均盈%':>7} {'均亏%':>7} "
-          f"{'盈亏比':>7} {'总收益%':>9} {'年化%':>8} {'最大回撤%':>10} {'夏普':>6} {'耗时':>5}")
-    print("-" * 110)
+          f"{'盈亏比':>7} {'总收益%':>9} {'超额%':>8} {'年化%':>8} {'最大回撤%':>10} {'夏普':>6} {'耗时':>5}")
+    print("-" * 120)
     for r in results:
+        excess = r.get("excess_return", 0) if "error" not in r else 0
         print(
             f"  {r['strategy']:<26} {r['total_trades']:>7} "
             f"{r['win_rate']:>7.1f} {r['avg_win']:>7.2f} {r['avg_loss']:>7.2f} "
             f"{r['profit_loss_ratio']:>7.2f} {r['total_return']:>9.1f} "
+            f"{excess:>8.1f} "
             f"{r['annualized_return']:>8.1f} {r['max_drawdown']:>10.1f} "
             f"{r['sharpe_ratio']:>6.2f} {r.get('time_s',0):>5.1f}s"
         )
 
-    print("=" * 110)
+    print("=" * 120)
     print(f"\n回测区间: {backtest_start.date()} ~ {backtest_end.date()}")
     print(f"初始资金: {INITIAL_CAPITAL:,.0f} 元")
     if results:
@@ -1414,6 +1527,14 @@ def print_results(results, val_results, backtest_start, backtest_end):
         print(f"平均胜率:   {np.mean([r['win_rate'] for r in valid_results]):.1f}%")
         print(f"平均总收益: {np.mean([r['total_return'] for r in valid_results]):.1f}%")
         print(f"平均年化:   {np.mean([r['annualized_return'] for r in valid_results]):.1f}%")
+        # 基准对比（P1-8）：取首个结果携带的基准字段
+        if valid_results and "benchmark_return" in valid_results[0]:
+            br = valid_results[0]["benchmark_return"]
+            ba = valid_results[0]["benchmark_annualized"]
+            bd = valid_results[0].get("benchmark_max_drawdown", 0)
+            above = sum(1 for r in valid_results if r.get("excess_return", 0) > 0)
+            print(f"等权市场基准: 总收益 {br:.1f}%  年化 {ba:.1f}%  最大回撤 {bd:.1f}%")
+            print(f"跑赢基准策略: {above}/{len(valid_results)}")
 
     if val_results:
         print("\n" + "=" * 75)
@@ -1468,7 +1589,7 @@ def get_top_stocks_by_win_rate(df_week, results, top_n=10):
             continue
 
         try:
-            sig = STRATEGIES[strategy_name](df_week)
+            sig = STRATEGIES[strategy_name](df_week) & ~_is_limit_up(df_week)
             mask = sig.values
             if mask.sum() == 0:
                 continue
@@ -1574,7 +1695,7 @@ def get_next_day_recommendations(df_latest, top_stocks_or_results, results=None,
 
     for strategy_name in unique_strategies:
         try:
-            sig = STRATEGIES[strategy_name](df_latest)
+            sig = STRATEGIES[strategy_name](df_latest) & ~_is_limit_up(df_latest)
             latest_mask = sig.values & (df_latest["date"] == latest_date).values
             if latest_mask.sum() == 0:
                 continue
