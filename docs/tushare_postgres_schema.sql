@@ -448,10 +448,10 @@ CREATE INDEX IF NOT EXISTS ix_ts_daily_basic_date ON tushare_daily_basic(trade_d
 CREATE INDEX IF NOT EXISTS ix_ts_daily_basic_date_brin ON tushare_daily_basic USING BRIN(trade_date);
 
 -- 2.4 筹码分布
--- 来源: akshare stock_cyq_em（东方财富，A 股专属），非 Tushare API
--- 入参: symbol（6 位纯数字，取自 tushare_stock_basic.symbol），adjust 固定传空（不复权）
--- 入库: ts_code（Tushare 格式，取自 tushare_stock_basic.ts_code）
--- 说明: 获利比例 / 集中度均为 0~1 小数；每次返回最近约 90 个交易日
+-- 来源: 本地计算（三角形分布法），基于 tushare_daily（open/high/low/close/vol）+ tushare_daily_basic（turnover_rate）
+-- 入参: 无外部接口；计算窗口默认最近 120 个交易日（--days 可调）
+-- 入库: ts_code（Tushare 格式，取自 tushare_stock_basic.ts_code），由 scripts/data_collection/incremental_cyq.py 写入
+-- 说明: 获利比例 / 集中度均为 0~1 小数；每日以 [low, high] 为区间、(low+high+close)/3 为峰值分配成交量到价格档，历史筹码按 1 - turnover_rate 逐日衰减
 CREATE TABLE IF NOT EXISTS tushare_cyq (
     id                  BIGSERIAL PRIMARY KEY,
     ts_code             VARCHAR(12)  NOT NULL,   -- 股票代码（Tushare 格式，如 600519.SH）
@@ -467,10 +467,10 @@ CREATE TABLE IF NOT EXISTS tushare_cyq (
     created_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     updated_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
 
-    CONSTRAINT uix_ts_cyq_code_date UNIQUE (ts_code, trade_date)
+    CONSTRAINT uix_tushare_cyq_code_date UNIQUE (ts_code, trade_date)
 );
 
-COMMENT ON TABLE tushare_cyq IS '筹码分布缓存（akshare stock_cyq_em，东方财富）';
+COMMENT ON TABLE tushare_cyq IS '筹码分布缓存（本地计算：三角形分布法，基于 tushare_daily + tushare_daily_basic）';
 
 COMMENT ON COLUMN tushare_cyq.id IS '自增主键';
 COMMENT ON COLUMN tushare_cyq.ts_code IS '股票代码（Tushare 格式，如 600519.SH）';

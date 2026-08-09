@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] 统一等价股票代码的本地日线候选与同源窗口解析；冲突沪深交易所代码不再降级匹配裸码，回测仅接受快照或交易日历确认的起点，并在同一起点中优先完整的单一代码窗口。
 - [新功能] 新增按 individual SkillAgent 自身 signal、版本化 engine 与本地已存同源日线窗口计算并持久化 `skill_opinion_outcomes` 的核心服务；本阶段不提供管理员 API、表现统计、样本充足度或权重调整。
 - [改进] 筹码采集脚本 `scripts/data_collection/incremental_cyq.py` 自动接入东财补丁（ENABLE_EASTMONEY_PATCH=true 时注入随机 UA + NID）并为接口调用增加指数退避重试，缓解 RemoteDisconnected 等东财限流断连导致采集失败的问题。
+- [改进] 筹码分布数据采集改为本地计算：`scripts/data_collection/incremental_cyq.py` 不再调用 akshare `stock_cyq_em`，改为基于本地 PostgreSQL `tushare_daily`（OHLCV）+ `tushare_daily_basic`（turnover_rate）用三角形分布法计算筹码分布，写入 `tushare_cyq` 表（原 `akshare_cyq` 表不再写入）；新增 `--days` 计算窗口参数（默认 120 个交易日），移除 `ENABLE_EASTMONEY_PATCH` 补丁逻辑。
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
 
