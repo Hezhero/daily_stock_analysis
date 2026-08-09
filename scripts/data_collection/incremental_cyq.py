@@ -412,13 +412,13 @@ def main():
     parser = argparse.ArgumentParser(description="筹码分布（CYQ）本地计算采集")
     parser.add_argument("--limit", type=int, default=0, help="最多处理的股票数量（0=全部）")
     parser.add_argument("--symbol", type=str, default="", help="指定单只股票 6 位代码（如 600519）")
-    parser.add_argument("--days", type=int, default=120, help="计算窗口交易日数（默认 120）")
+    parser.add_argument("--days", type=int, default=100, help="计算窗口交易日数（默认 100）")
     parser.add_argument("--sleep", type=float, default=0.0, help="每只股票处理间隔秒数（默认 0）")
     args = parser.parse_args()
 
     if args.days < 10:
-        logger.warning("--days=%d 过小，使用默认 120", args.days)
-        args.days = 120
+        logger.warning("--days=%d 过小，使用默认 100", args.days)
+        args.days = 100
 
     conn = get_pg_connection()
     try:
