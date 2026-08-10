@@ -3,7 +3,7 @@
 Tushare → PostgreSQL 共享工具模块
 
 提供 Tushare API 客户端、PostgreSQL 连接、数据插入等公共功能。
-供 scripts/db.py、scripts/ts2pg.py、scripts/fin_supplement.py 等脚本复用。
+供 scripts/db.py、scripts/ts2pg.py 等脚本复用。
 
 数据库连接参数通过环境变量配置（.env）：
   PG_HOST     - PostgreSQL 主机地址（默认 127.0.0.1）

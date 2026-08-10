@@ -82,7 +82,7 @@ MARKET_APIS = [
     ),
 ]
 
-# ── 财务接口定义（含 fina_indicator，fin_supplement.py 遗漏的）──
+# ── 财务接口定义（含 fina_indicator 遗漏的）──
 FIN_APIS = [
     (
         "income", "tushare_income",
