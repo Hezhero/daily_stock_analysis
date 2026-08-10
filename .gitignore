@@ -99,3 +99,6 @@ cache/*
 # Tushare PG 临时输出与测试文件
 result/*.txt
 /tdx_mcp_output/
+/changes/
+/.omo/
+/specs/

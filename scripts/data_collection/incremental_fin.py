@@ -48,6 +48,9 @@ FIN_BATCH = 50
 SLEEP_BETWEEN = 0.18
 LOOKBACK_DAYS = 180
 
+# dividend / disclosure_date 拒绝逗号批量 ts_code 与 end_date 参数（返回空），须逐股拉全量。
+PER_CODE_APIS = {"dividend", "disclosure_date"}
+
 FIN_APIS = [
     (
         "income", "tushare_income",
@@ -114,6 +117,11 @@ FIN_APIS = [
         "ts_code,end_date,bz_item,bz_code,bz_sales,bz_profit,bz_cost,curr_type,update_date",
         "(ts_code, end_date, bz_item, bz_code)",
     ),
+    (
+        "disclosure_date", "tushare_disclosure_date",
+        "ts_code,ann_date,end_date,pre_date,actual_date,modify_date",
+        "(ts_code, end_date, pre_date)",
+    ),
 ]
 
 
@@ -155,6 +163,21 @@ def pull_fin_table(
         "--- %s -> %s [%s ~ %s] ---", api_name, table_name, start_date, end_date,
     )
     total = 0
+    if api_name in PER_CODE_APIS:
+        for idx, code in enumerate(codes):
+            try:
+                df = client.query(api_name, ts_code=code, fields=fields)
+                if not df.empty:
+                    total += insert_dataframe(conn, table_name, df, conflict)
+            except Exception as exc:
+                if idx % 20 == 0:
+                    logger.warning("  %s %s 失败: %s", api_name, code, exc)
+            time.sleep(SLEEP_BETWEEN)
+            if (idx + 1) % 500 == 0:
+                logger.info("  %s [%d/%d] %s", api_name, idx + 1, len(codes), f"{total:,}")
+        logger.info("  %s 完成: %s", table_name, f"{total:,}")
+        return total
+
     for i in range(0, len(codes), FIN_BATCH):
         batch = codes[i:i + FIN_BATCH]
         cs = ",".join(batch)
@@ -195,6 +218,7 @@ def _print_summary(conn):
         ("tushare_dividend", "分红送股"),
         ("tushare_fina_audit", "审计意见"),
         ("tushare_fina_mainbz", "主营构成"),
+        ("tushare_disclosure_date", "财报披露计划"),
     ]
     logger.info("=== 当前财务数据概况 ===")
     for table, label in tables:

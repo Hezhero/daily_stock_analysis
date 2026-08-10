@@ -33,6 +33,8 @@ from tushare_pg_utils import (
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SCHEMA_FILE = os.path.join(PROJECT_ROOT, "docs", "tushare_postgres_schema.sql")
+# 扩展表批次（股票衍生/指数/宏观利率等）的标记表，用于判断扩展建表是否已执行
+EXTRA_SCHEMA_MARKER = "tushare_moneyflow"
 
 logger = logging.getLogger("bootstrap")
 
@@ -72,6 +74,21 @@ def ensure_schema(conn) -> bool:
     logger.info("执行建表脚本: %s", SCHEMA_FILE)
     execute_sql_file(conn, SCHEMA_FILE)
     logger.info("建表完成")
+    return True
+
+
+def ensure_extra_schema(conn) -> bool:
+    """执行扩展建表 SQL（股票衍生/指数/宏观利率等 28 张表），幂等。
+
+    与 ensure_schema 分离：既有库的 ensure_schema 会因主表已有数据而跳过，
+    扩展表必须通过本函数单独确保。表结构定义已合并到 SCHEMA_FILE 单文件。
+    """
+    if table_exists(conn, EXTRA_SCHEMA_MARKER):
+        logger.info("扩展表结构已存在，跳过建表")
+        return False
+    logger.info("执行扩展建表脚本: %s", SCHEMA_FILE)
+    execute_sql_file(conn, SCHEMA_FILE)
+    logger.info("扩展建表完成")
     return True
 
 

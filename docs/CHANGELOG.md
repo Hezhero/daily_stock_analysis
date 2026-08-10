@@ -13,6 +13,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [新功能] 新增按 individual SkillAgent 自身 signal、版本化 engine 与本地已存同源日线窗口计算并持久化 `skill_opinion_outcomes` 的核心服务；本阶段不提供管理员 API、表现统计、样本充足度或权重调整。
 - [改进] 筹码采集脚本 `scripts/data_collection/incremental_cyq.py` 自动接入东财补丁（ENABLE_EASTMONEY_PATCH=true 时注入随机 UA + NID）并为接口调用增加指数退避重试，缓解 RemoteDisconnected 等东财限流断连导致采集失败的问题。
 - [改进] 筹码分布数据采集改为本地计算：`scripts/data_collection/incremental_cyq.py` 不再调用 akshare `stock_cyq_em`，改为基于本地 PostgreSQL `tushare_daily`（OHLCV）+ `tushare_daily_basic`（turnover_rate）用三角形分布法计算筹码分布，写入 `tushare_cyq` 表（原 `akshare_cyq` 表不再写入）；新增 `--days` 计算窗口参数（默认 120 个交易日），移除 `ENABLE_EASTMONEY_PATCH` 补丁逻辑。
+- [新功能] 新增 Tushare 因子类数据采集脚本 `scripts/data_collection/incremental_factor.py`：日频接口（moneyflow/margin/margin_detail/top_list/top_inst/block_trade/stk_limit/repurchase/stk_holdertrade/pledge_detail）按交易日回填，股票级接口（stk_holdernumber/pledge_stat）按 ts_code 回填，共 12 个接口写入 `tushare_*` 表，支持断点续传与 `ON CONFLICT DO NOTHING` 幂等写入。
+- [新功能] 新增 Tushare 指数数据采集脚本 `scripts/data_collection/incremental_index.py`：回填指数基础信息、分类、成分、日线/周线/月线与权重（index_basic/index_classify/index_member_all/index_daily/index_weekly/index_monthly/index_weight）7 个接口。
+- [新功能] 新增 Tushare 宏观数据采集脚本 `scripts/data_collection/incremental_macro.py`：回填 shibor/shibor_quote/shibor_lpr/libor/hibor/wz_index/gz_index 7 个接口；对 1 次/小时限频接口按年分批回填并自动等待重试，支持跨进程续传。
+- [改进] `scripts/data_collection/bootstrap.py` 新增 `ensure_extra_schema()`：幂等执行扩展表结构 `docs/tushare_postgres_schema_extra.sql`（因子/指数/宏观类表），与既有 `ensure_schema()` 流程分离。
+- [修复] `scripts/data_collection/tushare_pg_utils.py` 修复 `insert_dataframe` 将 NaN 值写入数据库失败的问题：NaN 先转为 NULL 再入库，避免数值列 NaN 写入异常。
+- [改进] `scripts/data_collection/incremental_fin.py` 新增财报披露计划（disclosure_date）采集，写入 `tushare_disclosure_date` 表。
+- [修复] `scripts/data_collection/incremental_fin.py` 修复 `dividend`/`disclosure_date` 接口批量查询返回 0 行的问题：这两个接口不支持逗号拼接的 `ts_code`，且传入 `end_date` 会导致返回空结果，现改为按单只股票 ts_code 逐一拉取。
+- [新功能] 新增定向回填脚本 `scripts/data_collection/gapfill_fin_dates.py`，按单股 ts_code 幂等回填 `tushare_dividend`/`tushare_disclosure_date`（`ON CONFLICT DO NOTHING`），支持断点续跑（跳过已覆盖股票）。
+- [改进] `docs/tushare_postgres_schema_extra.sql` 为 28 张扩展表补全 `COMMENT ON COLUMN` 字段注释；`docs/tushare_postgres_schema.sql` 与 `docs/tushare_postgres_schema_extra.sql` 新增分区子表注释传播 DO 块（PostgreSQL 不继承父表的表/列注释，现批量拷贝到各子分区含 default 分区）。
+- [文档] 合并 `docs/tushare_postgres_schema_extra.sql` 到 `docs/tushare_postgres_schema.sql`：扩展表（股票衍生/情绪/博弈、财务补充、指数、宏观利率共 28 张）统一纳入单文件并按层重排章节（2.5~2.17 / 3.10 / 4 指数 / 5 宏观利率，原 4/5/6 节改为 6/7/8），updated_at 触发器与分区子表注释传播 DO 块合并；`bootstrap.ensure_extra_schema()` 改为执行合并后的单文件，原 extra 文件删除。
+- [chore] 移除 Tushare 宏观利率扩展表 `tushare_shibor_lpr`/`tushare_libor`/`tushare_hibor`/`tushare_wz_index`/`tushare_gz_index` 及对应采集代码：`scripts/data_collection/incremental_macro.py` 仅保留 shibor/shibor_quote 回填，`docs/tushare_postgres_schema.sql` 同步删除 5 张表结构与 updated_at 触发器注册。
+- [chore] 移除沪深股通持股表 `tushare_hk_hold` 及对应采集代码：`scripts/data_collection/incremental_factor.py` 的 hk_hold 日频接口条目移除（由 13 个接口减为 12 个），`docs/tushare_postgres_schema.sql` 同步删除表结构（含索引）与 updated_at 触发器注册。
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
 

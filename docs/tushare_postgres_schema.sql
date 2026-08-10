@@ -1,14 +1,18 @@
 -- ============================================================
 -- Tushare 2000 积分权限接口 → PostgreSQL 本地缓存表
 -- ============================================================
+-- 适用范围：基础数据 / 行情 / 股票衍生·情绪·博弈 / 财务 / 指数 / 宏观利率
 -- 适用版本：PostgreSQL 14+
 -- 设计原则：
 --   1. 每个 Tushare API 对应一张缓存表，字段与官方返回严格对齐
---   2. 大表（日线/复权/每日指标）使用 RANGE 分区（按 trade_date 按年分区）
+--   2. 大表（日线/复权/每日指标/资金流向/融资融券明细/涨跌停/指数日线）使用 RANGE 分区（按 trade_date 按年分区）
 --   3. 财务表使用 ts_code + end_date 唯一约束，支持增量更新
 --   4. 保留 ts_code（Tushare 格式）与 raw_code（6 位纯数字）双字段
 --   5. created_at / updated_at 审计字段
 --   6. BRIN 索引用于时序扫描，B-tree 用于点查
+--   7. 全部使用 ON CONFLICT DO NOTHING 支持的唯一约束，支持增量续传
+-- 幂等：所有语句均为 CREATE TABLE IF NOT EXISTS / CREATE INDEX IF NOT EXISTS，
+--       可重复执行；由 bootstrap.ensure_schema() / ensure_extra_schema() 调用。
 -- ============================================================
 
 BEGIN;
@@ -489,6 +493,521 @@ COMMENT ON COLUMN tushare_cyq.updated_at IS '记录最近更新时间';
 CREATE INDEX IF NOT EXISTS ix_ts_cyq_code ON tushare_cyq(ts_code);
 CREATE INDEX IF NOT EXISTS ix_ts_cyq_date ON tushare_cyq(trade_date);
 
+-- ------------------------------------------------------------
+-- 2.5~2.17 股票衍生 / 情绪 / 博弈类
+-- ------------------------------------------------------------
+
+-- 2.5 个股资金流向（分区表）
+-- API: moneyflow
+CREATE TABLE IF NOT EXISTS tushare_moneyflow (
+    id              BIGSERIAL,
+    ts_code         VARCHAR(12)  NOT NULL,
+    trade_date      DATE         NOT NULL,
+    buy_sm_vol      NUMERIC(20,4),            -- 小单买入量（手）
+    buy_sm_amount   NUMERIC(22,4),            -- 小单买入金额（万元）
+    sell_sm_vol     NUMERIC(20,4),            -- 小单卖出量（手）
+    sell_sm_amount  NUMERIC(22,4),            -- 小单卖出金额（万元）
+    buy_md_vol      NUMERIC(20,4),            -- 中单买入量（手）
+    buy_md_amount   NUMERIC(22,4),            -- 中单买入金额（万元）
+    sell_md_vol     NUMERIC(20,4),            -- 中单卖出量（手）
+    sell_md_amount  NUMERIC(22,4),            -- 中单卖出金额（万元）
+    buy_lg_vol      NUMERIC(20,4),            -- 大单买入量（手）
+    buy_lg_amount   NUMERIC(22,4),            -- 大单买入金额（万元）
+    sell_lg_vol     NUMERIC(20,4),            -- 大单卖出量（手）
+    sell_lg_amount  NUMERIC(22,4),            -- 大单卖出金额（万元）
+    buy_elg_vol     NUMERIC(20,4),            -- 特大单买入量（手）
+    buy_elg_amount  NUMERIC(22,4),            -- 特大单买入金额（万元）
+    sell_elg_vol    NUMERIC(20,4),            -- 特大单卖出量（手）
+    sell_elg_amount NUMERIC(22,4),            -- 特大单卖出金额（万元）
+    net_mf_vol      NUMERIC(20,4),            -- 净流入量（手）
+    net_mf_amount   NUMERIC(22,4),            -- 净流入额（万元）
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT pk_ts_moneyflow PRIMARY KEY (id, trade_date),
+    CONSTRAINT uix_ts_moneyflow_code_date UNIQUE (ts_code, trade_date)
+) PARTITION BY RANGE (trade_date);
+
+COMMENT ON TABLE tushare_moneyflow IS 'Tushare moneyflow 个股资金流向缓存（分区表）';
+
+COMMENT ON COLUMN tushare_moneyflow.id IS '自增主键';
+COMMENT ON COLUMN tushare_moneyflow.ts_code IS '股票代码';
+COMMENT ON COLUMN tushare_moneyflow.trade_date IS '交易日期（分区键）';
+COMMENT ON COLUMN tushare_moneyflow.buy_sm_vol IS '小单买入量（手）';
+COMMENT ON COLUMN tushare_moneyflow.buy_sm_amount IS '小单买入金额（万元）';
+COMMENT ON COLUMN tushare_moneyflow.sell_sm_vol IS '小单卖出量（手）';
+COMMENT ON COLUMN tushare_moneyflow.sell_sm_amount IS '小单卖出金额（万元）';
+COMMENT ON COLUMN tushare_moneyflow.buy_md_vol IS '中单买入量（手）';
+COMMENT ON COLUMN tushare_moneyflow.buy_md_amount IS '中单买入金额（万元）';
+COMMENT ON COLUMN tushare_moneyflow.sell_md_vol IS '中单卖出量（手）';
+COMMENT ON COLUMN tushare_moneyflow.sell_md_amount IS '中单卖出金额（万元）';
+COMMENT ON COLUMN tushare_moneyflow.buy_lg_vol IS '大单买入量（手）';
+COMMENT ON COLUMN tushare_moneyflow.buy_lg_amount IS '大单买入金额（万元）';
+COMMENT ON COLUMN tushare_moneyflow.sell_lg_vol IS '大单卖出量（手）';
+COMMENT ON COLUMN tushare_moneyflow.sell_lg_amount IS '大单卖出金额（万元）';
+COMMENT ON COLUMN tushare_moneyflow.buy_elg_vol IS '特大单买入量（手）';
+COMMENT ON COLUMN tushare_moneyflow.buy_elg_amount IS '特大单买入金额（万元）';
+COMMENT ON COLUMN tushare_moneyflow.sell_elg_vol IS '特大单卖出量（手）';
+COMMENT ON COLUMN tushare_moneyflow.sell_elg_amount IS '特大单卖出金额（万元）';
+COMMENT ON COLUMN tushare_moneyflow.net_mf_vol IS '净流入量（手）';
+COMMENT ON COLUMN tushare_moneyflow.net_mf_amount IS '净流入额（万元）';
+COMMENT ON COLUMN tushare_moneyflow.created_at IS '记录创建时间';
+COMMENT ON COLUMN tushare_moneyflow.updated_at IS '记录最近更新时间';
+
+CREATE TABLE IF NOT EXISTS tushare_moneyflow_default PARTITION OF tushare_moneyflow DEFAULT;
+
+DO $$
+DECLARE
+    y INTEGER;
+BEGIN
+    FOR y IN 2010..2030 LOOP
+        EXECUTE format('
+            CREATE TABLE IF NOT EXISTS tushare_moneyflow_%s
+            PARTITION OF tushare_moneyflow
+            FOR VALUES FROM (%L) TO (%L)',
+            y, format('%s-01-01', y), format('%s-01-01', y + 1)
+        );
+    END LOOP;
+END $$;
+
+CREATE INDEX IF NOT EXISTS ix_ts_moneyflow_code ON tushare_moneyflow(ts_code);
+CREATE INDEX IF NOT EXISTS ix_ts_moneyflow_date ON tushare_moneyflow(trade_date);
+CREATE INDEX IF NOT EXISTS ix_ts_moneyflow_date_brin ON tushare_moneyflow USING BRIN(trade_date);
+
+-- 2.6 融资融券交易汇总
+-- API: margin
+CREATE TABLE IF NOT EXISTS tushare_margin (
+    id              BIGSERIAL PRIMARY KEY,
+    trade_date      DATE         NOT NULL,    -- 交易日期
+    exchange_id     VARCHAR(10)  NOT NULL,    -- 交易所代码（SSE/SZSE）
+    rzye            NUMERIC(22,4),            -- 融资余额（元）
+    rzmre           NUMERIC(22,4),            -- 融资买入额（元）
+    rzche           NUMERIC(22,4),            -- 融资偿还额（元）
+    rqye            NUMERIC(22,4),            -- 融券余额（元）
+    rqmcl           NUMERIC(20,4),            -- 融券卖出量（股）
+    rzrqye          NUMERIC(22,4),            -- 融资融券余额（元）
+    rqyl            NUMERIC(22,4),            -- 融券余量（股）
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uix_ts_margin_date_exch UNIQUE (trade_date, exchange_id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_ts_margin_date ON tushare_margin(trade_date);
+COMMENT ON TABLE tushare_margin IS 'Tushare margin 融资融券交易汇总缓存';
+
+COMMENT ON COLUMN tushare_margin.id IS '自增主键';
+COMMENT ON COLUMN tushare_margin.trade_date IS '交易日期';
+COMMENT ON COLUMN tushare_margin.exchange_id IS '交易所代码（SSE/SZSE）';
+COMMENT ON COLUMN tushare_margin.rzye IS '融资余额（元）';
+COMMENT ON COLUMN tushare_margin.rzmre IS '融资买入额（元）';
+COMMENT ON COLUMN tushare_margin.rzche IS '融资偿还额（元）';
+COMMENT ON COLUMN tushare_margin.rqye IS '融券余额（元）';
+COMMENT ON COLUMN tushare_margin.rqmcl IS '融券卖出量（股）';
+COMMENT ON COLUMN tushare_margin.rzrqye IS '融资融券余额（元）';
+COMMENT ON COLUMN tushare_margin.rqyl IS '融券余量（股）';
+COMMENT ON COLUMN tushare_margin.created_at IS '记录创建时间';
+COMMENT ON COLUMN tushare_margin.updated_at IS '记录最近更新时间';
+
+-- 2.7 融资融券交易明细（分区表）
+-- API: margin_detail
+CREATE TABLE IF NOT EXISTS tushare_margin_detail (
+    id              BIGSERIAL,
+    trade_date      DATE         NOT NULL,
+    ts_code         VARCHAR(12)  NOT NULL,
+    rzye            NUMERIC(22,4),            -- 融资余额（元）
+    rqye            NUMERIC(22,4),            -- 融券余额（元）
+    rzmre           NUMERIC(22,4),            -- 融资买入额（元）
+    rqyl            NUMERIC(20,4),            -- 融券余量（股）
+    rzche           NUMERIC(22,4),            -- 融资偿还额（元）
+    rqchl           NUMERIC(22,4),            -- 融券偿还量（股）
+    rqmcl           NUMERIC(20,4),            -- 融券卖出量（股）
+    rzrqye          NUMERIC(22,4),            -- 融资融券余额（元）
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT pk_ts_margin_detail PRIMARY KEY (id, trade_date),
+    CONSTRAINT uix_ts_margin_detail_code_date UNIQUE (ts_code, trade_date)
+) PARTITION BY RANGE (trade_date);
+
+COMMENT ON TABLE tushare_margin_detail IS 'Tushare margin_detail 融资融券交易明细缓存（分区表）';
+
+COMMENT ON COLUMN tushare_margin_detail.id IS '自增主键';
+COMMENT ON COLUMN tushare_margin_detail.trade_date IS '交易日期（分区键）';
+COMMENT ON COLUMN tushare_margin_detail.ts_code IS '股票代码';
+COMMENT ON COLUMN tushare_margin_detail.rzye IS '融资余额（元）';
+COMMENT ON COLUMN tushare_margin_detail.rqye IS '融券余额（元）';
+COMMENT ON COLUMN tushare_margin_detail.rzmre IS '融资买入额（元）';
+COMMENT ON COLUMN tushare_margin_detail.rqyl IS '融券余量（股）';
+COMMENT ON COLUMN tushare_margin_detail.rzche IS '融资偿还额（元）';
+COMMENT ON COLUMN tushare_margin_detail.rqchl IS '融券偿还量（股）';
+COMMENT ON COLUMN tushare_margin_detail.rqmcl IS '融券卖出量（股）';
+COMMENT ON COLUMN tushare_margin_detail.rzrqye IS '融资融券余额（元）';
+COMMENT ON COLUMN tushare_margin_detail.created_at IS '记录创建时间';
+COMMENT ON COLUMN tushare_margin_detail.updated_at IS '记录最近更新时间';
+
+CREATE TABLE IF NOT EXISTS tushare_margin_detail_default PARTITION OF tushare_margin_detail DEFAULT;
+
+DO $$
+DECLARE
+    y INTEGER;
+BEGIN
+    FOR y IN 2010..2030 LOOP
+        EXECUTE format('
+            CREATE TABLE IF NOT EXISTS tushare_margin_detail_%s
+            PARTITION OF tushare_margin_detail
+            FOR VALUES FROM (%L) TO (%L)',
+            y, format('%s-01-01', y), format('%s-01-01', y + 1)
+        );
+    END LOOP;
+END $$;
+
+CREATE INDEX IF NOT EXISTS ix_ts_margin_detail_code ON tushare_margin_detail(ts_code);
+CREATE INDEX IF NOT EXISTS ix_ts_margin_detail_date ON tushare_margin_detail(trade_date);
+CREATE INDEX IF NOT EXISTS ix_ts_margin_detail_date_brin ON tushare_margin_detail USING BRIN(trade_date);
+
+-- 2.8 股东人数（筹码集中度）
+-- API: stk_holdernumber
+CREATE TABLE IF NOT EXISTS tushare_stk_holdernumber (
+    id              BIGSERIAL PRIMARY KEY,
+    ts_code         VARCHAR(12)  NOT NULL,
+    ann_date        DATE,                     -- 公告日期
+    end_date        DATE         NOT NULL,    -- 截止日期
+    holder_num      INTEGER,                  -- 股东户数
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uix_ts_holder_num UNIQUE (ts_code, end_date, ann_date)
+);
+
+CREATE INDEX IF NOT EXISTS ix_ts_holder_num_code ON tushare_stk_holdernumber(ts_code);
+CREATE INDEX IF NOT EXISTS ix_ts_holder_num_end_date ON tushare_stk_holdernumber(end_date);
+COMMENT ON TABLE tushare_stk_holdernumber IS 'Tushare stk_holdernumber 股东人数缓存';
+
+COMMENT ON COLUMN tushare_stk_holdernumber.id IS '自增主键';
+COMMENT ON COLUMN tushare_stk_holdernumber.ts_code IS '股票代码';
+COMMENT ON COLUMN tushare_stk_holdernumber.ann_date IS '公告日期';
+COMMENT ON COLUMN tushare_stk_holdernumber.end_date IS '截止日期';
+COMMENT ON COLUMN tushare_stk_holdernumber.holder_num IS '股东户数';
+COMMENT ON COLUMN tushare_stk_holdernumber.created_at IS '记录创建时间';
+COMMENT ON COLUMN tushare_stk_holdernumber.updated_at IS '记录最近更新时间';
+
+-- 2.9 龙虎榜每日明细
+-- API: top_list
+CREATE TABLE IF NOT EXISTS tushare_top_list (
+    id              BIGSERIAL PRIMARY KEY,
+    trade_date      DATE         NOT NULL,
+    ts_code         VARCHAR(12)  NOT NULL,
+    name            VARCHAR(50),              -- 名称
+    close           NUMERIC(12,4),            -- 收盘价
+    pct_change      NUMERIC(12,4),            -- 涨跌幅
+    turnover_rate   NUMERIC(12,4),            -- 换手率
+    amount          NUMERIC(22,4),            -- 总成交额
+    l_sell          NUMERIC(22,4),            -- 龙虎榜卖出额
+    l_buy           NUMERIC(22,4),            -- 龙虎榜买入额
+    l_amount        NUMERIC(22,4),            -- 龙虎榜成交额
+    net_amount      NUMERIC(22,4),            -- 龙虎榜净买入额
+    net_rate        NUMERIC(12,4),            -- 龙虎榜净买额占比
+    amount_rate     NUMERIC(12,4),            -- 龙虎榜成交额占比
+    float_values    NUMERIC(22,4),            -- 流通市值
+    reason          VARCHAR(500),             -- 上榜原因
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uix_ts_top_list UNIQUE (ts_code, trade_date)
+);
+
+CREATE INDEX IF NOT EXISTS ix_ts_top_list_date ON tushare_top_list(trade_date);
+CREATE INDEX IF NOT EXISTS ix_ts_top_list_code ON tushare_top_list(ts_code);
+COMMENT ON TABLE tushare_top_list IS 'Tushare top_list 龙虎榜每日明细缓存';
+
+COMMENT ON COLUMN tushare_top_list.id IS '自增主键';
+COMMENT ON COLUMN tushare_top_list.trade_date IS '交易日期';
+COMMENT ON COLUMN tushare_top_list.ts_code IS '股票代码';
+COMMENT ON COLUMN tushare_top_list.name IS '股票名称';
+COMMENT ON COLUMN tushare_top_list.close IS '收盘价';
+COMMENT ON COLUMN tushare_top_list.pct_change IS '涨跌幅（%）';
+COMMENT ON COLUMN tushare_top_list.turnover_rate IS '换手率（%）';
+COMMENT ON COLUMN tushare_top_list.amount IS '总成交额';
+COMMENT ON COLUMN tushare_top_list.l_sell IS '龙虎榜卖出额';
+COMMENT ON COLUMN tushare_top_list.l_buy IS '龙虎榜买入额';
+COMMENT ON COLUMN tushare_top_list.l_amount IS '龙虎榜成交额';
+COMMENT ON COLUMN tushare_top_list.net_amount IS '龙虎榜净买入额';
+COMMENT ON COLUMN tushare_top_list.net_rate IS '龙虎榜净买额占比（%）';
+COMMENT ON COLUMN tushare_top_list.amount_rate IS '龙虎榜成交额占比（%）';
+COMMENT ON COLUMN tushare_top_list.float_values IS '流通市值';
+COMMENT ON COLUMN tushare_top_list.reason IS '上榜原因';
+COMMENT ON COLUMN tushare_top_list.created_at IS '记录创建时间';
+COMMENT ON COLUMN tushare_top_list.updated_at IS '记录最近更新时间';
+
+-- 2.10 龙虎榜机构交易
+-- API: top_inst
+CREATE TABLE IF NOT EXISTS tushare_top_inst (
+    id              BIGSERIAL PRIMARY KEY,
+    trade_date      DATE         NOT NULL,
+    ts_code         VARCHAR(12)  NOT NULL,
+    exalter         VARCHAR(200),             -- 营业部名称
+    buy             NUMERIC(22,4),            -- 买入额（元）
+    buy_rate        NUMERIC(12,4),            -- 买入占总成交比例
+    sell            NUMERIC(22,4),            -- 卖出额（元）
+    sell_rate       NUMERIC(12,4),            -- 卖出占总成交比例
+    net_buy         NUMERIC(22,4),            -- 净买入额（元）
+    side            VARCHAR(10),              -- 买卖方向（买入/卖出）
+    reason          VARCHAR(100),             -- 上榜原因
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uix_ts_top_inst UNIQUE (ts_code, trade_date, exalter, side, reason)
+);
+
+CREATE INDEX IF NOT EXISTS ix_ts_top_inst_date ON tushare_top_inst(trade_date);
+CREATE INDEX IF NOT EXISTS ix_ts_top_inst_code ON tushare_top_inst(ts_code);
+COMMENT ON TABLE tushare_top_inst IS 'Tushare top_inst 龙虎榜机构交易缓存';
+
+COMMENT ON COLUMN tushare_top_inst.id IS '自增主键';
+COMMENT ON COLUMN tushare_top_inst.trade_date IS '交易日期';
+COMMENT ON COLUMN tushare_top_inst.ts_code IS '股票代码';
+COMMENT ON COLUMN tushare_top_inst.exalter IS '营业部名称';
+COMMENT ON COLUMN tushare_top_inst.buy IS '买入额（元）';
+COMMENT ON COLUMN tushare_top_inst.buy_rate IS '买入占总成交比例（%）';
+COMMENT ON COLUMN tushare_top_inst.sell IS '卖出额（元）';
+COMMENT ON COLUMN tushare_top_inst.sell_rate IS '卖出占总成交比例（%）';
+COMMENT ON COLUMN tushare_top_inst.net_buy IS '净买入额（元）';
+COMMENT ON COLUMN tushare_top_inst.side IS '买卖方向（买入/卖出）';
+COMMENT ON COLUMN tushare_top_inst.reason IS '上榜原因';
+COMMENT ON COLUMN tushare_top_inst.created_at IS '记录创建时间';
+COMMENT ON COLUMN tushare_top_inst.updated_at IS '记录最近更新时间';
+
+-- 2.11 股权质押明细
+-- API: pledge_detail
+CREATE TABLE IF NOT EXISTS tushare_pledge_detail (
+    id              BIGSERIAL PRIMARY KEY,
+    ts_code         VARCHAR(12)  NOT NULL,
+    ann_date        DATE,                     -- 公告日期
+    holder_name     VARCHAR(200),             -- 股东名称
+    pledge_amount   NUMERIC(22,4),            -- 质押数量（股）
+    start_date      DATE,                     -- 质押开始日期
+    end_date        DATE,                     -- 质押结束日期
+    is_release      VARCHAR(10),              -- 是否已解押
+    release_date    DATE,                     -- 解押日期
+    pledgor         VARCHAR(200),             -- 质押方
+    holding_amount  NUMERIC(22,4),            -- 持股数量（股）
+    pledged_amount  NUMERIC(22,4),            -- 质押数量（股）
+    p_total_ratio   NUMERIC(12,4),            -- 质押股份占总股本比例
+    h_total_ratio   NUMERIC(12,4),            -- 质押股份占持股比例
+    is_buyback      VARCHAR(10),                     -- 是否回购
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uix_ts_pledge_detail UNIQUE (ts_code, ann_date, holder_name, start_date, end_date)
+);
+
+CREATE INDEX IF NOT EXISTS ix_ts_pledge_detail_code ON tushare_pledge_detail(ts_code);
+CREATE INDEX IF NOT EXISTS ix_ts_pledge_detail_ann ON tushare_pledge_detail(ann_date);
+COMMENT ON TABLE tushare_pledge_detail IS 'Tushare pledge_detail 股权质押明细缓存';
+
+COMMENT ON COLUMN tushare_pledge_detail.id IS '自增主键';
+COMMENT ON COLUMN tushare_pledge_detail.ts_code IS '股票代码';
+COMMENT ON COLUMN tushare_pledge_detail.ann_date IS '公告日期';
+COMMENT ON COLUMN tushare_pledge_detail.holder_name IS '股东名称';
+COMMENT ON COLUMN tushare_pledge_detail.pledge_amount IS '质押数量（股）';
+COMMENT ON COLUMN tushare_pledge_detail.start_date IS '质押开始日期';
+COMMENT ON COLUMN tushare_pledge_detail.end_date IS '质押结束日期';
+COMMENT ON COLUMN tushare_pledge_detail.is_release IS '是否已解押';
+COMMENT ON COLUMN tushare_pledge_detail.release_date IS '解押日期';
+COMMENT ON COLUMN tushare_pledge_detail.pledgor IS '质押方';
+COMMENT ON COLUMN tushare_pledge_detail.holding_amount IS '持股数量（股）';
+COMMENT ON COLUMN tushare_pledge_detail.pledged_amount IS '质押数量（股）';
+COMMENT ON COLUMN tushare_pledge_detail.p_total_ratio IS '质押股份占总股本比例（%）';
+COMMENT ON COLUMN tushare_pledge_detail.h_total_ratio IS '质押股份占持股比例（%）';
+COMMENT ON COLUMN tushare_pledge_detail.is_buyback IS '是否回购';
+COMMENT ON COLUMN tushare_pledge_detail.created_at IS '记录创建时间';
+COMMENT ON COLUMN tushare_pledge_detail.updated_at IS '记录最近更新时间';
+
+-- 2.12 股权质押统计
+-- API: pledge_stat
+CREATE TABLE IF NOT EXISTS tushare_pledge_stat (
+    id              BIGSERIAL PRIMARY KEY,
+    ts_code         VARCHAR(12)  NOT NULL,
+    end_date        DATE         NOT NULL,    -- 截止日期
+    pledge_count    INTEGER,                  -- 质押统计次数
+    unrest_pledge   NUMERIC(20,4),            -- 无限售股质押数量
+    rest_pledge     NUMERIC(20,4),            -- 限售股质押数量
+    total_share     NUMERIC(20,4),            -- 总股本
+    pledge_ratio    NUMERIC(12,4),            -- 质押比例
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uix_ts_pledge_stat UNIQUE (ts_code, end_date)
+);
+
+CREATE INDEX IF NOT EXISTS ix_ts_pledge_stat_code ON tushare_pledge_stat(ts_code);
+COMMENT ON TABLE tushare_pledge_stat IS 'Tushare pledge_stat 股权质押统计缓存';
+
+COMMENT ON COLUMN tushare_pledge_stat.id IS '自增主键';
+COMMENT ON COLUMN tushare_pledge_stat.ts_code IS '股票代码';
+COMMENT ON COLUMN tushare_pledge_stat.end_date IS '截止日期';
+COMMENT ON COLUMN tushare_pledge_stat.pledge_count IS '质押统计次数';
+COMMENT ON COLUMN tushare_pledge_stat.unrest_pledge IS '无限售股质押数量';
+COMMENT ON COLUMN tushare_pledge_stat.rest_pledge IS '限售股质押数量';
+COMMENT ON COLUMN tushare_pledge_stat.total_share IS '总股本';
+COMMENT ON COLUMN tushare_pledge_stat.pledge_ratio IS '质押比例（%）';
+COMMENT ON COLUMN tushare_pledge_stat.created_at IS '记录创建时间';
+COMMENT ON COLUMN tushare_pledge_stat.updated_at IS '记录最近更新时间';
+
+-- 2.13 股票回购
+-- API: repurchase
+CREATE TABLE IF NOT EXISTS tushare_repurchase (
+    id              BIGSERIAL PRIMARY KEY,
+    ts_code         VARCHAR(12)  NOT NULL,
+    ann_date        DATE,                     -- 公告日期
+    end_date        DATE,                     -- 截止日期
+    proc            VARCHAR(20),              -- 进度
+    exp_date        DATE,                     -- 实施日期
+    vol             NUMERIC(20,4),            -- 回购数量（股）
+    amount          NUMERIC(22,4),            -- 回购金额（元）
+    high_limit      NUMERIC(12,4),            -- 回购最高价
+    low_limit       NUMERIC(12,4),            -- 回购最低价
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uix_ts_repurchase UNIQUE (ts_code, ann_date, end_date, proc)
+);
+
+CREATE INDEX IF NOT EXISTS ix_ts_repurchase_code ON tushare_repurchase(ts_code);
+CREATE INDEX IF NOT EXISTS ix_ts_repurchase_ann ON tushare_repurchase(ann_date);
+COMMENT ON TABLE tushare_repurchase IS 'Tushare repurchase 股票回购缓存';
+
+COMMENT ON COLUMN tushare_repurchase.id IS '自增主键';
+COMMENT ON COLUMN tushare_repurchase.ts_code IS '股票代码';
+COMMENT ON COLUMN tushare_repurchase.ann_date IS '公告日期';
+COMMENT ON COLUMN tushare_repurchase.end_date IS '截止日期';
+COMMENT ON COLUMN tushare_repurchase.proc IS '进度';
+COMMENT ON COLUMN tushare_repurchase.exp_date IS '实施日期';
+COMMENT ON COLUMN tushare_repurchase.vol IS '回购数量（股）';
+COMMENT ON COLUMN tushare_repurchase.amount IS '回购金额（元）';
+COMMENT ON COLUMN tushare_repurchase.high_limit IS '回购最高价';
+COMMENT ON COLUMN tushare_repurchase.low_limit IS '回购最低价';
+COMMENT ON COLUMN tushare_repurchase.created_at IS '记录创建时间';
+COMMENT ON COLUMN tushare_repurchase.updated_at IS '记录最近更新时间';
+
+-- 2.14 大宗交易
+-- API: block_trade
+CREATE TABLE IF NOT EXISTS tushare_block_trade (
+    id              BIGSERIAL PRIMARY KEY,
+    ts_code         VARCHAR(12)  NOT NULL,
+    trade_date      DATE         NOT NULL,
+    price           NUMERIC(12,4),            -- 成交价
+    vol             NUMERIC(20,4),            -- 成交量（手）
+    amount          NUMERIC(22,4),            -- 成交金额（元）
+    buyer           VARCHAR(200),             -- 买方营业部
+    seller          VARCHAR(200),             -- 卖方营业部
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uix_ts_block_trade UNIQUE (ts_code, trade_date, buyer, seller, price, vol)
+);
+
+CREATE INDEX IF NOT EXISTS ix_ts_block_trade_date ON tushare_block_trade(trade_date);
+CREATE INDEX IF NOT EXISTS ix_ts_block_trade_code ON tushare_block_trade(ts_code);
+COMMENT ON TABLE tushare_block_trade IS 'Tushare block_trade 大宗交易缓存';
+
+COMMENT ON COLUMN tushare_block_trade.id IS '自增主键';
+COMMENT ON COLUMN tushare_block_trade.ts_code IS '股票代码';
+COMMENT ON COLUMN tushare_block_trade.trade_date IS '交易日期';
+COMMENT ON COLUMN tushare_block_trade.price IS '成交价';
+COMMENT ON COLUMN tushare_block_trade.vol IS '成交量（手）';
+COMMENT ON COLUMN tushare_block_trade.amount IS '成交金额（元）';
+COMMENT ON COLUMN tushare_block_trade.buyer IS '买方营业部';
+COMMENT ON COLUMN tushare_block_trade.seller IS '卖方营业部';
+COMMENT ON COLUMN tushare_block_trade.created_at IS '记录创建时间';
+COMMENT ON COLUMN tushare_block_trade.updated_at IS '记录最近更新时间';
+
+-- 2.15 股东增减持
+-- API: stk_holdertrade
+CREATE TABLE IF NOT EXISTS tushare_stk_holdertrade (
+    id              BIGSERIAL PRIMARY KEY,
+    ts_code         VARCHAR(12)  NOT NULL,
+    ann_date        DATE,                     -- 公告日期
+    holder_name     VARCHAR(200),             -- 股东名称
+    holder_type     VARCHAR(20),              -- 股东类型
+    in_de           VARCHAR(10),              -- 类型（IN增持/DE减持）
+    change_vol      NUMERIC(20,4),            -- 变动数量（股）
+    change_ratio    NUMERIC(12,4),            -- 变动比例
+    after_share     NUMERIC(20,4),            -- 变动后持股数量
+    after_ratio     NUMERIC(12,4),            -- 变动后持股比例
+    avg_price       NUMERIC(12,4),            -- 平均价格
+    total_share     NUMERIC(20,4),            -- 占总股本比例
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uix_ts_stk_holdertrade UNIQUE (ts_code, ann_date, holder_name, in_de)
+);
+
+CREATE INDEX IF NOT EXISTS ix_ts_stk_holdertrade_code ON tushare_stk_holdertrade(ts_code);
+CREATE INDEX IF NOT EXISTS ix_ts_stk_holdertrade_ann ON tushare_stk_holdertrade(ann_date);
+COMMENT ON TABLE tushare_stk_holdertrade IS 'Tushare stk_holdertrade 股东增减持缓存';
+
+COMMENT ON COLUMN tushare_stk_holdertrade.id IS '自增主键';
+COMMENT ON COLUMN tushare_stk_holdertrade.ts_code IS '股票代码';
+COMMENT ON COLUMN tushare_stk_holdertrade.ann_date IS '公告日期';
+COMMENT ON COLUMN tushare_stk_holdertrade.holder_name IS '股东名称';
+COMMENT ON COLUMN tushare_stk_holdertrade.holder_type IS '股东类型';
+COMMENT ON COLUMN tushare_stk_holdertrade.in_de IS '变动类型（IN增持/DE减持）';
+COMMENT ON COLUMN tushare_stk_holdertrade.change_vol IS '变动数量（股）';
+COMMENT ON COLUMN tushare_stk_holdertrade.change_ratio IS '变动比例（%）';
+COMMENT ON COLUMN tushare_stk_holdertrade.after_share IS '变动后持股数量（股）';
+COMMENT ON COLUMN tushare_stk_holdertrade.after_ratio IS '变动后持股比例（%）';
+COMMENT ON COLUMN tushare_stk_holdertrade.avg_price IS '平均价格';
+COMMENT ON COLUMN tushare_stk_holdertrade.total_share IS '占总股本比例（%）';
+COMMENT ON COLUMN tushare_stk_holdertrade.created_at IS '记录创建时间';
+COMMENT ON COLUMN tushare_stk_holdertrade.updated_at IS '记录最近更新时间';
+
+-- 2.16 每日涨跌停价格（分区表）
+-- API: stk_limit
+CREATE TABLE IF NOT EXISTS tushare_stk_limit (
+    id              BIGSERIAL,
+    trade_date      DATE         NOT NULL,
+    ts_code         VARCHAR(12)  NOT NULL,
+    up_limit        NUMERIC(12,4),            -- 涨停价
+    down_limit      NUMERIC(12,4),            -- 跌停价
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT pk_ts_stk_limit PRIMARY KEY (id, trade_date),
+    CONSTRAINT uix_ts_stk_limit_code_date UNIQUE (ts_code, trade_date)
+) PARTITION BY RANGE (trade_date);
+
+COMMENT ON TABLE tushare_stk_limit IS 'Tushare stk_limit 每日涨跌停价格缓存（分区表）';
+
+COMMENT ON COLUMN tushare_stk_limit.id IS '自增主键';
+COMMENT ON COLUMN tushare_stk_limit.trade_date IS '交易日期（分区键）';
+COMMENT ON COLUMN tushare_stk_limit.ts_code IS '股票代码';
+COMMENT ON COLUMN tushare_stk_limit.up_limit IS '涨停价';
+COMMENT ON COLUMN tushare_stk_limit.down_limit IS '跌停价';
+COMMENT ON COLUMN tushare_stk_limit.created_at IS '记录创建时间';
+COMMENT ON COLUMN tushare_stk_limit.updated_at IS '记录最近更新时间';
+
+CREATE TABLE IF NOT EXISTS tushare_stk_limit_default PARTITION OF tushare_stk_limit DEFAULT;
+
+DO $$
+DECLARE
+    y INTEGER;
+BEGIN
+    FOR y IN 2010..2030 LOOP
+        EXECUTE format('
+            CREATE TABLE IF NOT EXISTS tushare_stk_limit_%s
+            PARTITION OF tushare_stk_limit
+            FOR VALUES FROM (%L) TO (%L)',
+            y, format('%s-01-01', y), format('%s-01-01', y + 1)
+        );
+    END LOOP;
+END $$;
+
+CREATE INDEX IF NOT EXISTS ix_ts_stk_limit_code ON tushare_stk_limit(ts_code);
+CREATE INDEX IF NOT EXISTS ix_ts_stk_limit_date ON tushare_stk_limit(trade_date);
+CREATE INDEX IF NOT EXISTS ix_ts_stk_limit_date_brin ON tushare_stk_limit USING BRIN(trade_date);
+
 -- ============================================================
 -- 3. 财务数据层（按报告期更新，可按季/年增量拉取）
 -- ============================================================
@@ -949,8 +1468,401 @@ COMMENT ON COLUMN tushare_fina_mainbz.update_date IS '更新日期';
 COMMENT ON COLUMN tushare_fina_mainbz.created_at IS '记录创建时间';
 COMMENT ON COLUMN tushare_fina_mainbz.updated_at IS '记录最近更新时间';
 
+-- 3.10 财报披露计划
+-- API: disclosure_date
+CREATE TABLE IF NOT EXISTS tushare_disclosure_date (
+    id              BIGSERIAL PRIMARY KEY,
+    ts_code         VARCHAR(12)  NOT NULL,
+    ann_date        DATE,                     -- 最新公告日期
+    end_date        DATE         NOT NULL,    -- 报告期
+    pre_date        DATE,                     -- 预计披露日期
+    actual_date     DATE,                     -- 实际披露日期
+    modify_date     DATE,                     -- 最新披露变动日期
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uix_ts_disclosure_date UNIQUE (ts_code, end_date, pre_date)
+);
+
+CREATE INDEX IF NOT EXISTS ix_ts_disclosure_date_code ON tushare_disclosure_date(ts_code);
+CREATE INDEX IF NOT EXISTS ix_ts_disclosure_date_end ON tushare_disclosure_date(end_date);
+COMMENT ON TABLE tushare_disclosure_date IS 'Tushare disclosure_date 财报披露计划缓存';
+
+COMMENT ON COLUMN tushare_disclosure_date.id IS '自增主键';
+COMMENT ON COLUMN tushare_disclosure_date.ts_code IS '股票代码';
+COMMENT ON COLUMN tushare_disclosure_date.ann_date IS '最新公告日期';
+COMMENT ON COLUMN tushare_disclosure_date.end_date IS '报告期';
+COMMENT ON COLUMN tushare_disclosure_date.pre_date IS '预计披露日期';
+COMMENT ON COLUMN tushare_disclosure_date.actual_date IS '实际披露日期';
+COMMENT ON COLUMN tushare_disclosure_date.modify_date IS '最新披露变动日期';
+COMMENT ON COLUMN tushare_disclosure_date.created_at IS '记录创建时间';
+COMMENT ON COLUMN tushare_disclosure_date.updated_at IS '记录最近更新时间';
+
 -- ============================================================
--- 4. 辅助视图：合并日线 + 复权因子 → 前/后复权价格
+-- 4. 指数数据层
+-- ============================================================
+
+-- 4.1 指数基本信息
+-- API: index_basic
+CREATE TABLE IF NOT EXISTS tushare_index_basic (
+    id              BIGSERIAL PRIMARY KEY,
+    ts_code         VARCHAR(20)  NOT NULL,    -- 指数代码
+    name            VARCHAR(50),              -- 指数名称
+    market          VARCHAR(10),              -- 市场（SSE/SZSE/CSI/SW/CICC等）
+    publisher       VARCHAR(100),             -- 发布方
+    category        VARCHAR(50),              -- 指数类别
+    base_date       DATE,                     -- 基期
+    base_point      NUMERIC(12,4),            -- 基点
+    list_date       DATE,                     -- 发布日期
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uix_ts_index_basic_code UNIQUE (ts_code)
+);
+
+CREATE INDEX IF NOT EXISTS ix_ts_index_basic_market ON tushare_index_basic(market);
+COMMENT ON TABLE tushare_index_basic IS 'Tushare index_basic 指数基本信息缓存';
+
+COMMENT ON COLUMN tushare_index_basic.id IS '自增主键';
+COMMENT ON COLUMN tushare_index_basic.ts_code IS '指数代码';
+COMMENT ON COLUMN tushare_index_basic.name IS '指数名称';
+COMMENT ON COLUMN tushare_index_basic.market IS '市场（SSE/SZSE/CSI/SW/CICC等）';
+COMMENT ON COLUMN tushare_index_basic.publisher IS '发布方';
+COMMENT ON COLUMN tushare_index_basic.category IS '指数类别';
+COMMENT ON COLUMN tushare_index_basic.base_date IS '基期';
+COMMENT ON COLUMN tushare_index_basic.base_point IS '基点';
+COMMENT ON COLUMN tushare_index_basic.list_date IS '发布日期';
+COMMENT ON COLUMN tushare_index_basic.created_at IS '记录创建时间';
+COMMENT ON COLUMN tushare_index_basic.updated_at IS '记录最近更新时间';
+
+-- 4.2 指数日线行情（分区表）
+-- API: index_daily
+CREATE TABLE IF NOT EXISTS tushare_index_daily (
+    id              BIGSERIAL,
+    ts_code         VARCHAR(20)  NOT NULL,
+    trade_date      DATE         NOT NULL,
+    close           NUMERIC(16,4),
+    open            NUMERIC(16,4),
+    high            NUMERIC(16,4),
+    low             NUMERIC(16,4),
+    pre_close       NUMERIC(16,4),
+    change_val      NUMERIC(16,4),            -- 涨跌额
+    pct_chg         NUMERIC(12,4),            -- 涨跌幅（%）
+    vol             NUMERIC(24,4),            -- 成交量（手）
+    amount          NUMERIC(26,4),            -- 成交额（千元）
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT pk_ts_index_daily PRIMARY KEY (id, trade_date),
+    CONSTRAINT uix_ts_index_daily_code_date UNIQUE (ts_code, trade_date)
+) PARTITION BY RANGE (trade_date);
+
+COMMENT ON TABLE tushare_index_daily IS 'Tushare index_daily 指数日线行情缓存（分区表）';
+
+COMMENT ON COLUMN tushare_index_daily.id IS '自增主键';
+COMMENT ON COLUMN tushare_index_daily.ts_code IS '指数代码';
+COMMENT ON COLUMN tushare_index_daily.trade_date IS '交易日期（分区键）';
+COMMENT ON COLUMN tushare_index_daily.close IS '收盘价';
+COMMENT ON COLUMN tushare_index_daily.open IS '开盘价';
+COMMENT ON COLUMN tushare_index_daily.high IS '最高价';
+COMMENT ON COLUMN tushare_index_daily.low IS '最低价';
+COMMENT ON COLUMN tushare_index_daily.pre_close IS '昨收价';
+COMMENT ON COLUMN tushare_index_daily.change_val IS '涨跌额';
+COMMENT ON COLUMN tushare_index_daily.pct_chg IS '涨跌幅（%）';
+COMMENT ON COLUMN tushare_index_daily.vol IS '成交量（手）';
+COMMENT ON COLUMN tushare_index_daily.amount IS '成交额（千元）';
+COMMENT ON COLUMN tushare_index_daily.created_at IS '记录创建时间';
+COMMENT ON COLUMN tushare_index_daily.updated_at IS '记录最近更新时间';
+
+CREATE TABLE IF NOT EXISTS tushare_index_daily_default PARTITION OF tushare_index_daily DEFAULT;
+
+DO $$
+DECLARE
+    y INTEGER;
+BEGIN
+    FOR y IN 2010..2030 LOOP
+        EXECUTE format('
+            CREATE TABLE IF NOT EXISTS tushare_index_daily_%s
+            PARTITION OF tushare_index_daily
+            FOR VALUES FROM (%L) TO (%L)',
+            y, format('%s-01-01', y), format('%s-01-01', y + 1)
+        );
+    END LOOP;
+END $$;
+
+CREATE INDEX IF NOT EXISTS ix_ts_index_daily_code ON tushare_index_daily(ts_code);
+CREATE INDEX IF NOT EXISTS ix_ts_index_daily_date ON tushare_index_daily(trade_date);
+CREATE INDEX IF NOT EXISTS ix_ts_index_daily_date_brin ON tushare_index_daily USING BRIN(trade_date);
+
+-- 4.3 指数周线
+-- API: index_weekly
+CREATE TABLE IF NOT EXISTS tushare_index_weekly (
+    id              BIGSERIAL PRIMARY KEY,
+    ts_code         VARCHAR(20)  NOT NULL,
+    trade_date      DATE         NOT NULL,
+    close           NUMERIC(16,4),
+    open            NUMERIC(16,4),
+    high            NUMERIC(16,4),
+    low             NUMERIC(16,4),
+    pre_close       NUMERIC(16,4),
+    change_val      NUMERIC(16,4),
+    pct_chg         NUMERIC(12,4),
+    vol             NUMERIC(24,4),
+    amount          NUMERIC(26,4),
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uix_ts_index_weekly UNIQUE (ts_code, trade_date)
+);
+
+CREATE INDEX IF NOT EXISTS ix_ts_index_weekly_code ON tushare_index_weekly(ts_code);
+CREATE INDEX IF NOT EXISTS ix_ts_index_weekly_date ON tushare_index_weekly(trade_date);
+COMMENT ON TABLE tushare_index_weekly IS 'Tushare index_weekly 指数周线缓存';
+
+COMMENT ON COLUMN tushare_index_weekly.id IS '自增主键';
+COMMENT ON COLUMN tushare_index_weekly.ts_code IS '指数代码';
+COMMENT ON COLUMN tushare_index_weekly.trade_date IS '交易日期';
+COMMENT ON COLUMN tushare_index_weekly.close IS '收盘价';
+COMMENT ON COLUMN tushare_index_weekly.open IS '开盘价';
+COMMENT ON COLUMN tushare_index_weekly.high IS '最高价';
+COMMENT ON COLUMN tushare_index_weekly.low IS '最低价';
+COMMENT ON COLUMN tushare_index_weekly.pre_close IS '昨收价';
+COMMENT ON COLUMN tushare_index_weekly.change_val IS '涨跌额';
+COMMENT ON COLUMN tushare_index_weekly.pct_chg IS '涨跌幅（%）';
+COMMENT ON COLUMN tushare_index_weekly.vol IS '成交量（手）';
+COMMENT ON COLUMN tushare_index_weekly.amount IS '成交额（千元）';
+COMMENT ON COLUMN tushare_index_weekly.created_at IS '记录创建时间';
+COMMENT ON COLUMN tushare_index_weekly.updated_at IS '记录最近更新时间';
+
+-- 4.4 指数月线
+-- API: index_monthly
+CREATE TABLE IF NOT EXISTS tushare_index_monthly (
+    id              BIGSERIAL PRIMARY KEY,
+    ts_code         VARCHAR(20)  NOT NULL,
+    trade_date      DATE         NOT NULL,
+    close           NUMERIC(16,4),
+    open            NUMERIC(16,4),
+    high            NUMERIC(16,4),
+    low             NUMERIC(16,4),
+    pre_close       NUMERIC(16,4),
+    change_val      NUMERIC(16,4),
+    pct_chg         NUMERIC(12,4),
+    vol             NUMERIC(24,4),
+    amount          NUMERIC(26,4),
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uix_ts_index_monthly UNIQUE (ts_code, trade_date)
+);
+
+CREATE INDEX IF NOT EXISTS ix_ts_index_monthly_code ON tushare_index_monthly(ts_code);
+CREATE INDEX IF NOT EXISTS ix_ts_index_monthly_date ON tushare_index_monthly(trade_date);
+COMMENT ON TABLE tushare_index_monthly IS 'Tushare index_monthly 指数月线缓存';
+
+COMMENT ON COLUMN tushare_index_monthly.id IS '自增主键';
+COMMENT ON COLUMN tushare_index_monthly.ts_code IS '指数代码';
+COMMENT ON COLUMN tushare_index_monthly.trade_date IS '交易日期';
+COMMENT ON COLUMN tushare_index_monthly.close IS '收盘价';
+COMMENT ON COLUMN tushare_index_monthly.open IS '开盘价';
+COMMENT ON COLUMN tushare_index_monthly.high IS '最高价';
+COMMENT ON COLUMN tushare_index_monthly.low IS '最低价';
+COMMENT ON COLUMN tushare_index_monthly.pre_close IS '昨收价';
+COMMENT ON COLUMN tushare_index_monthly.change_val IS '涨跌额';
+COMMENT ON COLUMN tushare_index_monthly.pct_chg IS '涨跌幅（%）';
+COMMENT ON COLUMN tushare_index_monthly.vol IS '成交量（手）';
+COMMENT ON COLUMN tushare_index_monthly.amount IS '成交额（千元）';
+COMMENT ON COLUMN tushare_index_monthly.created_at IS '记录创建时间';
+COMMENT ON COLUMN tushare_index_monthly.updated_at IS '记录最近更新时间';
+
+-- 4.5 指数成分和权重
+-- API: index_weight
+CREATE TABLE IF NOT EXISTS tushare_index_weight (
+    id              BIGSERIAL PRIMARY KEY,
+    index_code      VARCHAR(20)  NOT NULL,    -- 指数代码
+    con_code        VARCHAR(20)  NOT NULL,    -- 成分股票代码
+    trade_date      DATE         NOT NULL,    -- 交易日期
+    weight          NUMERIC(12,4),            -- 权重（%）
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uix_ts_index_weight UNIQUE (index_code, con_code, trade_date)
+);
+
+CREATE INDEX IF NOT EXISTS ix_ts_index_weight_code ON tushare_index_weight(index_code, trade_date);
+CREATE INDEX IF NOT EXISTS ix_ts_index_weight_con ON tushare_index_weight(con_code);
+COMMENT ON TABLE tushare_index_weight IS 'Tushare index_weight 指数成分和权重缓存';
+
+COMMENT ON COLUMN tushare_index_weight.id IS '自增主键';
+COMMENT ON COLUMN tushare_index_weight.index_code IS '指数代码';
+COMMENT ON COLUMN tushare_index_weight.con_code IS '成分股票代码';
+COMMENT ON COLUMN tushare_index_weight.trade_date IS '交易日期';
+COMMENT ON COLUMN tushare_index_weight.weight IS '权重（%）';
+COMMENT ON COLUMN tushare_index_weight.created_at IS '记录创建时间';
+COMMENT ON COLUMN tushare_index_weight.updated_at IS '记录最近更新时间';
+
+-- 4.6 申万行业分类
+-- API: index_classify
+CREATE TABLE IF NOT EXISTS tushare_index_classify (
+    id              BIGSERIAL PRIMARY KEY,
+    index_code      VARCHAR(20)  NOT NULL,    -- 指数代码
+    industry_name   VARCHAR(50),              -- 行业名称
+    level           VARCHAR(5),               -- 行业等级（L1/L2/L3）
+    industry_code   VARCHAR(20),              -- 行业代码
+    is_pub          VARCHAR(2),               -- 是否发布
+    parent_code     VARCHAR(20),              -- 父级行业代码
+    src             VARCHAR(10),              -- 行业源（SW2021/SW2014）
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uix_ts_index_classify UNIQUE (index_code, src)
+);
+
+CREATE INDEX IF NOT EXISTS ix_ts_index_classify_level ON tushare_index_classify(level, src);
+COMMENT ON TABLE tushare_index_classify IS 'Tushare index_classify 申万行业分类缓存';
+
+COMMENT ON COLUMN tushare_index_classify.id IS '自增主键';
+COMMENT ON COLUMN tushare_index_classify.index_code IS '指数代码';
+COMMENT ON COLUMN tushare_index_classify.industry_name IS '行业名称';
+COMMENT ON COLUMN tushare_index_classify.level IS '行业等级（L1/L2/L3）';
+COMMENT ON COLUMN tushare_index_classify.industry_code IS '行业代码';
+COMMENT ON COLUMN tushare_index_classify.is_pub IS '是否发布';
+COMMENT ON COLUMN tushare_index_classify.parent_code IS '父级行业代码';
+COMMENT ON COLUMN tushare_index_classify.src IS '行业源（SW2021/SW2014）';
+COMMENT ON COLUMN tushare_index_classify.created_at IS '记录创建时间';
+COMMENT ON COLUMN tushare_index_classify.updated_at IS '记录最近更新时间';
+
+-- 4.7 申万行业成分
+-- API: index_member_all
+CREATE TABLE IF NOT EXISTS tushare_index_member_all (
+    id              BIGSERIAL PRIMARY KEY,
+    l1_code         VARCHAR(20),               -- 一级行业代码
+    l1_name         VARCHAR(50),               -- 一级行业名称
+    l2_code         VARCHAR(20),               -- 二级行业代码
+    l2_name         VARCHAR(50),               -- 二级行业名称
+    l3_code         VARCHAR(20),               -- 三级行业代码
+    l3_name         VARCHAR(50),               -- 三级行业名称
+    ts_code         VARCHAR(12)  NOT NULL,     -- 股票代码
+    name            VARCHAR(50),               -- 股票名称
+    in_date         DATE,                      -- 纳入日期
+    out_date        DATE,                      -- 剔除日期
+    is_new          VARCHAR(5),                -- 是否最新（Y/N）
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uix_ts_index_member UNIQUE (ts_code, l1_code, l2_code, l3_code, in_date)
+);
+
+CREATE INDEX IF NOT EXISTS ix_ts_index_member_code ON tushare_index_member_all(ts_code);
+CREATE INDEX IF NOT EXISTS ix_ts_index_member_l1 ON tushare_index_member_all(l1_code);
+COMMENT ON TABLE tushare_index_member_all IS 'Tushare index_member_all 申万行业成分缓存';
+
+COMMENT ON COLUMN tushare_index_member_all.id IS '自增主键';
+COMMENT ON COLUMN tushare_index_member_all.l1_code IS '一级行业代码';
+COMMENT ON COLUMN tushare_index_member_all.l1_name IS '一级行业名称';
+COMMENT ON COLUMN tushare_index_member_all.l2_code IS '二级行业代码';
+COMMENT ON COLUMN tushare_index_member_all.l2_name IS '二级行业名称';
+COMMENT ON COLUMN tushare_index_member_all.l3_code IS '三级行业代码';
+COMMENT ON COLUMN tushare_index_member_all.l3_name IS '三级行业名称';
+COMMENT ON COLUMN tushare_index_member_all.ts_code IS '股票代码';
+COMMENT ON COLUMN tushare_index_member_all.name IS '股票名称';
+COMMENT ON COLUMN tushare_index_member_all.in_date IS '纳入日期';
+COMMENT ON COLUMN tushare_index_member_all.out_date IS '剔除日期';
+COMMENT ON COLUMN tushare_index_member_all.is_new IS '是否最新（Y/N）';
+COMMENT ON COLUMN tushare_index_member_all.created_at IS '记录创建时间';
+COMMENT ON COLUMN tushare_index_member_all.updated_at IS '记录最近更新时间';
+
+-- ============================================================
+-- 5. 宏观利率数据层
+-- ============================================================
+
+-- 5.1 SHIBOR 利率
+-- API: shibor
+CREATE TABLE IF NOT EXISTS tushare_shibor (
+    id              BIGSERIAL PRIMARY KEY,
+    date            DATE         NOT NULL,
+    "on"            NUMERIC(12,4),            -- 隔夜
+    "1w"            NUMERIC(12,4),            -- 1周
+    "2w"            NUMERIC(12,4),            -- 2周
+    "1m"            NUMERIC(12,4),            -- 1月
+    "3m"            NUMERIC(12,4),            -- 3月
+    "6m"            NUMERIC(12,4),            -- 6月
+    "9m"            NUMERIC(12,4),            -- 9月
+    "1y"            NUMERIC(12,4),            -- 1年
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uix_ts_shibor_date UNIQUE (date)
+);
+
+COMMENT ON TABLE tushare_shibor IS 'Tushare shibor SHIBOR利率缓存';
+
+COMMENT ON COLUMN tushare_shibor.id IS '自增主键';
+COMMENT ON COLUMN tushare_shibor.date IS '日期';
+COMMENT ON COLUMN tushare_shibor."on" IS '隔夜利率';
+COMMENT ON COLUMN tushare_shibor."1w" IS '1周利率';
+COMMENT ON COLUMN tushare_shibor."2w" IS '2周利率';
+COMMENT ON COLUMN tushare_shibor."1m" IS '1月利率';
+COMMENT ON COLUMN tushare_shibor."3m" IS '3月利率';
+COMMENT ON COLUMN tushare_shibor."6m" IS '6月利率';
+COMMENT ON COLUMN tushare_shibor."9m" IS '9月利率';
+COMMENT ON COLUMN tushare_shibor."1y" IS '1年利率';
+COMMENT ON COLUMN tushare_shibor.created_at IS '记录创建时间';
+COMMENT ON COLUMN tushare_shibor.updated_at IS '记录最近更新时间';
+
+-- 5.2 SHIBOR 报价
+-- API: shibor_quote（实测返回 date, bank, on_b, on_a, 1w_b, 1w_a, ..., 1y_b, 1y_a）
+CREATE TABLE IF NOT EXISTS tushare_shibor_quote (
+    id              BIGSERIAL PRIMARY KEY,
+    date            DATE        NOT NULL,
+    bank            VARCHAR(100),              -- 报价银行
+    on_b            NUMERIC(12,4),             -- 隔夜买入报价
+    on_a            NUMERIC(12,4),             -- 隔夜卖出报价
+    "1w_b"          NUMERIC(12,4),
+    "1w_a"          NUMERIC(12,4),
+    "2w_b"          NUMERIC(12,4),
+    "2w_a"          NUMERIC(12,4),
+    "1m_b"          NUMERIC(12,4),
+    "1m_a"          NUMERIC(12,4),
+    "3m_b"          NUMERIC(12,4),
+    "3m_a"          NUMERIC(12,4),
+    "6m_b"          NUMERIC(12,4),
+    "6m_a"          NUMERIC(12,4),
+    "9m_b"          NUMERIC(12,4),
+    "9m_a"          NUMERIC(12,4),
+    "1y_b"          NUMERIC(12,4),
+    "1y_a"          NUMERIC(12,4),
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uix_ts_shibor_quote UNIQUE (date, bank)
+);
+
+COMMENT ON TABLE tushare_shibor_quote IS 'Tushare shibor_quote SHIBOR报价缓存';
+
+COMMENT ON COLUMN tushare_shibor_quote.id IS '自增主键';
+COMMENT ON COLUMN tushare_shibor_quote.date IS '日期';
+COMMENT ON COLUMN tushare_shibor_quote.bank IS '报价银行';
+COMMENT ON COLUMN tushare_shibor_quote.on_b IS '隔夜买入报价';
+COMMENT ON COLUMN tushare_shibor_quote.on_a IS '隔夜卖出报价';
+COMMENT ON COLUMN tushare_shibor_quote."1w_b" IS '1周买入报价';
+COMMENT ON COLUMN tushare_shibor_quote."1w_a" IS '1周卖出报价';
+COMMENT ON COLUMN tushare_shibor_quote."2w_b" IS '2周买入报价';
+COMMENT ON COLUMN tushare_shibor_quote."2w_a" IS '2周卖出报价';
+COMMENT ON COLUMN tushare_shibor_quote."1m_b" IS '1月买入报价';
+COMMENT ON COLUMN tushare_shibor_quote."1m_a" IS '1月卖出报价';
+COMMENT ON COLUMN tushare_shibor_quote."3m_b" IS '3月买入报价';
+COMMENT ON COLUMN tushare_shibor_quote."3m_a" IS '3月卖出报价';
+COMMENT ON COLUMN tushare_shibor_quote."6m_b" IS '6月买入报价';
+COMMENT ON COLUMN tushare_shibor_quote."6m_a" IS '6月卖出报价';
+COMMENT ON COLUMN tushare_shibor_quote."9m_b" IS '9月买入报价';
+COMMENT ON COLUMN tushare_shibor_quote."9m_a" IS '9月卖出报价';
+COMMENT ON COLUMN tushare_shibor_quote."1y_b" IS '1年买入报价';
+COMMENT ON COLUMN tushare_shibor_quote."1y_a" IS '1年卖出报价';
+COMMENT ON COLUMN tushare_shibor_quote.created_at IS '记录创建时间';
+COMMENT ON COLUMN tushare_shibor_quote.updated_at IS '记录最近更新时间';
+
+-- ============================================================
+-- 6. 辅助视图：合并日线 + 复权因子 → 前/后复权价格
 -- ============================================================
 
 -- 视图: 合并 daily + adj_factor，提供复权价格
@@ -1010,7 +1922,7 @@ LEFT JOIN tushare_daily_basic db ON d.ts_code = db.ts_code AND d.trade_date = db
 COMMENT ON VIEW v_tushare_stock_full IS '个股日线全景视图（行情+基本面+基础信息）';
 
 -- ============================================================
--- 5. 数据同步元数据表（记录每次缓存的拉取状态）
+-- 7. 数据同步元数据表（记录每次缓存的拉取状态）
 -- ============================================================
 
 CREATE TABLE IF NOT EXISTS tushare_sync_log (
@@ -1046,7 +1958,7 @@ COMMENT ON COLUMN tushare_sync_log.finished_at IS '同步结束时间';
 COMMENT ON COLUMN tushare_sync_log.created_at IS '记录创建时间';
 
 -- ============================================================
--- 6. updated_at 自动更新触发器
+-- 8. updated_at 自动更新触发器
 -- ============================================================
 
 CREATE OR REPLACE FUNCTION fn_tushare_updated_at()
@@ -1079,7 +1991,16 @@ BEGIN
             'tushare_fina_indicator',
             'tushare_fina_audit',
             'tushare_fina_mainbz',
-            'tushare_cyq'
+            'tushare_cyq',
+            'tushare_moneyflow', 'tushare_margin', 'tushare_margin_detail',
+            'tushare_stk_holdernumber', 'tushare_top_list', 'tushare_top_inst',
+            'tushare_pledge_detail', 'tushare_pledge_stat', 'tushare_repurchase',
+            'tushare_block_trade', 'tushare_stk_holdertrade', 'tushare_stk_limit',
+            'tushare_disclosure_date',
+            'tushare_index_basic', 'tushare_index_daily', 'tushare_index_weekly',
+            'tushare_index_monthly', 'tushare_index_weight', 'tushare_index_classify',
+            'tushare_index_member_all',
+            'tushare_shibor', 'tushare_shibor_quote'
         ])
     LOOP
         EXECUTE format('
@@ -1089,6 +2010,69 @@ BEGIN
                 FOR EACH ROW
                 EXECUTE FUNCTION fn_tushare_updated_at();
         ', tbl, tbl, tbl, tbl);
+    END LOOP;
+END $$;
+
+-- ============================================================
+-- 分区子表注释传播
+-- PostgreSQL 不会把父表的 column comment / table comment 继承到分区子表，
+-- 此处将各分区父表的表注释与列注释批量拷贝到其所有子分区（含 default 分区）。
+-- 幂等：重复执行只是覆盖相同注释。
+-- ============================================================
+
+DO $$
+DECLARE
+    parent_tbl  TEXT;
+    parent_oid  OID;
+    part_tbl    TEXT;
+    col_rec     RECORD;
+    tbl_cmt     TEXT;
+BEGIN
+    FOR parent_tbl IN
+        SELECT unnest(ARRAY[
+            'tushare_daily', 'tushare_adj_factor', 'tushare_daily_basic',
+            'tushare_moneyflow', 'tushare_margin_detail',
+            'tushare_stk_limit', 'tushare_index_daily'
+        ])
+    LOOP
+        SELECT c.oid INTO parent_oid
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE c.relname = parent_tbl AND n.nspname = 'public';
+        IF parent_oid IS NULL THEN
+            CONTINUE;
+        END IF;
+
+        tbl_cmt := obj_description(parent_oid);
+
+        FOR part_tbl IN
+            SELECT c.relname
+            FROM pg_inherits i
+            JOIN pg_class c ON c.oid = i.inhrelid
+            WHERE i.inhparent = parent_oid
+        LOOP
+            IF tbl_cmt IS NOT NULL THEN
+                EXECUTE format(
+                    'COMMENT ON TABLE %I.%I IS %L',
+                    'public', part_tbl, tbl_cmt
+                );
+            END IF;
+
+            FOR col_rec IN
+                SELECT a.attname, col_description(parent_oid, a.attnum) AS cmt
+                FROM pg_attribute a
+                WHERE a.attrelid = parent_oid
+                  AND a.attnum > 0
+                  AND NOT a.attisdropped
+            LOOP
+                IF col_rec.cmt IS NOT NULL THEN
+                    EXECUTE format(
+                        'COMMENT ON COLUMN %I.%I IS %L',
+                        part_tbl, col_rec.attname, col_rec.cmt
+                    );
+                END IF;
+            END LOOP;
+        END LOOP;
     END LOOP;
 END $$;
 

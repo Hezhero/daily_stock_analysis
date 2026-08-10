@@ -309,7 +309,7 @@ def insert_dataframe(
             df[col] = df[col].apply(_parse_date)
 
     # NaN → None
-    df = df.where(pd.notnull(df), None)
+    df = df.astype(object).where(pd.notnull(df), None)
 
     records = [tuple(row) for row in df.values]
     if not records:
