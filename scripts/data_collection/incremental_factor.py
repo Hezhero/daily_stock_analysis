@@ -50,6 +50,7 @@ logging.basicConfig(
 logger = logging.getLogger("inc_factor")
 
 # 拉取范围与频率
+# 实测(2026-08): 12 个接口 3 连测无接口级限频; 全局限频 500 次/分(5000积分档), RATE_LIMIT=480 留余量
 DEFAULT_START = "20160101"
 LOOKBACK_DAYS = 180
 SLEEP_BETWEEN = 0.15

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-筹码分布（CYQ）数据采集脚本（本地计算版）
+筹码分布（CYQ）数据采集脚本（本地计算版，支持逐日全量/增量）
 
 数据来源：本地 PostgreSQL 的 tushare_daily（日线 OHLCV）与 tushare_daily_basic（换手率）
 目标表：tushare_cyq（PostgreSQL，tushare 库）
@@ -13,22 +13,27 @@
        按三角形权重分配到离散价格档位；
      - 历史筹码按换手率逐日衰减（1 - turnover_rate），形成累计筹码分布；
      - 基于累计筹码分布计算获利比例、平均成本、90/70 成本区间与集中度。
+  4. 逐日计算：每个交易日一行指标写入 tushare_cyq（不再只写最新一天）；
+  5. 增量更新：已有数据的股票从 start_date 全量重算（与全量回填共用同一价格档位
+     网格与同一累积深度，保证结果一致），仅插入最新日期之后的新行。
 
 算法说明:
   三角形分布法是筹码分布的常见近似（东财/通达信同源思路），仅需
   low/high/close/vol 即可建模，配合 daily_basic 的换手率衰减历史筹码。
+  权重矩阵与指标计算向量化，仅衰减累积按日循环，性能满足全 A 股全量回填。
 
 容错:
   - 单只股票计算失败不中断整体流程，记录日志后继续
   - ON CONFLICT (ts_code, trade_date) DO NOTHING 幂等，可重复执行
-  - 支持 --limit / --symbol / --days / --sleep 便于测试与分批执行
+  - 支持 --limit / --symbol / --start-date / --end-date / --sleep
+    便于测试与分批执行
 
 用法:
-  python scripts/data_collection/incremental_cyq.py                # 全量上市股票
-  python scripts/data_collection/incremental_cyq.py --limit 100    # 前 100 只（测试）
+  python scripts/data_collection/incremental_cyq.py                    # 全量上市股票（2016-01-01 至今，增量）
+  python scripts/data_collection/incremental_cyq.py --limit 100        # 前 100 只（测试）
   python scripts/data_collection/incremental_cyq.py --symbol 600519
-  python scripts/data_collection/incremental_cyq.py --days 250     # 计算窗口天数
-  python scripts/data_collection/incremental_cyq.py --sleep 0.2    # 每只股票处理间隔秒数
+  python scripts/data_collection/incremental_cyq.py --start-date 20260101 --end-date 20261231
+  python scripts/data_collection/incremental_cyq.py --sleep 0.2        # 每只股票处理间隔秒数
 """
 
 import argparse
@@ -36,6 +41,7 @@ import logging
 import os
 import sys
 import time
+from datetime import date, datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -60,7 +66,11 @@ logger = logging.getLogger("inc_cyq")
 TABLE = "tushare_cyq"
 
 # 价格档位数（三角形分布离散化的粒度）
-PRICE_BINS = 100
+# 采用对数间距档位：对 [min(low), max(high)] 全历史价格区间做对数等分，
+# 保证任意价位下的相对分辨率恒定（10 年跨度价格可相差近 10 倍，
+# 线性等分会导致早期低价区间每个档位过宽、三角形分布退化为单点）。
+# 500 档下每档相对宽度约 0.5%~0.9%，足以覆盖单日 [low, high] 振幅。
+PRICE_BINS = 500
 
 # 建表 DDL（与 docs/tushare_postgres_schema.sql 2.4 保持一致，脚本内幂等建表保证独立可运行）
 CREATE_TABLE_SQL = f"""
@@ -116,6 +126,19 @@ BEGIN
 END $$;
 """
 
+# 逐日结果 DataFrame 的列（trade_date 为 YYYY-MM-DD 字符串）
+DAILY_COLUMNS = [
+    "trade_date",
+    "profit_ratio",
+    "avg_cost",
+    "cost_90_low",
+    "cost_90_high",
+    "concentration_90",
+    "cost_70_low",
+    "cost_70_high",
+    "concentration_70",
+]
+
 
 def ensure_cyq_table(conn) -> bool:
     """幂等创建 tushare_cyq 表及索引、触发器。返回是否新创建。"""
@@ -155,26 +178,33 @@ def get_stock_list(conn) -> list[tuple[str, str]]:
         cur.close()
 
 
-def load_daily_data(conn, ts_code: str, days: int) -> pd.DataFrame:
-    """从 tushare_daily 读取最近 N 个交易日的日线数据（升序）。
+def load_daily_data(conn, ts_code: str, start_date=None, end_date=None) -> pd.DataFrame:
+    """从 tushare_daily 读取指定日期范围的日线数据（升序）。
 
     Args:
         conn: psycopg2 连接。
         ts_code: Tushare 格式股票代码（如 600519.SH）。
-        days: 计算窗口天数（最近 N 个交易日）。
+        start_date: 起始日期（YYYYMMDD / YYYY-MM-DD 字符串或 date），None 表示不限。
+        end_date: 结束日期（同上），None 表示不限。
 
     Returns:
         DataFrame（ts_code/trade_date/open/high/low/close/vol），按 trade_date 升序。
     """
     cur = conn.cursor()
     try:
-        cur.execute(
+        sql = (
             "SELECT ts_code, trade_date, open, high, low, close, vol "
-            "FROM tushare_daily "
-            "WHERE ts_code=%s "
-            "ORDER BY trade_date DESC LIMIT %s",
-            (ts_code, days),
+            "FROM tushare_daily WHERE ts_code=%s"
         )
+        params: list = [ts_code]
+        if start_date is not None:
+            sql += " AND trade_date >= %s"
+            params.append(start_date)
+        if end_date is not None:
+            sql += " AND trade_date <= %s"
+            params.append(end_date)
+        sql += " ORDER BY trade_date"
+        cur.execute(sql, params)
         rows = cur.fetchall()
         df = pd.DataFrame(
             rows,
@@ -188,26 +218,56 @@ def load_daily_data(conn, ts_code: str, days: int) -> pd.DataFrame:
     return df
 
 
-def load_daily_basic(conn, ts_code: str, days: int) -> pd.DataFrame:
-    """从 tushare_daily_basic 读取最近 N 个交易日的换手率数据（升序）。
+def get_full_price_range(conn, ts_code: str) -> tuple[float, float] | None:
+    """查询 ts_code 全历史日线价格区间 (min(low), max(high))。
+
+    用于固定筹码分布的价格档位网格，保证全量回填与增量计算共用同一网格。
+    无有效数据时返回 None（调用方退化为当日区间）。
+    """
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT MIN(low), MAX(high) FROM tushare_daily "
+            "WHERE ts_code=%s AND low IS NOT NULL AND high IS NOT NULL",
+            (ts_code,),
+        )
+        row = cur.fetchone()
+    finally:
+        cur.close()
+    if row is None or row[0] is None or row[1] is None:
+        return None
+    low_min, high_max = float(row[0]), float(row[1])
+    if not (low_min > 0 and high_max > low_min):
+        return None
+    return (low_min, high_max)
+
+
+def load_daily_basic(conn, ts_code: str, start_date=None, end_date=None) -> pd.DataFrame:
+    """从 tushare_daily_basic 读取指定日期范围的换手率数据（升序）。
 
     Args:
         conn: psycopg2 连接。
         ts_code: Tushare 格式股票代码。
-        days: 计算窗口天数。
+        start_date / end_date: 日期范围（同 load_daily_data）。
 
     Returns:
         DataFrame: ts_code/trade_date/turnover_rate/float_share，按 trade_date 升序。
     """
     cur = conn.cursor()
     try:
-        cur.execute(
+        sql = (
             "SELECT ts_code, trade_date, turnover_rate, float_share "
-            "FROM tushare_daily_basic "
-            "WHERE ts_code=%s "
-            "ORDER BY trade_date DESC LIMIT %s",
-            (ts_code, days),
+            "FROM tushare_daily_basic WHERE ts_code=%s"
         )
+        params: list = [ts_code]
+        if start_date is not None:
+            sql += " AND trade_date >= %s"
+            params.append(start_date)
+        if end_date is not None:
+            sql += " AND trade_date <= %s"
+            params.append(end_date)
+        sql += " ORDER BY trade_date"
+        cur.execute(sql, params)
         rows = cur.fetchall()
         df = pd.DataFrame(
             rows,
@@ -221,16 +281,126 @@ def load_daily_basic(conn, ts_code: str, days: int) -> pd.DataFrame:
     return df
 
 
-def compute_chip_distribution(daily_df: pd.DataFrame, basic_df: pd.DataFrame) -> dict:
-    """基于 tushare_daily 与 tushare_daily_basic 本地计算筹码分布（纯函数，无 IO）。
+def get_latest_cyq_date(conn, ts_code: str):
+    """查询 tushare_cyq 中该股票已有的最大 trade_date。
+
+    Returns:
+        datetime.date 或 None（无历史）。
+    """
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT MAX(trade_date) FROM tushare_cyq WHERE ts_code=%s",
+            (ts_code,),
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
+    finally:
+        cur.close()
+
+
+def get_earliest_cyq_date(conn, ts_code: str):
+    """查询 tushare_cyq 中该股票已有的最小 trade_date。
+
+    Returns:
+        datetime.date 或 None（无历史）。
+    """
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT MIN(trade_date) FROM tushare_cyq WHERE ts_code=%s",
+            (ts_code,),
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
+    finally:
+        cur.close()
+
+
+def get_earliest_daily_date(conn, ts_code: str):
+    """查询 tushare_daily 中该股票的最小 trade_date（用于判断历史是否缺失）。
+
+    Returns:
+        datetime.date 或 None（无日线数据）。
+    """
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT MIN(trade_date) FROM tushare_daily WHERE ts_code=%s",
+            (ts_code,),
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
+    finally:
+        cur.close()
+
+
+def _compute_weights(lows, highs, closes, vols, bins) -> np.ndarray:
+    """向量化计算逐日三角形权重矩阵 W: (N, BINS)。
+
+    每个交易日以 (low+high+close)/3 为峰值做三角形分布，权重归一化到当日成交量；
+    high==low 的交易日筹码全部落在该价格档；vol<=0 或 high<low 的交易日权重为 0。
+    支持对数间距档位（各档宽度不同，按每档实际宽度加权）。
+    """
+    centers = (bins[:-1] + bins[1:]) / 2.0
+    bin_widths = bins[1:] - bins[:-1]                            # 每档实际宽度
+    n = len(lows)
+    n_bins = len(centers)
+
+    c = centers[None, :]                                   # (1, BINS)
+    lo = lows[:, None]                                     # (N, 1)
+    hi = highs[:, None]                                    # (N, 1)
+    peak = ((lows + highs + closes) / 3.0)[:, None]        # (N, 1)
+    vol = vols[:, None]                                    # (N, 1)
+
+    in_range = (c >= lo) & (c <= hi)
+    rise = (c <= peak) & (peak > lo)
+    fall = (c > peak) & (hi > peak)
+
+    h = np.zeros((n, n_bins), dtype=float)
+    h = np.where(rise, (c - lo) / np.where(peak > lo, peak - lo, 1.0), h)
+    h = np.where(fall, (hi - c) / np.where(hi > peak, hi - peak, 1.0), h)
+    h = np.where(in_range, h, 0.0)
+
+    w = h * bin_widths[None, :]
+    row_sum = w.sum(axis=1, keepdims=True)
+    w = np.where(row_sum > 0, w / np.where(row_sum > 0, row_sum, 1.0) * vol, 0.0)
+
+    # high == low：全部筹码落在该价格档
+    flat = highs == lows
+    if flat.any():
+        idx = np.searchsorted(bins, lows[flat], side="right") - 1
+        idx = np.clip(idx, 0, n_bins - 1)
+        w_flat = np.zeros((int(flat.sum()), n_bins), dtype=float)
+        w_flat[np.arange(len(idx)), idx] = vols[flat]
+        w[flat] = w_flat
+
+    # 无效日（vol<=0 或 high<low）：权重置 0
+    valid = (vols > 0) & (highs >= lows)
+    w[~valid] = 0.0
+    return w
+
+
+def compute_chip_distribution_daily(
+    daily_df: pd.DataFrame,
+    basic_df: pd.DataFrame,
+    price_range: tuple[float, float] | None = None,
+) -> pd.DataFrame:
+    """基于 tushare_daily 与 tushare_daily_basic 逐日计算筹码分布（纯函数，无 IO）。
 
     算法（三角形分布法）:
-      1. 对每个交易日，在 [low, high] 区间上以 (low+high+close)/3 为峰值做三角形分布，
-         将该日成交量按三角形权重分配到离散价格档位（PRICE_BINS 档）；
-      2. 历史筹码按换手率逐日衰减：decay = 1 - turnover_rate/100；
+      1. 构造固定价格档位（PRICE_BINS 档）：
+         - 传入 price_range=(low_min, high_max) 时使用该区间（保证全量回填与
+           增量计算共用同一档位网格，结果一致）；
+         - 未传时退化为当前 daily_df 的 [min(low), max(high)]；
+         档位采用对数间距等分，保证任意价位下的相对分辨率恒定（线性等分在
+         价格跨度近 10 倍时，早期低价区间档位过宽、三角形分布退化为单点）；
+      2. 向量化计算逐日三角形权重矩阵 W (N, BINS)，归一化到当日成交量；
+      3. 历史筹码按换手率逐日衰减：decay = 1 - turnover_rate/100；
          累计筹码 chips[t] = 当日分配 + decay * 前日累计；
-         某日 basic 缺失时 decay 按 1.0 处理（不衰减）；
-      3. 基于累计筹码分布计算：
+         某日 basic 缺失时 decay 按 1.0 处理（不衰减）；vol<=0 / high<low 的交易日
+         既不分配筹码也不衰减（与旧版单日逻辑一致）；
+      4. 基于每日累计筹码分布计算：
          - profit_ratio: 价格 <= 当日收盘价 close 的筹码占比（0~1）
          - avg_cost: 筹码量加权平均价格
          - cost_90_low/high: 累积占比 5%/95% 分位价格；concentration_90 = (high-low)/(high+low)
@@ -239,20 +409,20 @@ def compute_chip_distribution(daily_df: pd.DataFrame, basic_df: pd.DataFrame) ->
     Args:
         daily_df: 日线 DataFrame（ts_code/trade_date/open/high/low/close/vol），升序。
         basic_df: 每日基本面 DataFrame（ts_code/trade_date/turnover_rate/float_share），升序。
+        price_range: 可选 (low_min, high_max)，用于固定价格档位网格。
 
     Returns:
-        dict: trade_date/profit_ratio/avg_cost/cost_90_low/cost_90_high/concentration_90
-              /cost_70_low/cost_70_high/concentration_70。
-              空输入返回空 dict。
+        DataFrame: DAILY_COLUMNS 各列，每个交易日一行（trade_date 为 YYYY-MM-DD 字符串）。
+        空输入返回空 DataFrame。
     """
     if daily_df is None or daily_df.empty:
-        return {}
+        return pd.DataFrame(columns=DAILY_COLUMNS)
 
     df = daily_df.copy()
     df = df.sort_values("trade_date").reset_index(drop=True)
+    df["trade_date"] = pd.to_datetime(df["trade_date"])
 
     # 合并换手率（basic 缺失时 turnover_rate=NaN → 衰减按 1.0）
-    df["trade_date"] = pd.to_datetime(df["trade_date"])
     if basic_df is not None and not basic_df.empty:
         basic = basic_df.copy()
         basic["trade_date"] = pd.to_datetime(basic["trade_date"])
@@ -261,138 +431,132 @@ def compute_chip_distribution(daily_df: pd.DataFrame, basic_df: pd.DataFrame) ->
             on="trade_date",
             how="left",
         )
-        turnover = df["turnover_rate"].fillna(0.0).astype(float)
+        turnover = df["turnover_rate"].fillna(0.0).astype(float).to_numpy()
     else:
-        turnover = pd.Series([0.0] * len(df), index=df.index)
+        turnover = np.zeros(len(df), dtype=float)
 
-    # 构造价格档位：覆盖窗口内 [min(low), max(high)]
-    low_min = float(df["low"].min())
-    high_max = float(df["high"].max())
-    if not np.isfinite(low_min) or not np.isfinite(high_max) or high_max <= low_min:
-        # 单日无振幅或数据异常：退化为单点分布（构造一个宽度为 1 的档位）
-        price = float(df["close"].iloc[-1])
+    lows = df["low"].to_numpy(dtype=float)
+    highs = df["high"].to_numpy(dtype=float)
+    closes = df["close"].to_numpy(dtype=float)
+    vols = np.nan_to_num(df["vol"].to_numpy(dtype=float), nan=0.0)
+
+    # 构造价格档位：默认覆盖整个计算区间 [min(low), max(high)]；
+    # 传入 price_range 时使用全历史价格区间（全量回填与增量共用同一网格）。
+    # 对数间距等分：价格跨度可达近 10 倍，线性等分会让早期低价区间档位过宽、
+    # 三角形分布退化为单点；对数等分保证相对分辨率恒定。
+    if price_range is not None:
+        low_min, high_max = float(price_range[0]), float(price_range[1])
+    else:
+        finite_lows = lows[np.isfinite(lows)]
+        finite_highs = highs[np.isfinite(highs)]
+        low_min = float(finite_lows.min()) if finite_lows.size else float("nan")
+        high_max = float(finite_highs.max()) if finite_highs.size else float("nan")
+    if not np.isfinite(low_min) or not np.isfinite(high_max) or high_max <= low_min or low_min <= 0:
+        # 无有效振幅或数据异常：退化为单点分布（构造一个宽度为 1 的档位）
+        price = float(closes[-1])
         bins = np.array([price - 0.5, price + 0.5])
-        bin_width = 1.0
     else:
-        bins = np.linspace(low_min, high_max, PRICE_BINS + 1)
-        bin_width = bins[1] - bins[0]
-
-    # 逐日三角形分布累计
-    chips = np.zeros(len(bins) - 1, dtype=float)
-    for i in range(len(df)):
-        row = df.iloc[i]
-        low = float(row["low"])
-        high = float(row["high"])
-        close = float(row["close"])
-        vol = float(row["vol"]) if pd.notna(row["vol"]) else 0.0
-        if vol <= 0 or high < low:
-            continue
-
-        # 三角形分布：峰值在 peak = (low+high+close)/3
-        peak = (low + high + close) / 3.0
-
-        # 三角形概率密度：在 [low, peak] 线性上升，[peak, high] 线性下降
-        # 对每个价格档的中心点计算三角形权重
-        centers = (bins[:-1] + bins[1:]) / 2.0
-        weights = np.zeros(len(centers), dtype=float)
-        if high > low:
-            # 归一化三角形：总面积 = (high - low) / 2 * peak_height，peak_height = 2/(high-low)
-            # 权重 = 三角形高度函数 * 档宽
-            for j, c in enumerate(centers):
-                if c < low or c > high:
-                    continue
-                if c <= peak:
-                    h = (c - low) / (peak - low) if peak > low else 1.0
-                else:
-                    h = (high - c) / (high - peak) if high > peak else 1.0
-                weights[j] = h * bin_width
-            # 归一化到当日成交量（三角形面积近似 = sum(weights)）
-            total_w = weights.sum()
-            if total_w > 0:
-                weights = weights / total_w * vol
-        else:
-            # high == low：全部筹码落在该价格档
-            idx = int(np.searchsorted(bins, low, side="right") - 1)
-            idx = max(0, min(idx, len(weights) - 1))
-            weights[idx] = vol
-
-        # 历史筹码衰减
-        decay = 1.0 - turnover.iloc[i] / 100.0 if i > 0 else 0.0
-        decay = max(0.0, min(1.0, decay))
-        chips = chips * decay + weights
-
-    total_chips = chips.sum()
-    if total_chips <= 0:
-        return {}
-
-    # 各档位价格（取档位中心）
+        bins = np.exp(np.linspace(np.log(low_min), np.log(high_max), PRICE_BINS + 1))
     centers = (bins[:-1] + bins[1:]) / 2.0
-    # 当日收盘价（目标交易日 = 最新交易日）
-    latest_close = float(df["close"].iloc[-1])
-    latest_date = df["trade_date"].iloc[-1]
+    n_bins = len(centers)
 
-    # 排序（价格升序）
-    order = np.argsort(centers)
-    sorted_prices = centers[order]
-    sorted_chips = chips[order]
+    w = _compute_weights(lows, highs, closes, vols, bins)
 
-    cum = np.cumsum(sorted_chips)
-    cum_ratio = cum / total_chips
+    # 逐日衰减累积（仅此步按日循环，避免数值下溢；其余全部向量化）
+    n = len(df)
+    chips_mat = np.zeros((n, n_bins), dtype=float)
+    chips = np.zeros(n_bins, dtype=float)
+    invalid = ~((vols > 0) & (highs >= lows))
+    for i in range(n):
+        if i > 0 and not invalid[i]:
+            decay = 1.0 - turnover[i] / 100.0
+            decay = max(0.0, min(1.0, decay))
+        else:
+            decay = 0.0 if i == 0 else 1.0  # 首日无历史；无效日不衰减（与旧版 continue 一致）
+        chips = chips * decay + w[i]
+        chips_mat[i] = chips
 
-    # 获利比例：价格 <= 收盘价的筹码占比
-    profit_ratio = float(sorted_chips[sorted_prices <= latest_close].sum() / total_chips)
+    totals = chips_mat.sum(axis=1)
 
-    # 平均成本：加权平均价格
-    avg_cost = float((sorted_prices * sorted_chips).sum() / total_chips)
+    # 获利比例：价格 <= 当日收盘价的筹码占比（centers 升序）
+    close_pos = np.searchsorted(centers, closes, side="right")
+    cum = np.cumsum(chips_mat, axis=1)
+    profit = np.zeros(n, dtype=float)
+    mask = close_pos > 0
+    profit[mask] = cum[np.arange(n)[mask], close_pos[mask] - 1] / np.where(
+        totals[mask] > 0, totals[mask], 1.0
+    )
+    profit = np.clip(profit, 0.0, 1.0)
 
-    def _percentile_price(target_pct: float) -> float:
-        """返回累积占比达到 target_pct 的分位价格。"""
-        idx = int(np.searchsorted(cum_ratio, target_pct / 100.0, side="left"))
-        idx = min(idx, len(sorted_prices) - 1)
-        return float(sorted_prices[idx])
+    # 平均成本：筹码量加权平均价格
+    safe_total = np.where(totals > 0, totals, 1.0)
+    avg_cost = np.where(
+        totals > 0,
+        (chips_mat * centers[None, :]).sum(axis=1) / safe_total,
+        0.0,
+    )
 
-    def _concentration(low_p, high_p) -> float:
-        if (high_p + low_p) == 0:
-            return 0.0
-        return float((high_p - low_p) / (high_p + low_p))
+    # 分位价格：累积占比达到 target 的档位价格
+    cum_ratio = cum / safe_total[:, None]
 
-    cost_90_low = _percentile_price(5)
-    cost_90_high = _percentile_price(95)
-    cost_70_low = _percentile_price(15)
-    cost_70_high = _percentile_price(85)
+    def _pct_price(target: float) -> np.ndarray:
+        idx = np.argmax(cum_ratio >= target, axis=1)
+        reached = cum_ratio[:, -1] >= target
+        idx = np.where(reached, idx, n_bins - 1)
+        return centers[idx]
 
-    try:
-        latest_date_str = latest_date.strftime("%Y-%m-%d") if hasattr(latest_date, "strftime") else str(latest_date)
-    except Exception:
-        latest_date_str = str(latest_date)
+    cost_90_low = _pct_price(0.05)
+    cost_90_high = _pct_price(0.95)
+    cost_70_low = _pct_price(0.15)
+    cost_70_high = _pct_price(0.85)
 
-    return {
-        "trade_date": latest_date_str,
-        "profit_ratio": round(profit_ratio, 6),
-        "avg_cost": round(avg_cost, 4),
-        "cost_90_low": round(cost_90_low, 4),
-        "cost_90_high": round(cost_90_high, 4),
-        "concentration_90": round(_concentration(cost_90_low, cost_90_high), 6),
-        "cost_70_low": round(cost_70_low, 4),
-        "cost_70_high": round(cost_70_high, 4),
-        "concentration_70": round(_concentration(cost_70_low, cost_70_high), 6),
-    }
+    def _concentration(low_p: np.ndarray, high_p: np.ndarray) -> np.ndarray:
+        denom = high_p + low_p
+        return np.where(denom != 0, (high_p - low_p) / np.where(denom != 0, denom, 1.0), 0.0)
+
+    result = pd.DataFrame(
+        {
+            "trade_date": df["trade_date"].dt.strftime("%Y-%m-%d"),
+            "profit_ratio": np.round(profit, 6),
+            "avg_cost": np.round(avg_cost, 4),
+            "cost_90_low": np.round(cost_90_low, 4),
+            "cost_90_high": np.round(cost_90_high, 4),
+            "concentration_90": np.round(_concentration(cost_90_low, cost_90_high), 6),
+            "cost_70_low": np.round(cost_70_low, 4),
+            "cost_70_high": np.round(cost_70_high, 4),
+            "concentration_70": np.round(_concentration(cost_70_low, cost_70_high), 6),
+        }
+    )
+    return result[DAILY_COLUMNS]
 
 
-def save_cyq(conn, ts_code: str, metrics: dict) -> int:
-    """将单只股票筹码指标写入 tushare_cyq 表（幂等）。
+def compute_chip_distribution(daily_df: pd.DataFrame, basic_df: pd.DataFrame) -> dict:
+    """兼容包装：返回最新一个交易日的筹码分布指标 dict。
+
+    内部调用 compute_chip_distribution_daily 并取最后一行，保持旧调用方（测试等）兼容。
+    空输入返回空 dict。
+    """
+    df = compute_chip_distribution_daily(daily_df, basic_df)
+    if df.empty:
+        return {}
+    row = df.iloc[-1]
+    return {col: row[col] for col in DAILY_COLUMNS}
+
+
+def save_cyq(conn, ts_code: str, df: pd.DataFrame) -> int:
+    """将单只股票的逐日筹码指标批量写入 tushare_cyq 表（幂等）。
 
     Args:
         conn: psycopg2 连接。
         ts_code: Tushare 格式股票代码。
-        metrics: compute_chip_distribution 返回的指标 dict（含 trade_date）。
+        df: compute_chip_distribution_daily 返回的逐日 DataFrame。
 
     Returns:
         写入行数（0 表示无数据写入）。
     """
-    if not metrics:
+    if df is None or df.empty:
         return 0
-    df = pd.DataFrame([metrics])
+    df = df.copy()
     df["ts_code"] = ts_code
     # 日期转 YYYYMMDD 字符串，兼容 tushare_pg_utils._parse_date
     df["trade_date"] = pd.to_datetime(df["trade_date"]).dt.strftime("%Y%m%d")
@@ -408,17 +572,27 @@ def save_cyq(conn, ts_code: str, metrics: dict) -> int:
     )
 
 
+def _normalize_date(value: str) -> str:
+    """将 YYYYMMDD 归一化为 YYYY-MM-DD（数据库比较用）。"""
+    s = str(value).strip()
+    if len(s) == 8 and s.isdigit():
+        return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
+    return s
+
+
 def main():
-    parser = argparse.ArgumentParser(description="筹码分布（CYQ）本地计算采集")
+    parser = argparse.ArgumentParser(description="筹码分布（CYQ）本地计算采集（逐日，支持增量）")
     parser.add_argument("--limit", type=int, default=0, help="最多处理的股票数量（0=全部）")
     parser.add_argument("--symbol", type=str, default="", help="指定单只股票 6 位代码（如 600519）")
-    parser.add_argument("--days", type=int, default=100, help="计算窗口交易日数（默认 100）")
+    parser.add_argument("--start-date", type=str, default="20160101",
+                        help="起始日期 YYYYMMDD（默认 20160101，首次全量起点）")
+    parser.add_argument("--end-date", type=str, default="",
+                        help="结束日期 YYYYMMDD（默认今天）")
     parser.add_argument("--sleep", type=float, default=0.0, help="每只股票处理间隔秒数（默认 0）")
     args = parser.parse_args()
 
-    if args.days < 10:
-        logger.warning("--days=%d 过小，使用默认 100", args.days)
-        args.days = 100
+    start_date = _normalize_date(args.start_date)
+    end_date = _normalize_date(args.end_date) if args.end_date else date.today().strftime("%Y-%m-%d")
 
     conn = get_pg_connection()
     try:
@@ -445,7 +619,7 @@ def main():
         if args.limit > 0:
             rows = rows[:args.limit]
 
-        logger.info("待处理股票: %d 只", len(rows))
+        logger.info("待处理股票: %d 只（区间 %s ~ %s）", len(rows), start_date, end_date)
         if not rows:
             logger.info("无待处理股票，退出")
             return
@@ -456,23 +630,64 @@ def main():
         t0 = time.time()
         for i, (symbol, ts_code) in enumerate(rows, start=1):
             try:
-                daily_df = load_daily_data(conn, ts_code, args.days)
+                latest = get_latest_cyq_date(conn, ts_code)
+                earliest_cyq = get_earliest_cyq_date(conn, ts_code)
+                earliest_daily = get_earliest_daily_date(conn, ts_code)
+                if latest is None:
+                    # 无任何历史 → 从 start_date 全量计算
+                    calc_start = start_date
+                    insert_from = None
+                elif earliest_daily is not None and earliest_cyq is not None and earliest_cyq > earliest_daily:
+                    # 历史缺口：cyq 最早日期晚于 daily 最早日期（如旧版只写了最新一天）
+                    # → 从 start_date 全量重算，ON CONFLICT 幂等跳过已有行
+                    calc_start = start_date
+                    insert_from = None
+                    logger.info("[%d/%d] %s: 检测到历史缺口（cyq 最早 %s < daily 最早 %s），全量重算",
+                                i, len(rows), ts_code,
+                                earliest_cyq.strftime("%Y-%m-%d"), earliest_daily.strftime("%Y-%m-%d"))
+                else:
+                    # 正常增量：从 start_date 全量重算（与全量回填共用同一价格档位网格与
+                    # 同一累积深度，保证结果一致），仅插入 latest 之后的新日期
+                    calc_start = start_date
+                    insert_from = latest.strftime("%Y-%m-%d")
+
+                daily_df = load_daily_data(conn, ts_code, start_date=calc_start, end_date=end_date)
                 if daily_df.empty:
-                    logger.warning("[%d/%d] %s: tushare_daily 无数据", i, len(rows), ts_code)
+                    if latest is not None:
+                        # 已有历史且区间内无新数据 → 已是最新
+                        ok += 1
+                        logger.info("[%d/%d] %s: 已是最新（latest=%s），跳过",
+                                    i, len(rows), ts_code, latest.strftime("%Y-%m-%d"))
+                    else:
+                        logger.warning("[%d/%d] %s: tushare_daily 无数据", i, len(rows), ts_code)
+                        fail += 1
+                    continue
+
+                basic_df = load_daily_basic(conn, ts_code, start_date=calc_start, end_date=end_date)
+                price_range = get_full_price_range(conn, ts_code)
+                result_df = compute_chip_distribution_daily(daily_df, basic_df, price_range)
+                if result_df.empty:
+                    logger.warning("[%d/%d] %s: 无有效筹码数据", i, len(rows), ts_code)
                     fail += 1
                     continue
-                basic_df = load_daily_basic(conn, ts_code, args.days)
-                metrics = compute_chip_distribution(daily_df, basic_df)
-                n = save_cyq(conn, ts_code, metrics)
+
+                if insert_from is not None:
+                    result_df = result_df[result_df["trade_date"] > insert_from]
+                    if result_df.empty:
+                        ok += 1
+                        logger.info("[%d/%d] %s: 已是最新（latest=%s），无新增",
+                                    i, len(rows), ts_code, insert_from)
+                        continue
+
+                n = save_cyq(conn, ts_code, result_df)
                 if n > 0:
                     ok += 1
                     total_rows += n
                     logger.info(
-                        "[%d/%d] %s: 入库 %d 行 (trade_date=%s, profit_ratio=%.4f, avg_cost=%.2f)",
+                        "[%d/%d] %s: 入库 %d 行 (%s ~ %s)",
                         i, len(rows), ts_code, n,
-                        metrics.get("trade_date", "?"),
-                        metrics.get("profit_ratio", 0.0),
-                        metrics.get("avg_cost", 0.0),
+                        result_df["trade_date"].iloc[0],
+                        result_df["trade_date"].iloc[-1],
                     )
                 else:
                     fail += 1

@@ -46,7 +46,7 @@ logger = logging.getLogger("inc_index")
 
 DEFAULT_START = "20160101"
 SLEEP_BETWEEN = 0.15
-RATE_LIMIT = 480
+RATE_LIMIT = 480  # 实测(2026-08): 7 个接口无接口级限频; 全局限频 500 次/分(5000积分档)
 PAGE_LIMIT = 8000
 WINDOW_DAYS = 500  # index_weight 回补的最近交易日数
 

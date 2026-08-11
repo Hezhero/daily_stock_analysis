@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [修复] `scripts/data_collection/incremental_macro.py` `shibor_quote` 改为按半年段拉取并修正限频间隔：实测一年约 4500 行（250 交易日 x 18 家报价行）超 4000 行单次上限，原按年拉取会静默截断丢失年初数据；实测接口限频为 1次/分钟（code=40203），`RATE_LIMITED_SLEEP` 从 3600s 修正为 60s，`RATE_LIMIT_MAX_YEARS` 默认从 2 年提高到 10 年（10 年回补约 20 分钟完成），并支持按半年段幂等续传。
+- [改进] `scripts/data_collection/incremental_macro.py` 默认起始日期从 2010-01-01 调整为 2016-01-01，`shibor_quote` 从 2016 年起回补（限频接口按段分批续传）；`shibor` 已有数据不受影响（按已有段跳过）。
+- [修复] 筹码分布本地计算 `scripts/data_collection/incremental_cyq.py` 改用对数间距价格档位（PRICE_BINS=500）并基于全历史价格区间固定档位网格：修复线性等分下早期低价交易日（价格区间落在首个档位中心之下）筹码分布退化为空、avg_cost=0、分位价格取到最高档的问题；全量回填与增量计算共用同一网格与同一累积深度（增量改为从 `--start-date` 全量重算、仅插入新日期，移除 `--backfill-days` 参数），结果严格一致。
 - [新功能] 新增筹码分布数据采集脚本 `scripts/data_collection/incremental_cyq.py`：读取 `tushare_stock_basic` 的 symbol 调用 akshare `stock_cyq_em`（adjust 固定传空取不复权数据），按 ts_code 入库 PostgreSQL `akshare_cyq` 表。
 - [修复] 统一等价股票代码的本地日线候选与同源窗口解析；冲突沪深交易所代码不再降级匹配裸码，回测仅接受快照或交易日历确认的起点，并在同一起点中优先完整的单一代码窗口。
 - [新功能] 新增按 individual SkillAgent 自身 signal、版本化 engine 与本地已存同源日线窗口计算并持久化 `skill_opinion_outcomes` 的核心服务；本阶段不提供管理员 API、表现统计、样本充足度或权重调整。
@@ -26,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [chore] 移除 Tushare 宏观利率扩展表 `tushare_shibor_lpr`/`tushare_libor`/`tushare_hibor`/`tushare_wz_index`/`tushare_gz_index` 及对应采集代码：`scripts/data_collection/incremental_macro.py` 仅保留 shibor/shibor_quote 回填，`docs/tushare_postgres_schema.sql` 同步删除 5 张表结构与 updated_at 触发器注册。
 - [chore] 移除沪深股通持股表 `tushare_hk_hold` 及对应采集代码：`scripts/data_collection/incremental_factor.py` 的 hk_hold 日频接口条目移除（由 13 个接口减为 12 个），`docs/tushare_postgres_schema.sql` 同步删除表结构（含索引）与 updated_at 触发器注册。
 - [修复] `scripts/data_collection/tushare_pg_utils.py` 的 `insert_dataframe` 批量插入前过滤违反 NOT NULL 约束（且无默认值）的行并打 warning 日志：避免单行坏数据（如 `stk_holdernumber` 返回 `end_date` 为 NULL 的占位记录）导致整批插入失败、降级为逐行插入并静默丢数据，同时消除逐行插入的性能开销。
+- [改进] `scripts/data_collection/tushare_pg_utils.py` 的 `TushareClient.query` 识别限频错误（code=40203）时等待 60s 让限频窗口重置后重试，避免原指数退避 3 秒即放弃导致数据静默丢失；`incremental_factor.py`/`incremental_index.py` 的 `RATE_LIMIT` 注释记录实测依据（账号 5000 积分档全局限频 500 次/分，19 个接口 3 连测无接口级限频，`RATE_LIMIT=480` 合理）。
 
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->

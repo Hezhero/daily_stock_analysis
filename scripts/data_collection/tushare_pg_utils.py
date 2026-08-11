@@ -115,9 +115,12 @@ class TushareClient:
                 return pd.DataFrame(items, columns=columns)
 
             except Exception as exc:
+                # 限频错误（code=40203，msg 含"频率超限"）等待 60s 让窗口重置后再重试，
+                # 避免重试 3 秒即放弃导致数据静默丢失；其他错误保持指数退避。
+                is_rate_limited = "频率超限" in str(exc)
                 logger.warning("[%s] API 调用失败 (重试 %d/3): %s", api_name, attempt + 1, exc)
                 if attempt < 2:
-                    time.sleep(2 ** attempt)
+                    time.sleep(60 if is_rate_limited else 2 ** attempt)
                 else:
                     logger.error("[%s] API 调用最终失败，返回空 DataFrame", api_name)
                     return pd.DataFrame()

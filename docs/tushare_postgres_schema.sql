@@ -453,7 +453,8 @@ CREATE INDEX IF NOT EXISTS ix_ts_daily_basic_date_brin ON tushare_daily_basic US
 
 -- 2.4 筹码分布
 -- 来源: 本地计算（三角形分布法），基于 tushare_daily（open/high/low/close/vol）+ tushare_daily_basic（turnover_rate）
--- 入参: 无外部接口；计算窗口默认最近 120 个交易日（--days 可调）
+-- 入参: 无外部接口；按股票全历史（默认自 2016-01-01）计算，价格档位采用对数间距（500 档），
+--        以全历史价格区间固定网格；增量与全量回填共用同一网格与累积深度，仅插入新日期行
 -- 入库: ts_code（Tushare 格式，取自 tushare_stock_basic.ts_code），由 scripts/data_collection/incremental_cyq.py 写入
 -- 说明: 获利比例 / 集中度均为 0~1 小数；每日以 [low, high] 为区间、(low+high+close)/3 为峰值分配成交量到价格档，历史筹码按 1 - turnover_rate 逐日衰减
 CREATE TABLE IF NOT EXISTS tushare_cyq (
