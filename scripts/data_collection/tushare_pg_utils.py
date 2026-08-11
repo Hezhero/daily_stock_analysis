@@ -284,32 +284,57 @@ def insert_dataframe(
     # 列名统一小写
     df.columns = [col.lower() for col in df.columns]
 
-    # 获取表中实际存在的列及其类型（以 PG 真实列类型为准，不靠列名后缀猜测）
+    # 获取表中实际存在的列、类型与可空性（以 PG 真实列定义为准，不靠列名后缀猜测）
     cur = conn.cursor()
     try:
         cur.execute(
-            "SELECT column_name, data_type FROM information_schema.columns "
+            "SELECT column_name, data_type, is_nullable, column_default "
+            "FROM information_schema.columns "
             "WHERE table_name=%s AND table_schema='public'",
             (table_name,),
         )
-        col_types = dict(cur.fetchall())
+        col_meta = {
+            row[0]: {"type": row[1], "nullable": row[2] == "YES", "default": row[3]}
+            for row in cur.fetchall()
+        }
     finally:
         cur.close()
 
-    cols = [col for col in df.columns if col in col_types]
+    cols = [col for col in df.columns if col in col_meta]
     if not cols:
         return 0
 
-    df = df[cols].copy()
+    df = pd.DataFrame(df[cols])
 
     # 日期列转换：凡 PG 中 data_type='date' 的列统一转换
     # （兼容 div_listdate 等不以 _date 结尾的列名，修复 dividend 批量插入丢数据 bug）
     for col in cols:
-        if col_types[col] == "date":
+        if col_meta[col]["type"] == "date":
             df[col] = df[col].apply(_parse_date)
 
     # NaN → None
     df = df.astype(object).where(pd.notnull(df), None)
+
+    # 过滤违反 NOT NULL 约束（且无默认值）的行，避免单行坏数据导致整批插入失败降级为逐行插入
+    not_null_cols = [
+        col
+        for col in cols
+        if not col_meta[col]["nullable"] and col_meta[col]["default"] is None
+    ]
+    if not_null_cols:
+        bad_mask: pd.Series = df.loc[:, not_null_cols].isnull().any(axis=1)
+        bad_n = int(bad_mask.sum())
+        if bad_n:
+            sample = ""
+            if "ts_code" in cols:
+                sample = "，示例 ts_code: " + ", ".join(
+                    str(v) for v in df.loc[bad_mask, "ts_code"].head(3).tolist()
+                )
+            logger.warning(
+                "%s 跳过 %d 行违反 NOT NULL 约束的记录（列: %s）%s",
+                table_name, bad_n, ", ".join(not_null_cols), sample,
+            )
+            df = df.loc[~bad_mask]
 
     records = [tuple(row) for row in df.values]
     if not records:

@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [文档] 合并 `docs/tushare_postgres_schema_extra.sql` 到 `docs/tushare_postgres_schema.sql`：扩展表（股票衍生/情绪/博弈、财务补充、指数、宏观利率共 28 张）统一纳入单文件并按层重排章节（2.5~2.17 / 3.10 / 4 指数 / 5 宏观利率，原 4/5/6 节改为 6/7/8），updated_at 触发器与分区子表注释传播 DO 块合并；`bootstrap.ensure_extra_schema()` 改为执行合并后的单文件，原 extra 文件删除。
 - [chore] 移除 Tushare 宏观利率扩展表 `tushare_shibor_lpr`/`tushare_libor`/`tushare_hibor`/`tushare_wz_index`/`tushare_gz_index` 及对应采集代码：`scripts/data_collection/incremental_macro.py` 仅保留 shibor/shibor_quote 回填，`docs/tushare_postgres_schema.sql` 同步删除 5 张表结构与 updated_at 触发器注册。
 - [chore] 移除沪深股通持股表 `tushare_hk_hold` 及对应采集代码：`scripts/data_collection/incremental_factor.py` 的 hk_hold 日频接口条目移除（由 13 个接口减为 12 个），`docs/tushare_postgres_schema.sql` 同步删除表结构（含索引）与 updated_at 触发器注册。
+- [修复] `scripts/data_collection/tushare_pg_utils.py` 的 `insert_dataframe` 批量插入前过滤违反 NOT NULL 约束（且无默认值）的行并打 warning 日志：避免单行坏数据（如 `stk_holdernumber` 返回 `end_date` 为 NULL 的占位记录）导致整批插入失败、降级为逐行插入并静默丢数据，同时消除逐行插入的性能开销。
 
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
