@@ -33,8 +33,8 @@
   （_is_limit_up，主板阈值 9.5% / 创业板 19.5%），回测与 5 日验证/推荐共用
 - 收益统计口径: 各持有期（1/3/5/10 日）独立统计，避免多期收益混合
   （P0-4）；最大回撤按日期排序后计算，恢复时间序列语义（P0-2）
-- 基准对比: 新增等权市场基准（compute_benchmark_metrics），结果表打印
-  超额收益列与基准行，用于区分 alpha/beta（P1-8）
+- 基准对比: 新增市场基准（compute_benchmark_metrics，沪深300真实指数，
+  缺失时回退等权），结果表打印超额收益列与基准行，用于区分 alpha/beta（P1-8/D2）
 """
 
 import argparse
@@ -1895,7 +1895,7 @@ def validate_week(df_week, top_results, top_n=5):
 def print_results(results, val_results, backtest_start, backtest_end):
     """以表格形式打印回测绩效汇总与 5 日验证 Top-5 结果。
 
-    回测表新增"超额%"列（策略总收益 - 等权市场基准总收益，P1-8），
+    回测表新增"超额%"列（策略总收益 - 市场基准总收益，沪深300），
     并打印基准行，用于判断策略收益是否真正跑赢市场（alpha）。
     """
     print("\n" + "=" * 140)
@@ -1929,7 +1929,7 @@ def print_results(results, val_results, backtest_start, backtest_end):
             ba = valid_results[0]["benchmark_annualized"]
             bd = valid_results[0].get("benchmark_max_drawdown", 0)
             above = sum(1 for r in valid_results if r.get("excess_return", 0) > 0)
-            print(f"等权市场基准: 总收益 {br:.1f}%  年化 {ba:.1f}%  最大回撤 {bd:.1f}%")
+            print(f"市场基准(沪深300): 总收益 {br:.1f}%  年化 {ba:.1f}%  最大回撤 {bd:.1f}%")
             print(f"跑赢基准策略: {above}/{len(valid_results)}")
 
         # 分年度评估（D1）：各策略逐年胜率,识别过拟合/牛市 beta
