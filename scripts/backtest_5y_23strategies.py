@@ -45,7 +45,7 @@ import time
 import gc
 import subprocess
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from dotenv import load_dotenv
 from typing_extensions import deprecated
@@ -514,6 +514,86 @@ def compute_market_ok(index_df: pd.DataFrame) -> pd.DataFrame:
     return df[["date", "market_ok"]]
 
 
+# ─── 财务质量过滤(ann_date 对齐防前视偏差,B3) ─────────────────────────────────
+
+def load_fina_indicator(start: str, end: str) -> pd.DataFrame:
+    """从本地 tushare_fina_indicator 加载财务指标。
+
+    返回列: code(内部格式)、ann_date(公告日)、roe、grossprofit_margin、or_yoy。
+    注意:必须以 ann_date 对齐交易日,否则会偷看未来信息(前视偏差)。
+    """
+    t0 = time.time()
+    logger.info(f"加载财务指标 {start} ~ {end}...")
+
+    sql = """
+        SELECT ts_code, ann_date, roe, grossprofit_margin, or_yoy
+        FROM tushare_fina_indicator
+        WHERE ann_date BETWEEN %s AND %s
+        ORDER BY ts_code, ann_date
+    """
+
+    engine = _get_pg_engine()
+    try:
+        with engine.connect() as conn:
+            df = pd.read_sql(sql, conn, params=(start, end), parse_dates=["ann_date"])
+    finally:
+        engine.dispose()
+
+    if df.empty:
+        return pd.DataFrame(columns=["code", "ann_date", "roe", "grossprofit_margin", "or_yoy"])
+
+    df["code"] = df["ts_code"].apply(_from_ts_code)
+    df.drop(columns=["ts_code"], inplace=True)
+    for col in ["roe", "grossprofit_margin", "or_yoy"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df = df[["code", "ann_date", "roe", "grossprofit_margin", "or_yoy"]]
+    logger.info(f"财务指标加载完成,共 {len(df):,} 条,耗时 {time.time()-t0:.1f}s")
+    return df
+
+
+def merge_fina_by_ann_date(df: pd.DataFrame, fina_df: pd.DataFrame) -> pd.DataFrame:
+    """按公告日(ann_date)向后对齐财务数据到行情日期,防止前视偏差。
+
+    使用 merge_asof(direction='backward'):每个交易日只使用已公告
+    (ann_date <= trade_date)的最新一期财务数据。
+    按 code 分组逐组对齐,规避 merge_asof 对 left 全局排序的要求。
+    """
+    if fina_df is None or fina_df.empty or "ann_date" not in fina_df.columns:
+        return df
+    df = df.sort_values(["code", "date"]).reset_index(drop=True)
+    fina = fina_df.sort_values(["code", "ann_date"]).reset_index(drop=True)
+    fina_by_code = {code: g for code, g in fina.groupby("code", sort=False)}
+    pieces = []
+    for code, g in df.groupby("code", sort=False):
+        f = fina_by_code.get(code)
+        if f is None or f.empty:
+            g = g.copy()
+            g["ann_date"] = pd.NaT
+            pieces.append(g)
+            continue
+        f = f.drop(columns=["code"])
+        merged = pd.merge_asof(
+            g, f,
+            left_on="date", right_on="ann_date", direction="backward",
+        )
+        pieces.append(merged)
+    out = pd.concat(pieces, ignore_index=True)
+    out.drop(columns=["ann_date"], inplace=True, errors="ignore")
+    return out
+
+
+def _financial_ok(df: pd.DataFrame) -> pd.Series:
+    """财务质量过滤:剔除 ROE 为负或营收大幅下滑(or_yoy < -30%)的信号。
+
+    财务数据缺失(无公告)时放行,避免误杀无覆盖样本。
+    """
+    if "fin_roe" not in df.columns:
+        return pd.Series(True, index=df.index)
+    roe_ok = df["fin_roe"].isna() | (df["fin_roe"] >= 0)
+    rev_ok = df["fin_or_yoy"].isna() | (df["fin_or_yoy"] >= -30)
+    return roe_ok & rev_ok
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # 复权因子（Tushare 本地数据库 tushare_adj_factor）
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -663,6 +743,17 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["boll_upper"] = df["boll_mid"] + 2 * std20
     df["boll_lower"] = df["boll_mid"] - 2 * std20
 
+    # ── ATR(20):真实波幅均值,用于动态止损 ──
+    prev_close = g["close"].shift(1)
+    true_range = pd.concat([
+        df["high"] - df["low"],
+        (df["high"] - prev_close).abs(),
+        (df["low"] - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    df["atr20"] = true_range.groupby(df["code"]).transform(
+        lambda x: x.rolling(20, min_periods=1).mean()
+    )
+
     # ── 前瞻收益（信号产生后各持有期的实际收益，回测绩效的数据来源） ──
     for p in HOLDING_PERIODS:
         df[f"ret_{p}d"] = g["close"].transform(lambda x: x.pct_change(p, fill_method=None).shift(-p))
@@ -678,6 +769,64 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     logger.info(f"指标计算完成，耗时 {time.time()-t0:.1f}s")
     gc.collect()
     return df
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 动态退出收益（ATR 止损 + 移动止盈 + 时间止损，C2）
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def compute_dynamic_exit_returns(df: pd.DataFrame) -> pd.DataFrame:
+    """按股票分组计算各持有期的动态退出收益,替换固定持有期收益。
+
+    对每个持有期 p,入场日 t(收盘买入)在持有期内逐日检查:
+      - ATR 止损:某日 low <= close[t] - 2*atr20[t],以止损价退出
+      - 移动止盈:某日 close <= 持有期最高价*0.92,以回撤位退出
+      - 时间止损:持有 p 日仍未触发,按 close[t+p] 退出
+    输出列 dyn_ret_{p}d(与 ret_{p}d 同口径的浮点收益)。
+    按 code 分组,组内对每个交易日一次性计算 max(HOLDING_PERIODS)
+    天的窗口并复用,避免逐持有期重复扫描。
+    """
+    max_p = max(HOLDING_PERIODS)
+    df_sorted = df.sort_values(["code", "date"])
+    out = pd.DataFrame(index=df_sorted.index, dtype="float32")
+    for code, g in df_sorted.groupby("code", sort=False):
+        n = len(g)
+        close = g["close"].to_numpy(dtype=np.float64)
+        high = g["high"].to_numpy(dtype=np.float64)
+        low = g["low"].to_numpy(dtype=np.float64)
+        atr = g["atr20"].to_numpy(dtype=np.float64)
+        rets = {p: np.full(n, np.nan, dtype=np.float32) for p in HOLDING_PERIODS}
+
+        for i in range(n - 1):
+            stop = close[i] - 2.0 * atr[i]
+            if not np.isfinite(stop):
+                continue
+            w = min(max_p, n - 1 - i)
+            win_low = low[i + 1: i + 1 + w]
+            win_high = high[i + 1: i + 1 + w]
+            win_close = close[i + 1: i + 1 + w]
+            peaks = np.maximum.accumulate(win_high)
+            atr_hit = win_low <= stop
+            trail_hit = win_close <= peaks * 0.92
+            hit = atr_hit | trail_hit
+
+            for p in HOLDING_PERIODS:
+                if p > w:
+                    continue
+                hit_p = hit[:p]
+                if hit_p.any():
+                    k = int(np.argmax(hit_p))
+                    exit_price = stop if atr_hit[k] else peaks[k] * 0.92
+                else:
+                    exit_price = close[i + p]
+                if close[i] > 0:
+                    rets[p][i] = (exit_price / close[i] - 1.0)
+
+        for p, arr in rets.items():
+            out.loc[g.index, f"dyn_ret_{p}d"] = arr
+
+    # 对齐到原 df 的行顺序(函数内做了重排)
+    return out.reindex(df.index)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -764,11 +913,11 @@ def _volume_ratio_ok(df: pd.DataFrame) -> pd.Series:
 
 def _entry_mask(df: pd.DataFrame) -> pd.Series:
     """统一的买入可成交性掩码:剔除涨跌停日,并叠加市场环境、
-    主力资金、市值、量比质量过滤(回测/验证/推荐共用)。"""
+    主力资金、市值、量比、财务质量过滤(回测/验证/推荐共用)。"""
     mask = ~_is_limit_up(df) & ~_is_limit_down(df)
     if "market_ok" in df.columns:
         mask &= df["market_ok"].fillna(True).astype(bool)
-    mask &= _moneyflow_ok(df) & _size_ok(df) & _volume_ratio_ok(df)
+    mask &= _moneyflow_ok(df) & _size_ok(df) & _volume_ratio_ok(df) & _financial_ok(df)
     return mask
 
 
@@ -1036,12 +1185,29 @@ def sig_multi_ma_resonance(df):
     return score >= 10
 
 
+# 组合策略的组件与权重缓存:权重由 run_backtests 按各组件历史胜率填充
+ENSEMBLE_COMPONENTS = ["ma_crossover", "volume_surge_std", "multi_ma_resonance"]
+ENSEMBLE_MIN_WEIGHTED_SCORE = 0.5   # 加权分触发阈值(权重和为 1)
+_ENSEMBLE_WEIGHTS: Dict[str, float] = {}
+
+
 def sig_ensemble(df):
-    """策略12：组合策略——均线金叉、放量突破、多均线共振中至少 2 个同时触发，
-    作为多策略交叉验证的稳健信号。"""
-    return (sig_ma_crossover(df).astype(int) +
-            sig_volume_surge_std(df).astype(int) +
-            sig_multi_ma_resonance(df).astype(int)) >= 2
+    """策略12：组合策略——按各组件策略历史胜率加权,加权分 >= 阈值触发。
+
+    替代简单"≥2 个组件同时触发":权重由 run_backtests 依据组件策略
+    5 年回测胜率归一化后填充(_ENSEMBLE_WEIGHTS);未填充时退化为等权。
+    """
+    weights = np.array([_ENSEMBLE_WEIGHTS.get(c, 1.0) for c in ENSEMBLE_COMPONENTS], dtype=float)
+    w_sum = weights.sum()
+    if w_sum > 0:
+        weights = weights / w_sum
+    hits = np.column_stack([
+        sig_ma_crossover(df).astype(float),
+        sig_volume_surge_std(df).astype(float),
+        sig_multi_ma_resonance(df).astype(float),
+    ])
+    score = hits @ weights
+    return score >= ENSEMBLE_MIN_WEIGHTED_SCORE
 
 
 def sig_volume_breakout(df):
@@ -1390,12 +1556,22 @@ def calc_metrics(returns: np.ndarray, avg_holding: Optional[float] = None) -> Di
 
     wr, aw, al, pl, tr, ann, mxd, sr, n_valid = _calc_metrics_core(r, n, avg_holding)
 
+    # 期望值(每笔平均期望收益%)与凯利分数(风险提示3:胜率不是唯一目标)
+    wr_dec = wr / 100.0
+    expectation = wr_dec * aw - (1 - wr_dec) * al
+    kelly = 0.0
+    if pl > 1e-10:
+        b = pl
+        kelly = (b * wr_dec - (1 - wr_dec)) / b * 100.0
+
     return {
         "total_trades": int(n_valid),
         "win_rate": round(wr, 2),
         "avg_win": round(aw, 2),
         "avg_loss": round(al, 2),
         "profit_loss_ratio": round(pl, 2),
+        "expectation": round(expectation, 4),
+        "kelly": round(kelly, 4),
         "total_return": round(float(np.clip(tr, -1e10, 1e10)), 2),
         "annualized_return": round(float(np.clip(ann, -1e10, 1e10)), 2),
         "max_drawdown": round(float(np.clip(mxd, 0, 100)), 2),
@@ -1444,9 +1620,10 @@ def _backtest_single(name: str, df: pd.DataFrame) -> Dict:
                     "max_drawdown": 0, "sharpe_ratio": 0, "time_s": round(time.time() - t0, 1)}
 
         # 按持有期分别统计（P0-4），每个持有期的收益按日期排序后计算（P0-2）
+        # 优先使用动态退出收益（ATR止损/移动止盈），否则回退固定持有期收益
         period_metrics: Dict[int, Dict] = {}
         for p in HOLDING_PERIODS:
-            col = f"ret_{p}d"
+            col = f"dyn_ret_{p}d" if f"dyn_ret_{p}d" in signals.columns else f"ret_{p}d"
             if col not in signals.columns:
                 continue
             sub = signals[["date", col]].dropna()
@@ -1457,6 +1634,19 @@ def _backtest_single(name: str, df: pd.DataFrame) -> Dict:
             net_ret = sub[col].values - TRADING_COST_PCT / 100.0
             m = calc_metrics(net_ret, avg_holding=p)
             m["total_trades"] = int(len(sub))
+            # 分年度评估（D1）：按信号年份拆分胜率/收益,识别过拟合或牛市 beta
+            yearly = {}
+            sub_y = sub.copy()
+            sub_y["year"] = sub_y["date"].dt.year
+            for yr, g in sub_y.groupby("year"):
+                gy = calc_metrics(g[col].values - TRADING_COST_PCT / 100.0, avg_holding=p)
+                yearly[int(yr)] = {
+                    "trades": gy["total_trades"],
+                    "win_rate": gy["win_rate"],
+                    "total_return": gy["total_return"],
+                    "expectation": gy["expectation"],
+                }
+            m["yearly"] = yearly
             period_metrics[p] = m
 
         if not period_metrics:
@@ -1539,28 +1729,46 @@ def run_backtests(df_bt: pd.DataFrame) -> List[Dict]:
     strategy_names = list(STRATEGIES.keys())
     results = []
 
-    if enable_parallel and n_workers > 1:
-        with ThreadPoolExecutor(max_workers=n_workers) as executor:
-            futures = {executor.submit(_backtest_single, name, df_bt): name for name in strategy_names}
-            for i, future in enumerate(as_completed(futures)):
-                r = future.result()
-                results.append(r)
-                if "error" not in r:
-                    logger.info(f"  [{i+1}/{n_strategies}] {r['strategy']}: {r['total_trades']} 笔, "
-                                f"胜率{r['win_rate']:.1f}%, 总收益{r['total_return']:.1f}%")
-                else:
-                    logger.error(f"  [{i+1}/{n_strategies}] {r['strategy']}: {r['error']}")
-                log_memory_usage(f"策略 {i+1} 完成后")
+    # 先串行计算组合策略的组件,按其胜率填充 _ENSEMBLE_WEIGHTS(C1)
+    global _ENSEMBLE_WEIGHTS
+    _ENSEMBLE_WEIGHTS = {}
+    component_results = {}
+    for name in ENSEMBLE_COMPONENTS:
+        r = _backtest_single(name, df_bt)
+        component_results[name] = r
+        results.append(r)
+        if "error" not in r:
+            logger.info(f"  [component] {r['strategy']}: {r['total_trades']} 笔, "
+                        f"胜率{r['win_rate']:.1f}%, 总收益{r['total_return']:.1f}%")
+    wr = np.array([component_results[c].get("win_rate", 0) if "error" not in component_results[c] else 0
+                   for c in ENSEMBLE_COMPONENTS], dtype=float)
+    wr_sum = wr.sum()
+    if wr_sum > 0:
+        _ENSEMBLE_WEIGHTS = {c: float(w / wr_sum) for c, w in zip(ENSEMBLE_COMPONENTS, wr)}
+        logger.info(f"组合策略权重: {', '.join(f'{c}={_ENSEMBLE_WEIGHTS[c]:.3f}' for c in ENSEMBLE_COMPONENTS)}")
     else:
-        for i, name in enumerate(strategy_names):
-            r = _backtest_single(name, df_bt)
-            results.append(r)
-            if "error" not in r:
-                logger.info(f"  [{i+1}/{n_strategies}] {r['strategy']}: {r['total_trades']} 笔, "
-                            f"胜率{r['win_rate']:.1f}%, 总收益{r['total_return']:.1f}%")
-            else:
-                logger.error(f"  [{i+1}/{n_strategies}] {r['strategy']}: {r['error']}")
-            log_memory_usage(f"策略 {i+1} 完成后")
+        logger.warning("组件策略无有效胜率,组合策略退化为等权")
+
+    remaining = [n for n in strategy_names if n not in ENSEMBLE_COMPONENTS]
+
+    def _run_one(name):
+        r = _backtest_single(name, df_bt)
+        results.append(r)
+        if "error" not in r:
+            logger.info(f"  [{len(results)}/{n_strategies}] {r['strategy']}: {r['total_trades']} 笔, "
+                        f"胜率{r['win_rate']:.1f}%, 总收益{r['total_return']:.1f}%")
+        else:
+            logger.error(f"  [{len(results)}/{n_strategies}] {r['strategy']}: {r['error']}")
+        log_memory_usage(f"策略 {len(results)} 完成后")
+
+    if enable_parallel and n_workers > 1 and len(remaining) > 1:
+        with ThreadPoolExecutor(max_workers=n_workers) as executor:
+            futures = [executor.submit(_run_one, name) for name in remaining]
+            for f in futures:
+                f.result()
+    else:
+        for name in remaining:
+            _run_one(name)
 
     # 附加基准对比与超额收益字段（P1-8）
     for r in results:
@@ -1570,8 +1778,9 @@ def run_backtests(df_bt: pd.DataFrame) -> List[Dict]:
             r["benchmark_max_drawdown"] = benchmark["benchmark_max_drawdown"]
             r["excess_return"] = round(r["total_return"] - benchmark["benchmark_return"], 2)
 
+    # 按期望值(每笔平均收益)降序排序,兼顾胜率与盈亏比(风险提示3)
     valid = sorted([r for r in results if "error" not in r],
-                   key=lambda x: x.get("total_return", 0), reverse=True)
+                   key=lambda x: x.get("expectation", -999), reverse=True)
     logger.info(f"回测完成，耗时 {time.time()-t0:.1f}s")
     return valid
 
@@ -1654,22 +1863,23 @@ def print_results(results, val_results, backtest_start, backtest_end):
     回测表新增"超额%"列（策略总收益 - 等权市场基准总收益，P1-8），
     并打印基准行，用于判断策略收益是否真正跑赢市场（alpha）。
     """
-    print("\n" + "=" * 120)
+    print("\n" + "=" * 140)
     print(f"{'策略':<28} {'交易':>7} {'胜率%':>7} {'均盈%':>7} {'均亏%':>7} "
-          f"{'盈亏比':>7} {'总收益%':>9} {'超额%':>8} {'年化%':>8} {'最大回撤%':>10} {'夏普':>6} {'耗时':>5}")
-    print("-" * 120)
+          f"{'盈亏比':>7} {'期望%':>8} {'凯利%':>7} {'总收益%':>9} {'超额%':>8} {'年化%':>8} {'最大回撤%':>10} {'夏普':>6} {'耗时':>5}")
+    print("-" * 140)
     for r in results:
         excess = r.get("excess_return", 0) if "error" not in r else 0
         print(
             f"  {r['strategy']:<26} {r['total_trades']:>7} "
             f"{r['win_rate']:>7.1f} {r['avg_win']:>7.2f} {r['avg_loss']:>7.2f} "
-            f"{r['profit_loss_ratio']:>7.2f} {r['total_return']:>9.1f} "
+            f"{r['profit_loss_ratio']:>7.2f} {r.get('expectation', 0):>8.3f} "
+            f"{r.get('kelly', 0):>7.2f} {r['total_return']:>9.1f} "
             f"{excess:>8.1f} "
             f"{r['annualized_return']:>8.1f} {r['max_drawdown']:>10.1f} "
             f"{r['sharpe_ratio']:>6.2f} {r.get('time_s',0):>5.1f}s"
         )
 
-    print("=" * 120)
+    print("=" * 140)
     print(f"\n回测区间: {backtest_start.date()} ~ {backtest_end.date()}")
     print(f"初始资金: {INITIAL_CAPITAL:,.0f} 元")
     if results:
@@ -1686,6 +1896,25 @@ def print_results(results, val_results, backtest_start, backtest_end):
             above = sum(1 for r in valid_results if r.get("excess_return", 0) > 0)
             print(f"等权市场基准: 总收益 {br:.1f}%  年化 {ba:.1f}%  最大回撤 {bd:.1f}%")
             print(f"跑赢基准策略: {above}/{len(valid_results)}")
+
+        # 分年度评估（D1）：各策略逐年胜率,识别过拟合/牛市 beta
+        years = sorted({y for r in valid_results for y in (r.get("yearly") or {})})
+        if years:
+            print("\n" + "=" * 140)
+            print("分年度胜率% (逐年信号样本胜率,空=该年无信号)")
+            print(f"{'策略':<28}" + "".join(f"{y:>10}" for y in years))
+            print("-" * 140)
+            for r in valid_results:
+                yr = r.get("yearly") or {}
+                row = f"  {r['strategy']:<26}"
+                for y in years:
+                    info = yr.get(y)
+                    if info and info["trades"] > 0:
+                        row += f"{info['win_rate']:>10.1f}"
+                    else:
+                        row += f"{'-':>10}"
+                print(row)
+            print("=" * 140)
 
     if val_results:
         print("\n" + "=" * 75)
@@ -2065,6 +2294,28 @@ def main(argv=None):
     except Exception as e:
         logger.warning(f"市场环境数据加载失败，跳过 regime 过滤: {e}")
         df_all["market_ok"] = True
+
+    # 财务质量过滤:按 ann_date 对齐(防前视偏差)
+    try:
+        df_fina = load_fina_indicator(anchored_start, today_str)
+        if not df_fina.empty:
+            df_all = merge_fina_by_ann_date(df_all, df_fina)
+            df_all.rename(columns={"roe": "fin_roe", "grossprofit_margin": "fin_gross_margin",
+                                   "or_yoy": "fin_or_yoy"}, inplace=True)
+            logger.info(f"财务过滤字段: fin_roe 覆盖率 {df_all['fin_roe'].notna().mean()*100:.1f}%")
+        del df_fina
+        gc.collect()
+    except Exception as e:
+        logger.warning(f"财务数据加载失败，跳过财务过滤: {e}")
+
+    # 动态退出收益(ATR止损 + 移动止盈 + 时间止损)
+    logger.info("计算动态退出收益(ATR止损/移动止盈)...")
+    t_dyn = time.time()
+    dyn_ret = compute_dynamic_exit_returns(df_all)
+    df_all = pd.concat([df_all, dyn_ret], axis=1)
+    del dyn_ret
+    gc.collect()
+    logger.info(f"动态退出收益计算完成，耗时 {time.time()-t_dyn:.1f}s")
 
     # 按最近交易日划分回测 / 验证区间：最后 5 个交易日留给验证，其余用于回测
     all_dates = sorted(df_all["date"].unique())
