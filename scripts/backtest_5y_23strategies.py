@@ -77,6 +77,12 @@ LIMIT_UP_PCT_GEM = 19.5          # 创业板涨停判定阈值（%），2020-08 
 # ─── 交易成本 ──────────────────────────────────────────────────────────────────
 TRADING_COST_PCT = 0.15          # 单边往返交易成本（%）：佣金+印花税+滑点合计约 0.15%
 
+# ─── 信号质量过滤（P1） ────────────────────────────────────────────────────────
+MIN_CIRC_MV_W = 200000           # 最小流通市值（万元，即 20 亿），过滤易被操纵的小盘股
+MAX_CIRC_MV_W = 5000000          # 最大流通市值（万元，即 500 亿），过滤弹性差的超大盘股
+MIN_VOLUME_RATIO = 1.5           # 信号日最低量比（Tushare 官方归一化活跃度指标）
+MONEYFLOW_LOOKBACK = 3           # 主力资金净流入确认的回看天数
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -372,7 +378,7 @@ def _convert_columns_to_float32(df: pd.DataFrame) -> pd.DataFrame:
     float_columns = [
         "open", "high", "low", "close",
         "volume", "amount", "pct_chg", "turn", "pe_ttm", "pb_mrq",
-        "up_limit", "down_limit",
+        "up_limit", "down_limit", "circ_mv", "volume_ratio", "net_mf_amount",
     ]
     converted = df.copy()
     for col in float_columns:
@@ -414,11 +420,15 @@ def load_data(start: str, end: str) -> pd.DataFrame:
             b.turnover_rate AS turn,
             b.pe_ttm,
             b.pb AS pb_mrq,
+            b.circ_mv,
+            b.volume_ratio,
+            m.net_mf_amount,
             l.up_limit,
             l.down_limit
         FROM tushare_daily d
         JOIN tushare_stock_basic s ON d.ts_code = s.ts_code
         LEFT JOIN tushare_daily_basic b ON d.ts_code = b.ts_code AND d.trade_date = b.trade_date
+        LEFT JOIN tushare_moneyflow m ON d.ts_code = m.ts_code AND d.trade_date = m.trade_date
         LEFT JOIN tushare_stk_limit l ON d.ts_code = l.ts_code AND d.trade_date = l.trade_date
         WHERE d.trade_date BETWEEN %s AND %s
           AND s.list_status = 'L'
@@ -440,7 +450,8 @@ def load_data(start: str, end: str) -> pd.DataFrame:
     df.drop(columns=["ts_code"], inplace=True)
 
     for col in ["open", "high", "low", "close", "volume", "amount",
-                "pct_chg", "turn", "pe_ttm", "pb_mrq", "up_limit", "down_limit"]:
+                "pct_chg", "turn", "pe_ttm", "pb_mrq", "up_limit", "down_limit",
+                "circ_mv", "volume_ratio", "net_mf_amount"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
     df = _convert_columns_to_float32(df)
@@ -711,6 +722,54 @@ def _is_limit_down(df: pd.DataFrame) -> pd.Series:
         gem = df["code"].str.startswith(("sz.300", "sz.301"))
         threshold = np.where(gem, -LIMIT_UP_PCT_GEM, -LIMIT_UP_PCT_MAIN)
         return df["pct_chg"] <= threshold
+
+
+def _moneyflow_ok(df: pd.DataFrame) -> pd.Series:
+    """主力资金净流入确认:当日净流入 > 0 或近 N 日累计净流入 > 0。
+
+    过滤"放量但主力出货"的假突破;数据缺失时放行(不误杀)。
+    """
+    if "net_mf_amount" not in df.columns:
+        return pd.Series(True, index=df.index)
+    mf = df["net_mf_amount"]
+    cum3 = mf.groupby(df["code"]).transform(
+        lambda x: x.rolling(MONEYFLOW_LOOKBACK, min_periods=1).sum()
+    )
+    ok = (mf > 0) | (cum3 > 0)
+    return ok.fillna(True)
+
+
+def _size_ok(df: pd.DataFrame) -> pd.Series:
+    """流通市值过滤:剔除 < 20 亿(易操纵、滑点大)与 > 500 亿(弹性差)个股。
+
+    circ_mv 单位为万元;数据缺失时放行。
+    """
+    if "circ_mv" not in df.columns:
+        return pd.Series(True, index=df.index)
+    mv = df["circ_mv"]
+    ok = (mv >= MIN_CIRC_MV_W) & (mv <= MAX_CIRC_MV_W)
+    return ok.fillna(True)
+
+
+def _volume_ratio_ok(df: pd.DataFrame) -> pd.Series:
+    """量比确认:信号日量比 >= MIN_VOLUME_RATIO(相对近期活跃)。
+
+    用 Tushare 官方归一化指标替代/补充自算 vol_ma5 放量判断;缺失时放行。
+    """
+    if "volume_ratio" not in df.columns:
+        return pd.Series(True, index=df.index)
+    ok = df["volume_ratio"] >= MIN_VOLUME_RATIO
+    return ok.fillna(True)
+
+
+def _entry_mask(df: pd.DataFrame) -> pd.Series:
+    """统一的买入可成交性掩码:剔除涨跌停日,并叠加市场环境、
+    主力资金、市值、量比质量过滤(回测/验证/推荐共用)。"""
+    mask = ~_is_limit_up(df) & ~_is_limit_down(df)
+    if "market_ok" in df.columns:
+        mask &= df["market_ok"].fillna(True).astype(bool)
+    mask &= _moneyflow_ok(df) & _size_ok(df) & _volume_ratio_ok(df)
+    return mask
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1376,8 +1435,7 @@ def _backtest_single(name: str, df: pd.DataFrame) -> Dict:
     t0 = time.time()
     try:
         sig = STRATEGIES[name](df)
-        market_ok_mask = df["market_ok"] if "market_ok" in df.columns else pd.Series(True, index=df.index)
-        signals = df[sig & ~_is_limit_up(df) & ~_is_limit_down(df) & market_ok_mask]
+        signals = df[sig & _entry_mask(df)]
         n = signals["code"].count()
         if n == 0:
             return {"strategy": name, "total_trades": 0, "win_rate": 0,
@@ -1545,8 +1603,7 @@ def validate_week(df_week, top_results, top_n=5):
 
     for name in top_names:
         try:
-            week_market_ok = df_week["market_ok"] if "market_ok" in df_week.columns else pd.Series(True, index=df_week.index)
-            sig = STRATEGIES[name](df_week) & ~_is_limit_up(df_week) & ~_is_limit_down(df_week) & week_market_ok
+            sig = STRATEGIES[name](df_week) & _entry_mask(df_week)
             matched_rows = df_week.loc[sig.values].copy()
             matched_stocks = matched_rows.loc[matched_rows["date"] == buy_date, ["code", "name"]].drop_duplicates()
             n = len(matched_stocks)
@@ -1683,8 +1740,7 @@ def get_top_stocks_by_win_rate(df_week, results, top_n=10):
             continue
 
         try:
-            week_market_ok = df_week["market_ok"] if "market_ok" in df_week.columns else pd.Series(True, index=df_week.index)
-            sig = STRATEGIES[strategy_name](df_week) & ~_is_limit_up(df_week) & ~_is_limit_down(df_week) & week_market_ok
+            sig = STRATEGIES[strategy_name](df_week) & _entry_mask(df_week)
             mask = sig.values
             if mask.sum() == 0:
                 continue
@@ -1790,8 +1846,7 @@ def get_next_day_recommendations(df_latest, top_stocks_or_results, results=None,
 
     for strategy_name in unique_strategies:
         try:
-            latest_market_ok = df_latest["market_ok"] if "market_ok" in df_latest.columns else pd.Series(True, index=df_latest.index)
-            sig = STRATEGIES[strategy_name](df_latest) & ~_is_limit_up(df_latest) & ~_is_limit_down(df_latest) & latest_market_ok
+            sig = STRATEGIES[strategy_name](df_latest) & _entry_mask(df_latest)
             latest_mask = sig.values & (df_latest["date"] == latest_date).values
             if latest_mask.sum() == 0:
                 continue
