@@ -74,6 +74,9 @@ MIN_LISTING_DAYS = 120           # 上市最短天数，过滤次新股（上市
 LIMIT_UP_PCT_MAIN = 9.5          # 主板/中小板涨停判定阈值（%）
 LIMIT_UP_PCT_GEM = 19.5          # 创业板涨停判定阈值（%），2020-08 起涨跌幅扩至 20%
 
+# ─── 交易成本 ──────────────────────────────────────────────────────────────────
+TRADING_COST_PCT = 0.15          # 单边往返交易成本（%）：佣金+印花税+滑点合计约 0.15%
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -369,6 +372,7 @@ def _convert_columns_to_float32(df: pd.DataFrame) -> pd.DataFrame:
     float_columns = [
         "open", "high", "low", "close",
         "volume", "amount", "pct_chg", "turn", "pe_ttm", "pb_mrq",
+        "up_limit", "down_limit",
     ]
     converted = df.copy()
     for col in float_columns:
@@ -409,10 +413,13 @@ def load_data(start: str, end: str) -> pd.DataFrame:
             d.pct_chg,
             b.turnover_rate AS turn,
             b.pe_ttm,
-            b.pb AS pb_mrq
+            b.pb AS pb_mrq,
+            l.up_limit,
+            l.down_limit
         FROM tushare_daily d
         JOIN tushare_stock_basic s ON d.ts_code = s.ts_code
         LEFT JOIN tushare_daily_basic b ON d.ts_code = b.ts_code AND d.trade_date = b.trade_date
+        LEFT JOIN tushare_stk_limit l ON d.ts_code = l.ts_code AND d.trade_date = l.trade_date
         WHERE d.trade_date BETWEEN %s AND %s
           AND s.list_status = 'L'
           AND s.exchange IN ('SSE', 'SZSE')
@@ -433,12 +440,67 @@ def load_data(start: str, end: str) -> pd.DataFrame:
     df.drop(columns=["ts_code"], inplace=True)
 
     for col in ["open", "high", "low", "close", "volume", "amount",
-                "pct_chg", "turn", "pe_ttm", "pb_mrq"]:
+                "pct_chg", "turn", "pe_ttm", "pb_mrq", "up_limit", "down_limit"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
     df = _convert_columns_to_float32(df)
     logger.info(f"总计 {len(df):,} 行 x {df['code'].nunique()} 只股票，耗时 {time.time()-t0:.1f}s")
     return df
+
+
+# ─── 市场环境过滤(上证指数 regime) ─────────────────────────────────────────────
+
+def load_index_daily(start: str, end: str, ts_code: str = "000001.SH") -> pd.DataFrame:
+    """从本地 tushare_index_daily 加载指数日线数据。
+
+    默认使用上证指数(000001.SH)作为 A 股市场环境判定基准。
+    返回列: date、index_close(指数收盘价)。
+    """
+    t0 = time.time()
+    logger.info(f"加载指数 {ts_code} 日线 {start} ~ {end}...")
+
+    sql = """
+        SELECT trade_date AS date, close AS index_close
+        FROM tushare_index_daily
+        WHERE ts_code = %s AND trade_date BETWEEN %s AND %s
+        ORDER BY trade_date
+    """
+
+    engine = _get_pg_engine()
+    try:
+        with engine.connect() as conn:
+            df = pd.read_sql(sql, conn, params=(ts_code, start, end), parse_dates=["date"])
+    finally:
+        engine.dispose()
+
+    df["index_close"] = pd.to_numeric(df["index_close"], errors="coerce").astype("float32")
+    logger.info(f"指数加载完成,共 {len(df)} 条,耗时 {time.time()-t0:.1f}s")
+    return df
+
+
+def compute_market_ok(index_df: pd.DataFrame) -> pd.DataFrame:
+    """根据指数日线计算每日 market_ok(适合开仓的市场环境)。
+
+    判定规则(组合应用):
+      - 指数收盘价站在 MA20 和 MA60 之上
+      - MA20 上行(今 > 昨)
+      - MA5 在 MA20 之上(未死叉)
+    返回 DataFrame,含 date、market_ok(bool)两列。
+    """
+    df = index_df.sort_values("date").reset_index(drop=True).copy()
+    close = df["index_close"]
+    df["idx_ma5"] = close.rolling(5, min_periods=1).mean()
+    df["idx_ma20"] = close.rolling(20, min_periods=1).mean()
+    df["idx_ma60"] = close.rolling(60, min_periods=1).mean()
+    df["idx_ma20_prev"] = df["idx_ma20"].shift(1).fillna(df["idx_ma20"].iloc[0])
+
+    df["market_ok"] = (
+        (close > df["idx_ma20"])
+        & (close > df["idx_ma60"])
+        & (df["idx_ma20"] > df["idx_ma20_prev"])
+        & (df["idx_ma5"] > df["idx_ma20"])
+    )
+    return df[["date", "market_ok"]]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -612,15 +674,43 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _is_limit_up(df: pd.DataFrame) -> pd.Series:
-    """判断当日是否涨停封板（涨停时按收盘价无法买入，回测应剔除该类信号）。
+    """判断当日是否涨停封板(涨停时按收盘价无法买入,回测应剔除该类信号)。
 
-    主板/中小板涨跌幅 10%，创业板 2020-08 起涨跌幅扩至 20%，
-    分别用 9.5% / 19.5% 作为近似涨停判定阈值（留出四舍五入余量）。
-    返回布尔 Series（True = 涨停，不可成交）。
+    优先使用 tushare_stk_limit.up_limit 精确判定:
+      - 收盘价 >= 涨停价 * 0.999 即视为已封板(含 ST/科创板等不同涨跌幅限制)
+    当 up_limit 缺失(如停牌、数据缺失)时回退到近似阈值:
+      - 主板/中小板 9.5%,创业板 19.5%(留出四舍五入余量)
+    返回布尔 Series(True = 涨停,不可成交)。
     """
-    gem = df["code"].str.startswith(("sz.300", "sz.301"))
-    threshold = np.where(gem, LIMIT_UP_PCT_GEM, LIMIT_UP_PCT_MAIN)
-    return df["pct_chg"] >= threshold
+    if "up_limit" in df.columns:
+        exact = df["close"] >= df["up_limit"] * 0.999
+        gem = df["code"].str.startswith(("sz.300", "sz.301"))
+        approx = df["pct_chg"] >= np.where(gem, LIMIT_UP_PCT_GEM, LIMIT_UP_PCT_MAIN)
+        # 精确值优先;缺失时用近似阈值兜底
+        return exact.fillna(approx)
+    else:
+        gem = df["code"].str.startswith(("sz.300", "sz.301"))
+        threshold = np.where(gem, LIMIT_UP_PCT_GEM, LIMIT_UP_PCT_MAIN)
+        return df["pct_chg"] >= threshold
+
+
+def _is_limit_down(df: pd.DataFrame) -> pd.Series:
+    """判断当日是否跌停(跌停日买入流动性差且为接飞刀,回测应剔除该类信号)。
+
+    优先使用 tushare_stk_limit.down_limit 精确判定:
+      - 收盘价 <= 跌停价 * 1.001 即视为已封板
+    当 down_limit 缺失时回退到近似阈值(-9.5% / -19.5%)。
+    返回布尔 Series(True = 跌停,不可作为买点)。
+    """
+    if "down_limit" in df.columns:
+        exact = df["close"] <= df["down_limit"] * 1.001
+        gem = df["code"].str.startswith(("sz.300", "sz.301"))
+        approx = df["pct_chg"] <= np.where(gem, -LIMIT_UP_PCT_GEM, -LIMIT_UP_PCT_MAIN)
+        return exact.fillna(approx)
+    else:
+        gem = df["code"].str.startswith(("sz.300", "sz.301"))
+        threshold = np.where(gem, -LIMIT_UP_PCT_GEM, -LIMIT_UP_PCT_MAIN)
+        return df["pct_chg"] <= threshold
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1286,7 +1376,8 @@ def _backtest_single(name: str, df: pd.DataFrame) -> Dict:
     t0 = time.time()
     try:
         sig = STRATEGIES[name](df)
-        signals = df[sig & ~_is_limit_up(df)]
+        market_ok_mask = df["market_ok"] if "market_ok" in df.columns else pd.Series(True, index=df.index)
+        signals = df[sig & ~_is_limit_up(df) & ~_is_limit_down(df) & market_ok_mask]
         n = signals["code"].count()
         if n == 0:
             return {"strategy": name, "total_trades": 0, "win_rate": 0,
@@ -1304,7 +1395,9 @@ def _backtest_single(name: str, df: pd.DataFrame) -> Dict:
             if len(sub) == 0:
                 continue
             sub = sub.sort_values("date")
-            m = calc_metrics(sub[col].values, avg_holding=p)
+            # 扣减往返交易成本后再统计绩效
+            net_ret = sub[col].values - TRADING_COST_PCT / 100.0
+            m = calc_metrics(net_ret, avg_holding=p)
             m["total_trades"] = int(len(sub))
             period_metrics[p] = m
 
@@ -1452,7 +1545,8 @@ def validate_week(df_week, top_results, top_n=5):
 
     for name in top_names:
         try:
-            sig = STRATEGIES[name](df_week) & ~_is_limit_up(df_week)
+            week_market_ok = df_week["market_ok"] if "market_ok" in df_week.columns else pd.Series(True, index=df_week.index)
+            sig = STRATEGIES[name](df_week) & ~_is_limit_up(df_week) & ~_is_limit_down(df_week) & week_market_ok
             matched_rows = df_week.loc[sig.values].copy()
             matched_stocks = matched_rows.loc[matched_rows["date"] == buy_date, ["code", "name"]].drop_duplicates()
             n = len(matched_stocks)
@@ -1469,7 +1563,7 @@ def validate_week(df_week, top_results, top_n=5):
 
             valid_df = merged_df.dropna(subset=["buy_price", "sell_price"])
             valid_df = valid_df[valid_df["buy_price"] > 0]
-            rets = (valid_df["sell_price"] / valid_df["buy_price"] - 1).values
+            rets = (valid_df["sell_price"] / valid_df["buy_price"] - 1).values - TRADING_COST_PCT / 100.0
 
             if len(rets) > 0:
                 win_rate = (rets > 0).sum() / len(rets) * 100
@@ -1589,7 +1683,8 @@ def get_top_stocks_by_win_rate(df_week, results, top_n=10):
             continue
 
         try:
-            sig = STRATEGIES[strategy_name](df_week) & ~_is_limit_up(df_week)
+            week_market_ok = df_week["market_ok"] if "market_ok" in df_week.columns else pd.Series(True, index=df_week.index)
+            sig = STRATEGIES[strategy_name](df_week) & ~_is_limit_up(df_week) & ~_is_limit_down(df_week) & week_market_ok
             mask = sig.values
             if mask.sum() == 0:
                 continue
@@ -1695,7 +1790,8 @@ def get_next_day_recommendations(df_latest, top_stocks_or_results, results=None,
 
     for strategy_name in unique_strategies:
         try:
-            sig = STRATEGIES[strategy_name](df_latest) & ~_is_limit_up(df_latest)
+            latest_market_ok = df_latest["market_ok"] if "market_ok" in df_latest.columns else pd.Series(True, index=df_latest.index)
+            sig = STRATEGIES[strategy_name](df_latest) & ~_is_limit_up(df_latest) & ~_is_limit_down(df_latest) & latest_market_ok
             latest_mask = sig.values & (df_latest["date"] == latest_date).values
             if latest_mask.sum() == 0:
                 continue
@@ -1899,6 +1995,21 @@ def main(argv=None):
     del df_adjusted
     gc.collect()
     log_memory_usage("指标计算后")
+
+    # 市场环境过滤:加载上证指数日线 -> 计算 regime -> 合并到 df_all
+    try:
+        df_index = load_index_daily(anchored_start, today_str)
+        regime_df = compute_market_ok(df_index)
+        ok_days = regime_df.loc[regime_df["market_ok"], "date"]
+        ok_ratio = len(ok_days) / len(regime_df) if len(regime_df) > 0 else 0
+        logger.info(f"市场环境: {len(ok_days)}/{len(regime_df)} 个交易日可开仓 ({ok_ratio*100:.1f}%)")
+        df_all = df_all.merge(regime_df, on="date", how="left")
+        df_all["market_ok"] = df_all["market_ok"].fillna(False).astype(bool)
+        del df_index, regime_df
+        gc.collect()
+    except Exception as e:
+        logger.warning(f"市场环境数据加载失败，跳过 regime 过滤: {e}")
+        df_all["market_ok"] = True
 
     # 按最近交易日划分回测 / 验证区间：最后 5 个交易日留给验证，其余用于回测
     all_dates = sorted(df_all["date"].unique())
