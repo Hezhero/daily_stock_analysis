@@ -83,6 +83,9 @@ MAX_CIRC_MV_W = 5000000          # 最大流通市值（万元，即 500 亿）�
 MIN_VOLUME_RATIO = 1.5           # 信号日最低量比（Tushare 官方归一化活跃度指标）
 MONEYFLOW_LOOKBACK = 3           # 主力资金净流入确认的回看天数
 
+# ─── 信号去重/冷却期（C3） ─────────────────────────────────────────────────────
+SIGNAL_COOLDOWN_DAYS = 5         # 同一股票同一策略 N 日内只取第一次信号
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -921,6 +924,33 @@ def _entry_mask(df: pd.DataFrame) -> pd.Series:
     return mask
 
 
+def _apply_cooldown(df: pd.DataFrame, sig: pd.Series, cooldown_days: int = SIGNAL_COOLDOWN_DAYS) -> pd.Series:
+    """对信号施加冷却期:同一股票同一策略 N 日内只取第一次信号。
+
+    按 code 分组,保留信号后 N 日内的后续信号被抑制,降低样本
+    自相关与同一股票重复贡献,使胜率统计更真实(C3)。
+    """
+    sig = sig & _entry_mask(df)
+    kept = pd.Series(False, index=df.index)
+    tmp = df.copy()
+    tmp["sig"] = sig.astype(bool)
+    tmp["kept"] = False
+    for code, g in tmp.groupby("code", sort=False):
+        sig_days = g.loc[g["sig"], "date"].to_numpy()
+        if len(sig_days) == 0:
+            continue
+        keep_mask = np.zeros(len(sig_days), dtype=bool)
+        last_kept = None
+        for j, d in enumerate(sig_days):
+            if last_kept is None or (d - last_kept) / np.timedelta64(1, "D") >= cooldown_days:
+                keep_mask[j] = True
+                last_kept = d
+        kept_dates = sig_days[keep_mask]
+        if len(kept_dates):
+            kept.loc[g.index[g["date"].isin(kept_dates)]] = True
+    return kept
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # 策略信号函数（23 个策略）
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1425,16 +1455,17 @@ if _HAS_NUMBA:
         n = len(r)
         if n < 2:
             return 0.0
-        cur_eq = 0.0
-        peak = 0.0
+        cur_eq = r[0]
+        peak = cur_eq
         max_dd = 0.0
-        for i in range(n):
+        for i in range(1, n):
             cur_eq += r[i]
             if cur_eq > peak:
                 peak = cur_eq
-            dd = (peak - cur_eq) / (abs(peak) + 1e-10)
-            if dd > max_dd:
-                max_dd = dd
+            if peak > 0:
+                dd = (peak - cur_eq) / peak
+                if dd > max_dd:
+                    max_dd = dd
         return max_dd * 100.0
 
 
@@ -1485,16 +1516,17 @@ else:
         n = len(r)
         if n < 2:
             return 0.0
-        cur_eq = 0.0
-        peak = 0.0
+        cur_eq = r[0]
+        peak = cur_eq
         max_dd = 0.0
-        for ri in r:
+        for ri in r[1:]:
             cur_eq += ri
             if cur_eq > peak:
                 peak = cur_eq
-            dd = (peak - cur_eq) / (abs(peak) + 1e-10)
-            if dd > max_dd:
-                max_dd = dd
+            if peak > 0:
+                dd = (peak - cur_eq) / peak
+                if dd > max_dd:
+                    max_dd = dd
         return max_dd * 100.0
 
 
@@ -1611,7 +1643,7 @@ def _backtest_single(name: str, df: pd.DataFrame) -> Dict:
     t0 = time.time()
     try:
         sig = STRATEGIES[name](df)
-        signals = df[sig & _entry_mask(df)]
+        signals = df[_apply_cooldown(df, sig)]
         n = signals["code"].count()
         if n == 0:
             return {"strategy": name, "total_trades": 0, "win_rate": 0,
@@ -1668,26 +1700,29 @@ def _backtest_single(name: str, df: pd.DataFrame) -> Dict:
         return {"strategy": name, "error": str(e), "time_s": round(time.time() - t0, 1)}
 
 
-def compute_benchmark_metrics(df: pd.DataFrame) -> Dict:
-    """计算等权市场基准绩效指标（P1-8：无基准对比修复）。
+def compute_benchmark_metrics(df: pd.DataFrame, index_df: Optional[pd.DataFrame] = None) -> Dict:
+    """计算市场基准绩效指标,用于区分 alpha/beta(D2)。
 
-    由于本地库无指数日线表，使用回测数据中全部股票的日收益率
-    按日期等权平均，构建"全市场等权组合"作为基准，用于区分 alpha/beta。
-    返回：benchmark_return / benchmark_annualized / benchmark_max_drawdown。
+    优先使用真实指数日线(tushare_index_daily,沪深300)计算基准,
+    指数数据缺失时回退到全股票等权平均(旧逻辑)。
+    返回: benchmark_return / benchmark_annualized / benchmark_max_drawdown。
     """
-    if df is None or df.empty or "date" not in df.columns or "pct_chg" not in df.columns:
+    if index_df is not None and not index_df.empty and "index_close" in index_df.columns:
+        idx = index_df.sort_values("date").reset_index(drop=True)
+        idx["ret"] = idx["index_close"].pct_change()
+        daily = idx.dropna(subset=["ret"])["ret"].to_numpy(dtype=float)
+    elif df is not None and not df.empty and "date" in df.columns and "pct_chg" in df.columns:
+        daily = df.groupby("date")["pct_chg"].mean().sort_index().dropna().to_numpy(dtype=float) / 100.0
+    else:
         return {}
 
-    daily = df.groupby("date")["pct_chg"].mean().sort_index() / 100.0
-    daily = daily.dropna()
     if len(daily) < 2:
         return {}
 
-    bench_returns = daily.values
-    total_return = float((np.prod(1 + bench_returns) - 1) * 100.0)
-    years = len(bench_returns) / 252.0
-    annualized = float((np.prod(1 + bench_returns) ** (1.0 / max(years, 1e-10)) - 1) * 100.0)
-    max_drawdown = float(_calc_max_drawdown(bench_returns))
+    total_return = float((np.prod(1 + daily) - 1) * 100.0)
+    years = len(daily) / 252.0
+    annualized = float((np.prod(1 + daily) ** (1.0 / max(years, 1e-10)) - 1) * 100.0)
+    max_drawdown = float(_calc_max_drawdown(daily))
 
     return {
         "benchmark_return": round(total_return, 2),
@@ -1696,13 +1731,13 @@ def compute_benchmark_metrics(df: pd.DataFrame) -> Dict:
     }
 
 
-def run_backtests(df_bt: pd.DataFrame) -> List[Dict]:
-    """对全部 23 个策略执行回测，返回按总收益降序的有效结果列表。
+def run_backtests(df_bt: pd.DataFrame, index_df: Optional[pd.DataFrame] = None) -> List[Dict]:
+    """对全部 23 个策略执行回测，返回按期望值降序的有效结果列表。
 
     依据 resolve_parallel_config 自动选择串行 / ThreadPoolExecutor 并行；
     单个策略失败不影响其他策略（错误结果单独标记）。
-    每个有效结果附加基准对比字段（P1-8）：
-      - benchmark_return：同期等权市场基准总收益
+    每个有效结果附加基准对比字段（D2）：
+      - benchmark_return：同期基准总收益(沪深300,缺失时回退等权)
       - benchmark_annualized：基准年化收益
       - excess_return：策略总收益 - 基准总收益（超额收益）
     """
@@ -1717,10 +1752,10 @@ def run_backtests(df_bt: pd.DataFrame) -> List[Dict]:
     else:
         logger.info(f"串行回测 {n_strategies} 策略...")
 
-    # 等权市场基准（P1-8）
-    benchmark = compute_benchmark_metrics(df_bt)
+    # 市场基准（D2）：优先沪深300真实指数,缺失时回退等权
+    benchmark = compute_benchmark_metrics(df_bt, index_df=index_df)
     if benchmark:
-        logger.info(f"等权市场基准: 总收益 {benchmark['benchmark_return']:.2f}%, "
+        logger.info(f"市场基准: 总收益 {benchmark['benchmark_return']:.2f}%, "
                     f"年化 {benchmark['benchmark_annualized']:.2f}%, "
                     f"最大回撤 {benchmark['benchmark_max_drawdown']:.2f}%")
     else:
@@ -2339,7 +2374,17 @@ def main(argv=None):
     gc.collect()
     log_memory_usage("回测数据准备后")
 
-    results = run_backtests(df_bt)
+    # 基准指数(沪深300, D2):用于超额收益对比;加载失败时回退等权基准
+    df_bench_index = None
+    try:
+        df_bench_index = load_index_daily(anchored_start, today_str, ts_code="000300.SH")
+        if df_bench_index.empty:
+            df_bench_index = None
+    except Exception as e:
+        logger.warning(f"基准指数加载失败，回退等权基准: {e}")
+        df_bench_index = None
+
+    results = run_backtests(df_bt, index_df=df_bench_index)
     val_results = validate_week(df_week, results, TOP_N_VALIDATE)
     print_results(results, val_results, backtest_start_date, backtest_end_date)
 

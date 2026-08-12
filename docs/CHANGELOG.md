@@ -34,6 +34,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
+- [改进] `scripts/backtest_5y_23strategies.py` 回测改用 `tushare_stk_limit.up_limit/down_limit` 精确涨跌停判定，修复 ST（5%）/创业板（20%）等涨跌幅限制下 9.5%/19.5% 近似阈值误判，买入信号统一剔除涨跌停日。
+- [改进] `scripts/backtest_5y_23strategies.py` 回测与 5 日验证每笔收益扣除 0.15% 往返交易成本（佣金+印花税+滑点）后再统计绩效，消除高换手策略名义胜率虚高。
+- [改进] `scripts/backtest_5y_23strategies.py` 新增市场环境（Regime）过滤：加载上证指数日线，指数站上 MA20/MA60 且 MA20 上行、MA5 未下穿 MA20 时才允许开仓，回测/验证/推荐统一应用。
+- [改进] `scripts/backtest_5y_23strategies.py` 新增主力资金确认（moneyflow net_mf_amount，当日或近 3 日累计净流入为正）、流通市值过滤（20 亿~500 亿）与量比确认（>=1.5），统一收敛为 `_entry_mask` 买入掩码。
+- [改进] `scripts/backtest_5y_23strategies.py` 回测收益改用 ATR(20) 止损（2 倍 ATR 破位退出）+ 移动止盈（持有期最高价回撤 8% 退出）+ 时间止损的动态退出计算，替代固定持有期收益。
+- [改进] `scripts/backtest_5y_23strategies.py` 组合策略由简单计数改为按组件策略历史胜率加权触发。
+- [改进] `scripts/backtest_5y_23strategies.py` 新增财务质量过滤（ROE<0 或营收增速<-30% 剔除），财务数据按 ann_date 向后对齐避免前视偏差。
+- [改进] `scripts/backtest_5y_23strategies.py` 新增分年度胜率/收益评估表格；策略排序指标从 total_return 扩展为期望值（expectation），新增凯利分数指标。
+- [改进] `scripts/backtest_5y_23strategies.py` 新增信号冷却期去重（同股同策略 5 日内只取首次信号）；基准改用沪深 300 真实指数（缺失时回退等权），并修复最大回撤在负收益序列下的计算异常。
 
 ## [3.30.0] - 2026-08-09
 
