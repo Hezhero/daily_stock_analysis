@@ -155,6 +155,7 @@ def pull_daily_and_adj(
     ]
 
     totals: dict[str, int] = {"daily": 0, "adj_factor": 0}
+    fails: dict[str, int] = {"daily": 0, "adj_factor": 0}
 
     for i in range(0, len(codes), STOCK_BATCH):
         batch = codes[i:i + STOCK_BATCH]
@@ -174,7 +175,8 @@ def pull_daily_and_adj(
                     n = insert_dataframe(conn, table_name, df, conflict)
                     totals[api_name] += n
             except Exception as exc:
-                if (i // STOCK_BATCH) % 10 == 0:
+                fails[api_name] += 1
+                if fails[api_name] <= 1 or (i // STOCK_BATCH) % 10 == 0:
                     logger.warning("  %s b%d 失败: %s", api_name, i, exc)
             time.sleep(SLEEP_BETWEEN)
 
@@ -187,7 +189,11 @@ def pull_daily_and_adj(
                 f"{totals['adj_factor']:,}",
             )
 
-    logger.info("  daily: %s  adj_factor: %s", f"{totals['daily']:,}", f"{totals['adj_factor']:,}")
+    logger.info(
+        "  daily: %s  adj_factor: %s  失败批次: daily=%d adj_factor=%d",
+        f"{totals['daily']:,}", f"{totals['adj_factor']:,}",
+        fails["daily"], fails["adj_factor"],
+    )
 
 
 def _print_summary(conn):
@@ -227,10 +233,11 @@ def main():
         last_adj = get_latest_date(conn, "tushare_adj_factor", "trade_date")
         last_basic = get_latest_date(conn, "tushare_daily_basic", "trade_date")
 
-        # daily / adj_factor: 从最晚已有日期的下一天开始
+        # daily / adj_factor: 起点取两表中较旧日期的下一天，
+        # 避免一张表进度领先时另一张表的缺口被永久跳过
         da_start = "20100101"
         if last_daily and last_adj:
-            da_start = _fmt(max(last_daily, last_adj) + timedelta(days=1))
+            da_start = _fmt(min(last_daily, last_adj) + timedelta(days=1))
         elif last_daily:
             da_start = _fmt(last_daily + timedelta(days=1))
         elif last_adj:
