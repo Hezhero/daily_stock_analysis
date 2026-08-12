@@ -10,7 +10,7 @@
   5. ensure_financial_data() — 若财务表为空，单股逐只回填（慢，依赖 timeout 续传）
 
 调用方（各 incremental_*.py）按需调用：
-  - incremental_base.py   → ensure_schema + stock_basic / trade_cal / hs_const 已含刷新逻辑
+  - incremental_base.py   → ensure_schema + stock_basic / trade_cal 已含刷新逻辑
   - incremental_daily.py  → ensure_schema + stock_basic + trade_cal + (空表时 ensure_market_data)
   - incremental_fin.py    → ensure_schema + stock_basic + (空表时 ensure_financial_data)
   - incremental_dividend.py → ensure_schema

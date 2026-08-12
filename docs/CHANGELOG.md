@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [chore] 移除沪深股通持股表 `tushare_hk_hold` 及对应采集代码：`scripts/data_collection/incremental_factor.py` 的 hk_hold 日频接口条目移除（由 13 个接口减为 12 个），`docs/tushare_postgres_schema.sql` 同步删除表结构（含索引）与 updated_at 触发器注册。
 - [修复] `scripts/data_collection/tushare_pg_utils.py` 的 `insert_dataframe` 批量插入前过滤违反 NOT NULL 约束（且无默认值）的行并打 warning 日志：避免单行坏数据（如 `stk_holdernumber` 返回 `end_date` 为 NULL 的占位记录）导致整批插入失败、降级为逐行插入并静默丢数据，同时消除逐行插入的性能开销。
 - [改进] `scripts/data_collection/tushare_pg_utils.py` 的 `TushareClient.query` 识别限频错误（code=40203）时等待 60s 让限频窗口重置后重试，避免原指数退避 3 秒即放弃导致数据静默丢失；`incremental_factor.py`/`incremental_index.py` 的 `RATE_LIMIT` 注释记录实测依据（账号 5000 积分档全局限频 500 次/分，19 个接口 3 连测无接口级限频，`RATE_LIMIT=480` 合理）。
+- [chore] 移除沪深港通成分表 `tushare_hs_const` 及对应采集代码：`scripts/data_collection/incremental_base.py` 的 `refresh_hs_const` 与 `ts2pg.py` 的 hs_const 初始导入段移除，`docs/tushare_postgres_schema.sql` 同步删除表结构（含索引与注释）与 updated_at 触发器注册，`tests/test_hs_const.py` 删除；该接口数据源停更于 2019 年（in_date 最晚 2019-12-27），为静态历史且仓库内无消费方，故整体移除。
 
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->

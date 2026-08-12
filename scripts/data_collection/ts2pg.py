@@ -140,27 +140,6 @@ def phase2_basic(client: TushareClient, conn):
     else:
         logger.info("  namechange: 跳过")
 
-    if row_count(conn, "tushare_hs_const") == 0:
-        all_hs = []
-        for hs_type in ["SH", "SZ"]:
-            try:
-                df = client.query(
-                    "hs_const",
-                    hs_type=hs_type,
-                    fields="ts_code,hs_type,in_date,out_date,is_new",
-                )
-                if not df.empty:
-                    all_hs.append(df)
-            except Exception as exc:
-                logger.warning("    hs_const %s: %s", hs_type, exc)
-            time.sleep(0.3)
-        if all_hs:
-            df = pd.concat(all_hs, ignore_index=True)
-            n = insert_dataframe(conn, "tushare_hs_const", df, "(ts_code, hs_type, in_date)")
-            logger.info("  hs_const: %d", n)
-    else:
-        logger.info("  hs_const: 跳过")
-
     logger.info("P2 完成")
 
 
@@ -346,7 +325,6 @@ def phase5_verify(conn):
         ("tushare_trade_cal", "基础-日历", "cal_date"),
         ("tushare_stock_company", "基础-公司", None),
         ("tushare_namechange", "基础-曾用名", None),
-        ("tushare_hs_const", "基础-沪深港通", None),
         ("tushare_daily", "行情-日线", "trade_date"),
         ("tushare_adj_factor", "行情-复权", "trade_date"),
         ("tushare_daily_basic", "行情-每日指标", "trade_date"),

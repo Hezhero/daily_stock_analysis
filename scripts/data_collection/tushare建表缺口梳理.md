@@ -27,7 +27,6 @@
 | 公司信息 | `tushare_stock_company` | 6,291 | stock_company | 120 ✅ |
 | 交易日历 | `tushare_trade_cal` | 4,228 | trade_cal | 120 ✅ |
 | 更名历史 | `tushare_namechange` | 10,000 | namechange | 120 ✅ |
-| 沪深港通成分 | `tushare_hs_const` | 823 | hs_const | 120 ✅ |
 | 筹码分布 | `tushare_cyq` | 本地计算 | cyq（**特色数据，需 5000+，超出本次范围**）→ 已改为本地三角形分布法计算（`incremental_cyq.py`，基于 tushare_daily + tushare_daily_basic） | ✅ |
 
 > 注：`tushare_sync_log` 为内部同步日志表，非 Tushare 接口。`tushare_dividend` 已建表但**行数为 0**，等于未实际落库；`tushare_cyq` 原为空表，现已由本地三角形分布法计算写入（`incremental_cyq.py`，不依赖 Tushare cyq 接口）。

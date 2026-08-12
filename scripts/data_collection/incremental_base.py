@@ -4,7 +4,6 @@
 
 每天定时执行，全量刷新以下表（覆盖式更新）：
   - tushare_stock_basic  股票基础信息（新股上市、退市、名称/状态变更）
-  - tushare_hs_const     沪深港通成分股（季度调整）
   - tushare_ipo_list      IPO 新股列表
 
 策略:
@@ -90,32 +89,6 @@ def refresh_stock_basic(client: TushareClient, conn):
     )
 
 
-def refresh_hs_const(client: TushareClient, conn):
-    """刷新沪深港通成分股。"""
-    logger.info("--- hs_const -> tushare_hs_const ---")
-    total = 0
-    for hs_type in ["SH", "SZ"]:
-        try:
-            df = client.query(
-                "hs_const", hs_type=hs_type,
-                fields="ts_code,hs_type,in_date,out_date,is_new",
-            )
-            if df.empty:
-                continue
-            if total == 0:
-                truncate_table(conn, "tushare_hs_const")
-            n = insert_dataframe(
-                conn, "tushare_hs_const", df, "(ts_code, hs_type, in_date)",
-            )
-            total += n
-            logger.info("  hs_const %s: %s 行", hs_type, f"{n:,}")
-        except Exception as exc:
-            logger.warning("  hs_const %s 失败: %s", hs_type, exc)
-        time.sleep(0.3)
-    logger.info("  tushare_hs_const 总计: %s", f"{total:,}")
-    return total > 0
-
-
 def refresh_ipo_list(client: TushareClient, conn):
     """刷新 IPO 新股列表。"""
     return refresh_table(
@@ -170,7 +143,6 @@ def _print_summary(conn):
     tables = [
         ("tushare_stock_basic", "股票基础信息"),
         ("tushare_trade_cal", "交易日历"),
-        ("tushare_hs_const", "沪深港通"),
         ("tushare_ipo_list", "IPO列表"),
     ]
     logger.info("=== 当前数据概况 ===")
@@ -197,7 +169,6 @@ def main():
         _print_summary(conn)
 
         refresh_stock_basic(client, conn)
-        refresh_hs_const(client, conn)
         refresh_ipo_list(client, conn)
         ensure_trade_cal(client, conn)
 

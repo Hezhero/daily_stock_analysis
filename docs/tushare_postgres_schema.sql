@@ -188,34 +188,7 @@ COMMENT ON COLUMN tushare_namechange.change_reason IS '变更原因';
 COMMENT ON COLUMN tushare_namechange.created_at IS '记录创建时间';
 COMMENT ON COLUMN tushare_namechange.updated_at IS '记录最近更新时间';
 
--- 1.5 沪深港通成分股
--- API: hs_const
-CREATE TABLE IF NOT EXISTS tushare_hs_const (
-    id              BIGSERIAL PRIMARY KEY,
-    ts_code         VARCHAR(12)  NOT NULL,
-    hs_type         VARCHAR(2)   NOT NULL,   -- SH沪/SZ深
-    in_date         DATE         NOT NULL,   -- 纳入日期
-    out_date        DATE,                    -- 剔除日期
-    is_new          VARCHAR(1),              -- 是否最新 1是 0否
-    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-
-    CONSTRAINT uix_ts_hs_const_code_type_date UNIQUE (ts_code, hs_type, in_date)
-);
-
-CREATE INDEX IF NOT EXISTS ix_ts_hs_const_type ON tushare_hs_const(hs_type, in_date);
-COMMENT ON TABLE tushare_hs_const IS 'Tushare hs_const 沪深港通成分股缓存';
-
-COMMENT ON COLUMN tushare_hs_const.id IS '自增主键';
-COMMENT ON COLUMN tushare_hs_const.ts_code IS '股票代码';
-COMMENT ON COLUMN tushare_hs_const.hs_type IS '沪深港通类型（SH沪股通 SZ深股通）';
-COMMENT ON COLUMN tushare_hs_const.in_date IS '纳入日期';
-COMMENT ON COLUMN tushare_hs_const.out_date IS '剔除日期';
-COMMENT ON COLUMN tushare_hs_const.is_new IS '是否最新（1是 0否）';
-COMMENT ON COLUMN tushare_hs_const.created_at IS '记录创建时间';
-COMMENT ON COLUMN tushare_hs_const.updated_at IS '记录最近更新时间';
-
--- 1.6 IPO 新股列表
+-- 1.5 IPO 新股列表
 -- API: ipo_list
 -- 注: 此接口为 2025年新增，具体字段以官方文档为准
 CREATE TABLE IF NOT EXISTS tushare_ipo_list (
@@ -1981,7 +1954,6 @@ BEGIN
             'tushare_trade_cal',
             'tushare_stock_company',
             'tushare_namechange',
-            'tushare_hs_const',
             'tushare_ipo_list',
             'tushare_income',
             'tushare_balancesheet',
