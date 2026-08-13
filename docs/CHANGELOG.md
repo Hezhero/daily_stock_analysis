@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [改进] Tushare 增量采集按接口区分限频参数并增加数据新鲜度跳过：接口级限频 200 次/分接口（stk_holdernumber/pledge_stat/disclosure_date/index_weight）改用独立客户端 `RATE_LIMIT=180` + `SLEEP_BETWEEN=0.4s`（原全局 480/0.15s 会触发限频后每次罚站 60s）；`pledge_stat`（周频，库内已到最近周五则整表跳过）、`disclosure_date`（季频，已到最近季度末则整表跳过）消除全市场空转，`index_weight` 跳过已存在 (index_code, trade_date) 对；按当前库内数据分布预估 factor 1.7h→~1h、fin 1.1h→~40min，覆盖 `scripts/data_collection/incremental_factor.py`、`incremental_fin.py`、`incremental_index.py`。
+- [chore] 移除 Tushare 宏观利率扩展表 `tushare_shibor_quote` 及对应采集代码：`scripts/data_collection/incremental_macro.py` 仅保留 `shibor` 回填（移除限频时钟 `RateLimitClock`、`RATE_LIMITED_SLEEP`/`RATE_LIMIT_MAX_YEARS` 配置与半年段拉取逻辑），`docs/tushare_postgres_schema.sql` 同步删除表结构与 updated_at 触发器注册；该接口限频 1次/分钟且仓库内无消费方（回测仅用 `tushare_daily`/`tushare_daily_basic`/`tushare_index_daily` 等），故整体移除。
 - [修复] `scripts/data_collection/incremental_macro.py` `shibor_quote` 改为按半年段拉取并修正限频间隔：实测一年约 4500 行（250 交易日 x 18 家报价行）超 4000 行单次上限，原按年拉取会静默截断丢失年初数据；实测接口限频为 1次/分钟（code=40203），`RATE_LIMITED_SLEEP` 从 3600s 修正为 60s，`RATE_LIMIT_MAX_YEARS` 默认从 2 年提高到 10 年（10 年回补约 20 分钟完成），并支持按半年段幂等续传。
 - [改进] `scripts/data_collection/incremental_macro.py` 默认起始日期从 2010-01-01 调整为 2016-01-01，`shibor_quote` 从 2016 年起回补（限频接口按段分批续传）；`shibor` 已有数据不受影响（按已有段跳过）。
 - [修复] 筹码分布本地计算 `scripts/data_collection/incremental_cyq.py` 改用对数间距价格档位（PRICE_BINS=500）并基于全历史价格区间固定档位网格：修复线性等分下早期低价交易日（价格区间落在首个档位中心之下）筹码分布退化为空、avg_cost=0、分位价格取到最高档的问题；全量回填与增量计算共用同一网格与同一累积深度（增量改为从 `--start-date` 全量重算、仅插入新日期，移除 `--backfill-days` 参数），结果严格一致。

@@ -1783,58 +1783,6 @@ COMMENT ON COLUMN tushare_shibor."1y" IS '1年利率';
 COMMENT ON COLUMN tushare_shibor.created_at IS '记录创建时间';
 COMMENT ON COLUMN tushare_shibor.updated_at IS '记录最近更新时间';
 
--- 5.2 SHIBOR 报价
--- API: shibor_quote（实测返回 date, bank, on_b, on_a, 1w_b, 1w_a, ..., 1y_b, 1y_a）
-CREATE TABLE IF NOT EXISTS tushare_shibor_quote (
-    id              BIGSERIAL PRIMARY KEY,
-    date            DATE        NOT NULL,
-    bank            VARCHAR(100),              -- 报价银行
-    on_b            NUMERIC(12,4),             -- 隔夜买入报价
-    on_a            NUMERIC(12,4),             -- 隔夜卖出报价
-    "1w_b"          NUMERIC(12,4),
-    "1w_a"          NUMERIC(12,4),
-    "2w_b"          NUMERIC(12,4),
-    "2w_a"          NUMERIC(12,4),
-    "1m_b"          NUMERIC(12,4),
-    "1m_a"          NUMERIC(12,4),
-    "3m_b"          NUMERIC(12,4),
-    "3m_a"          NUMERIC(12,4),
-    "6m_b"          NUMERIC(12,4),
-    "6m_a"          NUMERIC(12,4),
-    "9m_b"          NUMERIC(12,4),
-    "9m_a"          NUMERIC(12,4),
-    "1y_b"          NUMERIC(12,4),
-    "1y_a"          NUMERIC(12,4),
-    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-
-    CONSTRAINT uix_ts_shibor_quote UNIQUE (date, bank)
-);
-
-COMMENT ON TABLE tushare_shibor_quote IS 'Tushare shibor_quote SHIBOR报价缓存';
-
-COMMENT ON COLUMN tushare_shibor_quote.id IS '自增主键';
-COMMENT ON COLUMN tushare_shibor_quote.date IS '日期';
-COMMENT ON COLUMN tushare_shibor_quote.bank IS '报价银行';
-COMMENT ON COLUMN tushare_shibor_quote.on_b IS '隔夜买入报价';
-COMMENT ON COLUMN tushare_shibor_quote.on_a IS '隔夜卖出报价';
-COMMENT ON COLUMN tushare_shibor_quote."1w_b" IS '1周买入报价';
-COMMENT ON COLUMN tushare_shibor_quote."1w_a" IS '1周卖出报价';
-COMMENT ON COLUMN tushare_shibor_quote."2w_b" IS '2周买入报价';
-COMMENT ON COLUMN tushare_shibor_quote."2w_a" IS '2周卖出报价';
-COMMENT ON COLUMN tushare_shibor_quote."1m_b" IS '1月买入报价';
-COMMENT ON COLUMN tushare_shibor_quote."1m_a" IS '1月卖出报价';
-COMMENT ON COLUMN tushare_shibor_quote."3m_b" IS '3月买入报价';
-COMMENT ON COLUMN tushare_shibor_quote."3m_a" IS '3月卖出报价';
-COMMENT ON COLUMN tushare_shibor_quote."6m_b" IS '6月买入报价';
-COMMENT ON COLUMN tushare_shibor_quote."6m_a" IS '6月卖出报价';
-COMMENT ON COLUMN tushare_shibor_quote."9m_b" IS '9月买入报价';
-COMMENT ON COLUMN tushare_shibor_quote."9m_a" IS '9月卖出报价';
-COMMENT ON COLUMN tushare_shibor_quote."1y_b" IS '1年买入报价';
-COMMENT ON COLUMN tushare_shibor_quote."1y_a" IS '1年卖出报价';
-COMMENT ON COLUMN tushare_shibor_quote.created_at IS '记录创建时间';
-COMMENT ON COLUMN tushare_shibor_quote.updated_at IS '记录最近更新时间';
-
 -- ============================================================
 -- 6. 辅助视图：合并日线 + 复权因子 → 前/后复权价格
 -- ============================================================
@@ -1973,7 +1921,7 @@ BEGIN
             'tushare_index_basic', 'tushare_index_daily', 'tushare_index_weekly',
             'tushare_index_monthly', 'tushare_index_weight', 'tushare_index_classify',
             'tushare_index_member_all',
-            'tushare_shibor', 'tushare_shibor_quote'
+            'tushare_shibor'
         ])
     LOOP
         EXECUTE format('

@@ -50,6 +50,11 @@ RATE_LIMIT = 480  # 实测(2026-08): 7 个接口无接口级限频; 全局限频
 PAGE_LIMIT = 8000
 WINDOW_DAYS = 500  # index_weight 回补的最近交易日数
 
+# index_weight 接口级限频 200 次/分（实测 code=40203"频率超限(200次/分钟)"）：
+# 用独立客户端 RATE_LIMIT=180 留余量，SLEEP_BETWEEN=0.4s ≈ 150 次/分，避免撞限频罚站 60s
+RATE_LIMIT_LIMITED = 180
+SLEEP_BETWEEN_LIMITED = 0.4
+
 # 主要指数（权重 / 成分拉取对象）
 KEY_INDICES = [
     "000001.SH",  # 上证指数
@@ -92,6 +97,24 @@ def get_existing_dates(conn, table: str, col: str) -> set[str]:
         cur.execute(f"SELECT DISTINCT {col} FROM {table}")
         return {
             row[0].strftime("%Y%m%d") if hasattr(row[0], "strftime") else str(row[0])
+            for row in cur.fetchall()
+        }
+    finally:
+        cur.close()
+
+
+def get_existing_pairs(conn, table: str) -> set[tuple[str, str]]:
+    """表中已存在的 (index_code, trade_date) 对，trade_date 归一为 %Y%m%d 字符串。"""
+    if not bootstrap.table_exists(conn, table):
+        return set()
+    cur = conn.cursor()
+    try:
+        cur.execute(f"SELECT DISTINCT index_code, trade_date FROM {table}")
+        return {
+            (
+                row[0],
+                row[1].strftime("%Y%m%d") if hasattr(row[1], "strftime") else str(row[1]),
+            )
             for row in cur.fetchall()
         }
     finally:
@@ -165,13 +188,16 @@ def pull_by_dates(
 def pull_index_weight(
     client: TushareClient, conn,
     indices: list[str], trade_dates: list[str],
+    sleep_between: float = SLEEP_BETWEEN,
 ) -> int:
     table_name = "tushare_index_weight"
     conflict = "(index_code, con_code, trade_date)"
+    existing = get_existing_pairs(conn, table_name)
     total = 0
     for idx in indices:
-        logger.info("--- index_weight -> %s (%s) ---", table_name, idx)
-        for j, td in enumerate(trade_dates):
+        need = [td for td in trade_dates if (idx, td) not in existing]
+        logger.info("--- index_weight -> %s (%s): 已有 %d 期，待补 %d 期 ---", table_name, idx, len(trade_dates) - len(need), len(need))
+        for j, td in enumerate(need):
             try:
                 df = client.query("index_weight", index_code=idx, trade_date=td)
                 if not df.empty:
@@ -179,7 +205,7 @@ def pull_index_weight(
             except Exception as exc:
                 if (j + 1) % 50 == 0:
                     logger.warning("  %s %s %s 失败: %s", idx, td, exc)
-            time.sleep(SLEEP_BETWEEN)
+            time.sleep(sleep_between)
         logger.info("  %s 累计: %s 行", idx, f"{total:,}")
     logger.info("  %s 完成: %s 行", table_name, f"{total:,}")
     return total
@@ -260,6 +286,7 @@ def main():
 
     t0 = time.time()
     client = TushareClient(TUSHARE_TOKEN, rate_limit=RATE_LIMIT)
+    client_limited = TushareClient(TUSHARE_TOKEN, rate_limit=RATE_LIMIT_LIMITED)
     conn = get_pg_connection()
 
     try:
@@ -299,7 +326,7 @@ def main():
         # 权重: 主要指数 × 月末交易日（指数权重仅在调仓/月末更新）
         month_end_dates = group_period_dates(trade_dates, "month")
         recent = month_end_dates[-WINDOW_DAYS:]
-        grand_total += pull_index_weight(client, conn, KEY_INDICES, recent)
+        grand_total += pull_index_weight(client_limited, conn, KEY_INDICES, recent, sleep_between=SLEEP_BETWEEN_LIMITED)
 
         elapsed = time.time() - t0
         logger.info("=== 指数数据刷新完成 耗时 %.0f 秒  新增: %s ===", elapsed, f"{grand_total:,}")

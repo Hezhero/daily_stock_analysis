@@ -57,6 +57,12 @@ SLEEP_BETWEEN = 0.15
 RATE_LIMIT = 480
 PAGE_LIMIT = 8000  # 单次 API 返回行数上限（超过需分页）
 
+# 接口级限频 200 次/分的接口（实测 code=40203"频率超限(200次/分钟)"）：
+# 用独立客户端 RATE_LIMIT=180 留余量，SLEEP_BETWEEN=0.4s ≈ 150 次/分，避免撞限频罚站 60s
+RATE_LIMIT_LIMITED = 180
+SLEEP_BETWEEN_LIMITED = 0.4
+RATE_LIMITED_APIS = {"stk_holdernumber", "pledge_stat"}
+
 # 按日 / 按公告日拉取（全市场）
 DAILY_APIS = [
     ("moneyflow", "tushare_moneyflow", "trade_date", "(ts_code, trade_date)"),
@@ -138,6 +144,13 @@ def get_max_end_date(conn, table: str) -> date | None:
         cur.close()
 
 
+def latest_expected_end(api_name: str, today: date) -> date | None:
+    """该接口数据的最新可能 end_date；无固定周期返回 None（不做表级跳过）。"""
+    if api_name == "pledge_stat":  # 每周五更新
+        return today - timedelta(days=(today.weekday() - 4) % 7)
+    return None
+
+
 def query_paginated(client: TushareClient, api_name: str, **params):
     """分页拉取单日/单股数据，API 单次返回上限约 8000 行。"""
     rows = []
@@ -188,6 +201,7 @@ def pull_stock_api(
     client: TushareClient, conn,
     api_name: str, table_name: str, conflict: str,
     codes: list[str], start: str, end: str,
+    sleep_between: float = SLEEP_BETWEEN,
 ) -> int:
     logger.info("--- %s -> %s [%s ~ %s] ---", api_name, table_name, start, end)
     total = 0
@@ -201,7 +215,7 @@ def pull_stock_api(
                 logger.warning("  %s %s 失败: %s", api_name, code, exc)
         if (i + 1) % 1000 == 0:
             logger.info("  %s [%d/%d] %s", table_name, i + 1, len(codes), f"{total:,}")
-        time.sleep(SLEEP_BETWEEN)
+        time.sleep(sleep_between)
     logger.info("  %s 完成: %s 行", table_name, f"{total:,}")
     return total
 
@@ -237,6 +251,7 @@ def main():
 
     t0 = time.time()
     client = TushareClient(TUSHARE_TOKEN, rate_limit=RATE_LIMIT)
+    client_limited = TushareClient(TUSHARE_TOKEN, rate_limit=RATE_LIMIT_LIMITED)
     conn = get_pg_connection()
 
     try:
@@ -274,6 +289,11 @@ def main():
 
         for api_name, table_name, conflict in STOCK_APIS:
             max_d = get_max_end_date(conn, table_name)
+            # 表级跳过：数据已到最新周期（如 pledge_stat 每周五）则整表跳过，消除空转
+            expected = latest_expected_end(api_name, today)
+            if expected and max_d and max_d >= expected and not start_arg:
+                logger.info("  %s 已更新至最新周期 %s（>= %s），整表跳过", table_name, max_d, expected)
+                continue
             if max_d and not start_arg:
                 start = _fmt(max(max_d - timedelta(days=LOOKBACK_DAYS), date(2015, 1, 1)))
                 start = min(start, _fmt(today - timedelta(days=LOOKBACK_DAYS)))
@@ -282,7 +302,10 @@ def main():
             if start >= until:
                 logger.info("  %s 无需更新，跳过", table_name)
                 continue
-            n = pull_stock_api(client, conn, api_name, table_name, conflict, codes, start, until)
+            limited = api_name in RATE_LIMITED_APIS
+            c = client_limited if limited else client
+            sleep_between = SLEEP_BETWEEN_LIMITED if limited else SLEEP_BETWEEN
+            n = pull_stock_api(c, conn, api_name, table_name, conflict, codes, start, until, sleep_between=sleep_between)
             grand_total += n
 
         elapsed = time.time() - t0

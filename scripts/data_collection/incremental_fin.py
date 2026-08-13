@@ -48,6 +48,12 @@ FIN_BATCH = 50
 SLEEP_BETWEEN = 0.18
 LOOKBACK_DAYS = 180
 
+# 接口级限频 200 次/分的接口（实测 code=40203"频率超限(200次/分钟)"）：
+# 用独立客户端 RATE_LIMIT=180 留余量，SLEEP_BETWEEN=0.4s ≈ 150 次/分，避免撞限频罚站 60s
+RATE_LIMIT_LIMITED = 180
+SLEEP_BETWEEN_LIMITED = 0.4
+RATE_LIMITED_APIS = {"disclosure_date"}
+
 # dividend / disclosure_date 拒绝逗号批量 ts_code 与 end_date 参数（返回空），须逐股拉全量。
 PER_CODE_APIS = {"dividend", "disclosure_date"}
 
@@ -151,12 +157,23 @@ def get_max_end_date(conn, table: str) -> date | None:
         cur.close()
 
 
+def latest_expected_end(api_name: str, today: date) -> date | None:
+    """该接口数据的最新可能 end_date；无固定周期返回 None（不做表级跳过）。"""
+    if api_name == "disclosure_date":  # 财报披露计划按季度末更新
+        q = (today.month - 1) // 3  # 0=Q1, 1=Q2, 2=Q3, 3=Q4
+        if q == 0:
+            return date(today.year - 1, 12, 31)
+        return date(today.year, q * 3, 30 if q * 3 in (6, 9) else 31)
+    return None
+
+
 def pull_fin_table(
     client: TushareClient, conn,
     api_name: str, table_name: str,
     fields: str, conflict: str,
     codes: list[str],
     start_date: str, end_date: str,
+    sleep_between: float = SLEEP_BETWEEN,
 ):
     """按股票批次拉取单张财务表。"""
     logger.info(
@@ -172,7 +189,7 @@ def pull_fin_table(
             except Exception as exc:
                 if idx % 20 == 0:
                     logger.warning("  %s %s 失败: %s", api_name, code, exc)
-            time.sleep(SLEEP_BETWEEN)
+            time.sleep(sleep_between)
             if (idx + 1) % 500 == 0:
                 logger.info("  %s [%d/%d] %s", api_name, idx + 1, len(codes), f"{total:,}")
         logger.info("  %s 完成: %s", table_name, f"{total:,}")
@@ -193,7 +210,7 @@ def pull_fin_table(
         except Exception as exc:
             if (i // FIN_BATCH) % 20 == 0:
                 logger.warning("  %s b%d 失败: %s", api_name, i // FIN_BATCH, exc)
-        time.sleep(SLEEP_BETWEEN)
+        time.sleep(sleep_between)
 
         if (i // FIN_BATCH) % 40 == 0:
             logger.info(
@@ -234,6 +251,7 @@ def main():
 
     t0 = time.time()
     client = TushareClient(TUSHARE_TOKEN)
+    client_limited = TushareClient(TUSHARE_TOKEN, rate_limit=RATE_LIMIT_LIMITED)
     conn = get_pg_connection()
 
     try:
@@ -257,6 +275,14 @@ def main():
         grand_total = 0
         for api_name, table_name, fields, conflict in FIN_APIS:
             max_d = get_max_end_date(conn, table_name)
+            # 表级跳过：数据已到最新报告期（如 disclosure_date 季度末）则整表跳过，消除空转
+            expected = latest_expected_end(api_name, today)
+            if expected and max_d and max_d >= expected:
+                logger.info(
+                    "%s: 已更新至最新报告期 %s（>= %s），整表跳过",
+                    table_name, max_d, expected,
+                )
+                continue
             if max_d:
                 start_d = max_d - timedelta(days=LOOKBACK_DAYS)
                 start = _fmt(max(start_d, date(2015, 1, 1)))
@@ -273,10 +299,14 @@ def main():
                 logger.info("  无需更新，跳过")
                 continue
 
+            limited = api_name in RATE_LIMITED_APIS
+            c = client_limited if limited else client
+            sleep_between = SLEEP_BETWEEN_LIMITED if limited else SLEEP_BETWEEN
             n = pull_fin_table(
-                client, conn,
+                c, conn,
                 api_name, table_name, fields, conflict,
                 codes, start, until,
+                sleep_between=sleep_between,
             )
             grand_total += n
 
