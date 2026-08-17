@@ -10,7 +10,9 @@
 
 策略:
   - 按日表: 从 tushare_trade_cal 取交易日，与表内已有日期求差集，断点续传
-  - 按股表: 每张表取 MAX(end_date) 前推 LOOKBACK_DAYS 作为起点，逐股拉取
+  - 按股表: 每张表取 MAX(end_date) 前推 LOOKBACK_DAYS 作为起点，逐股拉取；
+    增量模式先按库内每只股票 MAX(end_date) 过滤（超过 STALE_CUTOFF_DAYS 才拉），
+    固定周期表（pledge_stat）先探测 API 侧最新 end_date，无新数据则整表跳过
   - 全部使用 ON CONFLICT DO NOTHING，幂等可重跑
   - 不传 fields 参数，以 API 实际返回列与表列自动对齐
 
@@ -62,6 +64,18 @@ PAGE_LIMIT = 8000  # 单次 API 返回行数上限（超过需分页）
 RATE_LIMIT_LIMITED = 180
 SLEEP_BETWEEN_LIMITED = 0.4
 RATE_LIMITED_APIS = {"stk_holdernumber", "pledge_stat"}
+
+# 按股表增量过滤（仅增量模式，显式指定范围时不做过滤）：
+#   库内每只股票 MAX(end_date) 距今超过该天数才重拉，避免每日对全市场空转。
+#   stk_holdernumber 按季度披露（年报披露滞后最长约 4 个月），150 天可覆盖整个披露周期，
+#   实测(2026-08): 08-17 当天 5534 只中仅 11 只超过 150 天需要重拉。
+STALE_CUTOFF_DAYS = {
+    "stk_holdernumber": 150,
+}
+
+# 固定周期表（pledge_stat 每周五）探测用股票数：取库内 max_end_date 最新的若干只
+# 查询 API 侧是否已有新数据，全部无新数据则整表跳过，消除"API 未发布但全市场空拉"的浪费。
+PROBE_STOCKS = 3
 
 # 按日 / 按公告日拉取（全市场）
 DAILY_APIS = [
@@ -149,6 +163,62 @@ def latest_expected_end(api_name: str, today: date) -> date | None:
     if api_name == "pledge_stat":  # 每周五更新
         return today - timedelta(days=(today.weekday() - 4) % 7)
     return None
+
+
+def _parse_api_date(v) -> date | None:
+    """解析 Tushare 返回的 end_date（YYYYMMDD 或 YYYY-MM-DD），失败返回 None。"""
+    if v is None:
+        return None
+    s = str(v).strip()
+    if not s:
+        return None
+    for fmt in ("%Y%m%d", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s[:10], fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def get_stock_max_dates(conn, table: str) -> dict[str, date]:
+    """每只股票的最新 end_date；表不存在返回空 dict。"""
+    if not bootstrap.table_exists(conn, table):
+        return {}
+    cur = conn.cursor()
+    try:
+        cur.execute(f"SELECT ts_code, MAX(end_date) FROM {table} GROUP BY ts_code")
+        return {row[0]: row[1] for row in cur.fetchall() if row[1]}
+    finally:
+        cur.close()
+
+
+def probe_api_max_end(
+    client: TushareClient, api_name: str,
+    stock_max: dict[str, date], until: str,
+) -> date | None:
+    """探测固定周期接口的 API 侧最新 end_date。
+
+    取库内 max_end_date 最新的若干股票，查询各自 (max+1 ~ until) 窗口是否已有新数据；
+    返回探测到的最大 end_date；全部无新数据返回 None（调用方整表跳过）。
+    无库内数据可探测（空表）或探测失败时返回 today（视为有新数据，不跳过整表）。
+    """
+    candidates = [c for c, d in sorted(stock_max.items(), key=lambda kv: kv[1], reverse=True)]
+    if not candidates:
+        return date.today()
+    api_max: date | None = None
+    for code in candidates[:PROBE_STOCKS]:
+        start = _fmt(stock_max[code] + timedelta(days=1))
+        try:
+            df = client.query(api_name, ts_code=code, start_date=start, end_date=until)
+            if not df.empty and "end_date" in df.columns:
+                for v in df["end_date"].tolist():
+                    d = _parse_api_date(v)
+                    if d and (api_max is None or d > api_max):
+                        api_max = d
+        except Exception as exc:
+            logger.warning("  %s 探测 %s 失败: %s", api_name, code, exc)
+            return date.today()  # 探测失败保守处理，不跳过整表
+    return api_max
 
 
 def query_paginated(client: TushareClient, api_name: str, **params):
@@ -270,7 +340,7 @@ def main():
         if start_arg:
             since = start_arg
         else:
-            # 增量模式: 从各表已有最晚日期起算；空表回退默认起点
+            # 增量模式: 以全量交易日为候选，由 pull_daily_api 与表内已有日期求差集（断点续传）
             since = DEFAULT_START
         trade_dates = get_trade_dates(conn, since, until)
         logger.info("交易日范围: %s ~ %s (%d 日)", since, until, len(trade_dates))
@@ -305,7 +375,36 @@ def main():
             limited = api_name in RATE_LIMITED_APIS
             c = client_limited if limited else client
             sleep_between = SLEEP_BETWEEN_LIMITED if limited else SLEEP_BETWEEN
-            n = pull_stock_api(c, conn, api_name, table_name, conflict, codes, start, until, sleep_between=sleep_between)
+
+            # 增量模式：按库内每只股票 MAX(end_date) 过滤待拉列表，避免每日全市场空转
+            pull_codes = codes
+            if not start_arg:
+                stock_max = get_stock_max_dates(conn, table_name)
+                if latest_expected_end(api_name, today) is not None:
+                    # 固定周期表（如 pledge_stat 每周五）：先探测 API 侧是否已有新数据
+                    api_max = probe_api_max_end(c, api_name, stock_max, until)
+                    if api_max is None:
+                        logger.info("  %s 探测无新数据（API 侧 end_date 未超过库内），整表跳过", table_name)
+                        continue
+                    logger.info("  %s 探测到 API 侧最新 end_date=%s", table_name, api_max)
+                    pull_codes = [
+                        code for code in codes
+                        if stock_max.get(code) is None or stock_max[code] < api_max
+                    ]
+                else:
+                    cutoff_days = STALE_CUTOFF_DAYS.get(api_name)
+                    if cutoff_days:
+                        cutoff = today - timedelta(days=cutoff_days)
+                        pull_codes = [
+                            code for code in codes
+                            if stock_max.get(code) is None or stock_max[code] < cutoff
+                        ]
+                if not pull_codes:
+                    logger.info("  %s 全部股票数据已最新，跳过", table_name)
+                    continue
+                logger.info("  %s 待更新 %d/%d 只", table_name, len(pull_codes), len(codes))
+
+            n = pull_stock_api(c, conn, api_name, table_name, conflict, pull_codes, start, until, sleep_between=sleep_between)
             grand_total += n
 
         elapsed = time.time() - t0
