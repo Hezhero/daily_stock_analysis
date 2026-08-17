@@ -51,6 +51,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [改进] WFO 聚合 OOS 回撤/年化/夏普改用真实组合曲线口径：`scripts/backtest_wfo.py` 新增 `_find_exit_day_offset`（与 `compute_dynamic_exit_returns` 同码的 ATR 止损/移动止盈/时间止损出场日定位）、`_build_price_paths`（按 code 预计算价格路径）与 `compute_portfolio_curve`（每笔交易等权 1 单位资金，入场收盘买入、持有期逐日按收盘价 mark-to-market、出场日按实际退出价结算，组合日收益 = Σ持仓市值变动/Σ前日市值，无持仓日为现金）；`_trade_returns` 输出 `exit_date` 列；`aggregate_oos` 交易级指标（胜率/期望/盈亏比）沿用 `calc_metrics`，回撤/年化/夏普改由组合曲线计算，修复原混合持有期收益序列（不同 best_p 混入单一序列）导致回撤严重高估的问题；报告 §4 聚合段输出组合曲线指标，设计文档 `docs/wfo-backtest-design.md` §4.2/§7/§11 同步更新聚合口径。
 - [修复] `scripts/backtest_5y_23strategies.py` 回测改用 `tushare_stk_limit.up_limit/down_limit` 精确涨跌停判定，修复 ST（5%）/创业板（20%）等涨跌幅限制下 9.5%/19.5% 近似阈值误判，买入信号统一剔除涨跌停日。
 - [改进] `scripts/data_collection/incremental_factor.py` 按股表增量拉取提速（实测 104 分钟 → 约 1 分钟）：增量模式先按库内每只股票 `MAX(end_date)` 过滤待拉列表（`stk_holdernumber` 超过 150 天未更新才重拉，实测 5543 只中仅 20 只需拉），固定周期表（`pledge_stat` 每周五）先探测 API 侧最新 end_date，无新数据则整表跳过（消除 API 未发布时全市场空拉）；显式指定起止日期（回填）时不做过滤，行为不变。
+- [修复] `scripts/backtest_5y_23strategies.py` 5 日验证改为在完整历史数据上计算策略信号再按买入日筛选（`validate_week`/`get_top_stocks_by_win_rate` 接收完整历史 + 预计算信号字典，`main` 在 `run_backtests` 后统一基于 `df_all` 计算信号并保留到验证结束）：修复验证窗口仅取最后 5 个交易日切片导致 `rolling`/`shift` 类策略（`wonderful_9_turn`、`stable_then_limit_up` 等）信号系统性丢失、验证恒为空的问题；5 日验证表新增市况提示行（验证区间可开仓天数/总天数，按日去重），验证区间全部处于空仓市况（`market_ok=False`）时日志明确提示"按策略纪律跳过主程序执行"，区分"市况不允许"与"策略无信号"。
 
 ## [3.30.0] - 2026-08-09
 

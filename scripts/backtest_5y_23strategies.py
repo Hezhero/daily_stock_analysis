@@ -2213,13 +2213,17 @@ def run_backtests(df_bt: pd.DataFrame, index_df: Optional[pd.DataFrame] = None) 
 # 最近5日验证
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def validate_week(df_week, top_results, top_n=5):
+def validate_week(df_full, df_week, top_results, top_n=5, signals=None):
     """最近 5 个交易日的本周验证：对回测 Top-N 策略做实际买入/卖出收益统计。
 
     验证口径：
       - 买入日 = 区间第 5 个交易日（开盘买入）
       - 卖出日 = 区间最后 1 个交易日（收盘卖出）
       - 仅统计买入日触发信号且买卖价均存在的股票
+    信号在完整历史 df_full 上计算后再按买入日筛选（修复：仅给 5 日切片会
+    丢失 rolling 窗口与前一日数据，导致 wonderful_9_turn / stable_then_limit_up
+    等策略信号系统性消失）；signals 为预计算的 {策略名: 信号Series} 时直接复用，
+    否则回退到 df_full 上现算。
     返回每个策略的：交易数、胜率、平均收益、买入日信号明细（前 8 只）。
     """
     top_names = [r["strategy"] for r in top_results[:top_n]]
@@ -2236,8 +2240,11 @@ def validate_week(df_week, top_results, top_n=5):
 
     for name in top_names:
         try:
-            sig = _strategy_signal(df_week, name)
-            matched_rows = df_week.loc[sig.values].copy()
+            if signals is not None and name in signals:
+                sig = signals[name]
+            else:
+                sig = _strategy_signal(df_full, name)
+            matched_rows = df_full.loc[sig.values].copy()
             matched_stocks = matched_rows.loc[matched_rows["date"] == buy_date, ["code", "name"]].drop_duplicates()
             n = len(matched_stocks)
 
@@ -2281,11 +2288,13 @@ def validate_week(df_week, top_results, top_n=5):
 # 输出
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def print_results(results, val_results, backtest_start, backtest_end):
+def print_results(results, val_results, backtest_start, backtest_end, market_ok_days=None):
     """以表格形式打印回测绩效汇总与 5 日验证 Top-5 结果。
 
     回测表新增"超额%"列（策略总收益 - 市场基准总收益，沪深300），
     并打印基准行，用于判断策略收益是否真正跑赢市场（alpha）。
+    market_ok_days 为 (可开仓天数, 验证区间总天数)，非 None 时在
+    5 日验证表下方输出市况提示，区分"空仓市况"与"策略无信号"。
     """
     print("\n" + "=" * 140)
     print(f"{'策略':<28} {'交易':>7} {'胜率%':>7} {'均盈%':>7} {'均亏%':>7} "
@@ -2357,6 +2366,10 @@ def print_results(results, val_results, backtest_start, backtest_end):
                 for s in r.get("week_signals", [])[:5]:
                     dt = s["date"].date() if hasattr(s["date"], "date") else s["date"]
                     print(f"    -> {s['code']} {s['name']} @{dt} 涨幅{s['pct_chg']:.2f}%")
+        if market_ok_days is not None:
+            ok_n, total_n = market_ok_days
+            suffix = "（全部为空仓市况，信号被市场环境过滤）" if ok_n == 0 else f"（{total_n - ok_n} 天为空仓市况）"
+            print(f"市况提示: 验证区间 {total_n} 个交易日中 {ok_n} 天可开仓 (market_ok){suffix}")
         print("=" * 75)
 
 
@@ -2364,7 +2377,7 @@ def print_results(results, val_results, backtest_start, backtest_end):
 # 胜率前10股票 & 推荐
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def get_top_stocks_by_win_rate(df_week, results, top_n=10):
+def get_top_stocks_by_win_rate(df_full, df_week, results, top_n=10, signals=None):
     """按本周实际收益对股票排序，返回 5 日验证收益最高的前 top_n 只股票。
 
     统计口径：
@@ -2372,6 +2385,9 @@ def get_top_stocks_by_win_rate(df_week, results, top_n=10):
       - 买入价 = 买入日开盘价；卖出价 = 最后交易日收盘价
       - 同一股票被多个策略命中时合并：记录命中策略数、平均胜率，
         收益取各策略计算值中的最大值
+    信号在完整历史 df_full 上计算后再按买入日筛选（修复：仅给 5 日切片会
+    丢失 rolling 窗口与前一日数据）；signals 为预计算的 {策略名: 信号Series}
+    时直接复用，否则回退到 df_full 上现算。
     返回按 sell_return 降序的股票推荐列表。
     """
     stock_info: Dict[str, dict] = {}
@@ -2384,6 +2400,10 @@ def get_top_stocks_by_win_rate(df_week, results, top_n=10):
     buy_date = all_dates[-5]
     sell_date = all_dates[-1]
 
+    # 买入/卖出价映射一次性构建，避免逐记录全表扫描
+    buy_info = df_week.loc[df_week["date"] == buy_date].set_index("code")[["name", "open"]]
+    sell_prices = df_week.loc[df_week["date"] == sell_date].set_index("code")["close"]
+
     for r in results:
         strategy_name = r["strategy"]
         win_rate = r.get("win_rate", 0)
@@ -2393,12 +2413,14 @@ def get_top_stocks_by_win_rate(df_week, results, top_n=10):
             continue
 
         try:
-            sig = _strategy_signal(df_week, strategy_name)
-            mask = sig.values
+            if signals is not None and strategy_name in signals:
+                sig = signals[strategy_name]
+            else:
+                sig = _strategy_signal(df_full, strategy_name)
+            mask = sig.values & (df_full["date"] == buy_date).values
             if mask.sum() == 0:
                 continue
-
-            matched = df_week.loc[mask, ["code", "name", "open", "close"]].to_dict("records")
+            matched = df_full.loc[mask, ["code", "name", "open", "close"]].to_dict("records")
         except Exception:
             continue
 
@@ -2406,24 +2428,11 @@ def get_top_stocks_by_win_rate(df_week, results, top_n=10):
             code = record.get("code", "")
             if not code:
                 continue
-
-            buy_price_row = df_week.loc[
-                (df_week["code"] == code) & (df_week["date"] == buy_date),
-                ["name", "open"],
-            ]
-            if buy_price_row.empty:
+            if code not in buy_info.index or code not in sell_prices.index:
                 continue
-            buy_name = buy_price_row.iloc[0]["name"]
-            buy_price = buy_price_row.iloc[0]["open"]
-
-            sell_price_row = df_week.loc[
-                (df_week["code"] == code) & (df_week["date"] == sell_date),
-                ["close"],
-            ]
-            if sell_price_row.empty:
-                continue
-            sell_price = sell_price_row.iloc[0]["close"]
-
+            buy_name = buy_info.loc[code, "name"]
+            buy_price = buy_info.loc[code, "open"]
+            sell_price = sell_prices.loc[code]
             sell_return = (sell_price / buy_price - 1) if buy_price > 0 else 0
 
             if code not in stock_info:
@@ -2760,12 +2769,22 @@ def main(argv=None):
     logger.info(f"回测区间: {backtest_start_date.date()} ~ {backtest_end_date.date()}")
     logger.info(f"验证区间: {validate_start_date.date()} ~ {validate_end_date.date()}")
 
-    df_week = df_all[df_all["date"] >= pd.Timestamp(validate_start_date)].copy()
+    # 市况统计：验证窗口 market_ok 天数（按日去重），用于区分空仓市况与策略无信号
+    week_mask = df_all["date"] >= pd.Timestamp(validate_start_date)
+    week_market_ok = None
+    if "market_ok" in df_all.columns:
+        week_market_ok = df_all.loc[week_mask, ["date", "market_ok"]].drop_duplicates("date")["market_ok"]
+        market_ok_in_week = int(week_market_ok.sum())
+        logger.info(f"验证区间 market_ok 天数: {market_ok_in_week}/{len(week_market_ok)}")
+    else:
+        market_ok_in_week = None
+
+    df_week = df_all[week_mask].copy()
     log_memory_usage("验证数据拆分后")
     mask_bt = df_all["date"] <= pd.Timestamp(backtest_end_date)
     df_bt = df_all.loc[mask_bt].reset_index(drop=True)
-    del df_all
-    gc.collect()
+    # df_all 保留到验证结束：验证信号需在完整历史上计算（rolling/shift 特征），
+    # 不能只给 5 日切片；验证完成后统一释放
     log_memory_usage("回测数据准备后")
 
     # 基准指数(沪深300, D2):用于超额收益对比;加载失败时回退等权基准
@@ -2779,25 +2798,40 @@ def main(argv=None):
         df_bench_index = None
 
     results = run_backtests(df_bt, index_df=df_bench_index)
-    val_results = validate_week(df_week, results, TOP_N_VALIDATE)
+    # 验证信号统一基于完整历史 df_all 计算（修复：5 日切片导致 rolling/shift 特征丢失）
+    signals = {name: _strategy_signal(df_all, name) for name in STRATEGIES}
+    val_results = validate_week(df_all, df_week, results, TOP_N_VALIDATE, signals=signals)
     # 绩效表格经 print 输出，双写到控制台与回测日志文件
     with open(_LOG_FILE, "a", encoding="utf-8") as log_fp:
         with contextlib.redirect_stdout(_Tee(sys.stdout, log_fp)):
-            print_results(results, val_results, backtest_start_date, backtest_end_date)
+            print_results(results, val_results, backtest_start_date, backtest_end_date,
+                          market_ok_days=(market_ok_in_week, len(week_market_ok))
+                          if market_ok_in_week is not None else None)
 
     # 汇总本周验证胜率前 10 股票，作为主程序个股决策的输入
-    top_stocks = get_top_stocks_by_win_rate(df_week, results, top_n=10)
+    top_stocks = get_top_stocks_by_win_rate(df_all, df_week, results, top_n=10, signals=signals)
     logger.info(f"5日验证胜率前10股票: {len(top_stocks)} 只")
 
     for idx, s in enumerate(top_stocks, 1):
         ret_str = f"{s['sell_return'] * 100:.2f}%" if s['sell_return'] is not None and pd.notna(s['sell_return']) else "N/A"
         logger.info(f"  [{idx}] {s['code']} {s['name']} - 胜率{s['win_rate']:.1f}% - 策略数{s['strategy_count']} - 收益{ret_str}")
 
+    # 验证完成，释放完整历史数据与信号缓存
+    del signals
+    del df_all
+    gc.collect()
+    log_memory_usage("验证完成后")
+
     if top_stocks:
         logger.info("\n" + "=" * 60)
         logger.info("开始执行主程序进行大盘复盘和个股决策")
         logger.info("=" * 60)
         run_main_program_for_stocks(top_stocks)
+    elif market_ok_in_week == 0:
+        logger.warning(
+            f"验证区间 {validate_start_date.date()} ~ {validate_end_date.date()} "
+            "全部处于空仓市况（market_ok=False），按策略纪律跳过主程序执行"
+        )
     else:
         logger.warning("没有找到符合条件的股票，跳过主程序执行")
 
