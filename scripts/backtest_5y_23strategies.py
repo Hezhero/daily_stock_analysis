@@ -35,15 +35,24 @@
   （P0-4）；最大回撤按日期排序后计算，恢复时间序列语义（P0-2）
 - 基准对比: 新增市场基准（compute_benchmark_metrics，沪深300真实指数，
   缺失时回退等权），结果表打印超额收益列与基准行，用于区分 alpha/beta（P1-8/D2）
+- 数据增强过滤(P2): 接入筹码分布（tushare_cyq 获利盘/90%集中度/平均成本）、
+  自由流通换手率/股息率/PS（tushare_daily_basic）、融资余额（tushare_margin_detail）、
+  股东人数变化（tushare_stk_holdernumber）、业绩预告（tushare_forecast）、
+  质押比例（tushare_pledge_stat）、机构龙虎榜净买（tushare_top_inst），
+  按策略族差异化应用质量过滤（趋势/涨停/超跌三族）；新增 5 个数据驱动策略
+  （washout_break / low_profit_hold / holder_conc_break / inst_smart_break /
+  fc_pos_break），废弃胜率无法提升的 bull_trend 与无信号的 shrink_pullback
 """
 
 import argparse
+import contextlib
 import logging
 import os
 import sys
 import time
 import gc
 import subprocess
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -86,12 +95,58 @@ MONEYFLOW_LOOKBACK = 3           # 主力资金净流入确认的回看天数
 # ─── 信号去重/冷却期（C3） ─────────────────────────────────────────────────────
 SIGNAL_COOLDOWN_DAYS = 5         # 同一股票同一策略 N 日内只取第一次信号
 
+# ─── 数据增强过滤（P2，基于 tushare 扩展表，按策略族差异化应用） ────────────────
+MIN_TURNOVER_RATE_F = 1.0        # 最小自由流通换手率（%），过低=流动性差/无人问津
+MAX_TURNOVER_RATE_F = 12.0       # 最大自由流通换手率（%），过高=情绪过热/分歧巨大
+MIN_PROFIT_RATIO = 0.2           # 最小获利盘比例（筹码分布 0~1），过低=深度套牢盘压制
+MAX_PROFIT_RATIO = 0.8           # 最大获利盘比例（0~1），过高=高位接盘风险
+MAX_PLEDGE_RATIO = 40.0          # 最大累计质押占总股本比例（%），过高=股权质押爆仓风险
+MIN_DIV_YIELD = 1.0              # 最低股息率（%），基本面安全垫（剔除纯炒作无分红股）
+MAX_CONC_90_LIMITUP = 0.15       # 涨停族策略的 90% 筹码集中度上限（0~1），涨停日筹码需集中
+MIN_INST_NET_BUY = 500.0         # 机构龙虎榜近 5 日累计净买入阈值（万元）
+MAX_HOLDER_CHG_PCT = -3.0        # 股东人数环比下降阈值（%），负值=筹码集中
+MAX_DRAGON_PROFIT_RATIO = 0.9    # 龙头策略获利盘上限，剔除纯高位接力的涨停
+WASHOUT_PROFIT_RATIO = 0.2       # 超跌族策略的获利盘上限（绝大部分筹码被套）
+
+# ─── 日志配置 ──────────────────────────────────────────────────────────────────
+_LOG_DIR = Path(os.environ.get("LOG_DIR") or "logs")
+if not _LOG_DIR.is_absolute():
+    _LOG_DIR = BASE_DIR / _LOG_DIR
+_LOG_DIR.mkdir(parents=True, exist_ok=True)
+_LOG_FILE = _LOG_DIR / f"backtest_5y_{datetime.now():%Y%m%d}.log"
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger("backtest")
+
+# 同时写一份回测日志到 logs/ 目录（10MB 轮转，命名风格与主程序 stock_analysis_*.log 一致）
+_file_handler = RotatingFileHandler(
+    _LOG_FILE, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"
+)
+_file_handler.setLevel(logging.INFO)
+_file_handler.setFormatter(logging.Formatter(
+    "%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S",
+))
+logger.addHandler(_file_handler)
+
+
+class _Tee:
+    """同时写入多个流（控制台 + 日志文件），用于 print 输出的双写。"""
+
+    def __init__(self, *streams):
+        self._streams = streams
+
+    def write(self, text: str) -> int:
+        for stream in self._streams:
+            stream.write(text)
+        return len(text)
+
+    def flush(self):
+        for stream in self._streams:
+            stream.flush()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -377,17 +432,21 @@ def _convert_columns_to_float32(df: pd.DataFrame) -> pd.DataFrame:
     """将行情/基本面数值列统一降为 float32，节省约一半内存。
 
     注意：只转换数值列，code/name/date 等标识列保持原类型。
+    原地转换（不产生副本），供分块加载时逐块调用，避免大表加载时内存翻倍。
+    先 to_numeric 兜底（PG 全 NULL 列可能以 object 返回），再降精度。
     """
     float_columns = [
         "open", "high", "low", "close",
         "volume", "amount", "pct_chg", "turn", "pe_ttm", "pb_mrq",
         "up_limit", "down_limit", "circ_mv", "volume_ratio", "net_mf_amount",
+        "turnover_rate_f", "ps_ttm", "dv_ratio", "total_mv",
+        "profit_ratio", "avg_cost", "cost_90_low", "cost_90_high",
+        "concentration_90", "concentration_70", "rzye", "rzye_chg5",
     ]
-    converted = df.copy()
     for col in float_columns:
-        if col in converted.columns:
-            converted[col] = converted[col].astype("float32")
-    return converted
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype("float32")
+    return df
 
 
 def load_data(start: str, end: str) -> pd.DataFrame:
@@ -403,6 +462,12 @@ def load_data(start: str, end: str) -> pd.DataFrame:
       - 日成交额不低于 MIN_DAILY_AMOUNT_K（流动性过滤，P2-11）
       - 上市满 MIN_LISTING_DAYS 天（次新股过滤，P2-12）
     返回字段含 code（内部格式）、name、date 及各行情/基本面数值列。
+
+    内存优化（OOM 修复）：
+      - 分块读取（chunksize）+ 逐块降 float32，避免 5 年全市场数据以
+        float64 一次性驻留内存（此前 2 核小内存机器在加载阶段被杀）
+      - SQL 已按 ts_code, trade_date 排序，code 由 ts_code 一一映射而来，
+        顺序一致，无需再 sort_values（避免全量副本）
     """
     t0 = time.time()
     logger.info(f"加载数据 {start} ~ {end} (Tushare PostgreSQL)...")
@@ -425,14 +490,27 @@ def load_data(start: str, end: str) -> pd.DataFrame:
             b.pb AS pb_mrq,
             b.circ_mv,
             b.volume_ratio,
+            b.turnover_rate_f,
+            b.ps_ttm,
+            b.dv_ratio,
+            b.total_mv,
             m.net_mf_amount,
             l.up_limit,
-            l.down_limit
+            l.down_limit,
+            cy.profit_ratio,
+            cy.avg_cost,
+            cy.cost_90_low,
+            cy.cost_90_high,
+            cy.concentration_90,
+            cy.concentration_70,
+            md.rzye
         FROM tushare_daily d
         JOIN tushare_stock_basic s ON d.ts_code = s.ts_code
         LEFT JOIN tushare_daily_basic b ON d.ts_code = b.ts_code AND d.trade_date = b.trade_date
         LEFT JOIN tushare_moneyflow m ON d.ts_code = m.ts_code AND d.trade_date = m.trade_date
         LEFT JOIN tushare_stk_limit l ON d.ts_code = l.ts_code AND d.trade_date = l.trade_date
+        LEFT JOIN tushare_cyq cy ON d.ts_code = cy.ts_code AND d.trade_date = cy.trade_date
+        LEFT JOIN tushare_margin_detail md ON d.ts_code = md.ts_code AND d.trade_date = md.trade_date
         WHERE d.trade_date BETWEEN %s AND %s
           AND s.list_status = 'L'
           AND s.exchange IN ('SSE', 'SZSE')
@@ -443,21 +521,45 @@ def load_data(start: str, end: str) -> pd.DataFrame:
     """
 
     engine = _get_pg_engine()
+    chunks = []
     try:
         with engine.connect() as conn:
-            df = pd.read_sql(sql, conn, params=(start, end, MIN_DAILY_AMOUNT_K, MIN_LISTING_DAYS), parse_dates=["date"])
+            # 分块读取 + 逐块降 float32：峰值内存 = 单块 float64 + 累计 float32，
+            # 而非整表 float64 + 多份全量副本
+            for chunk in pd.read_sql(
+                sql, conn,
+                params=(start, end, MIN_DAILY_AMOUNT_K, MIN_LISTING_DAYS),
+                parse_dates=["date"],
+                chunksize=200_000,
+            ):
+                chunks.append(_convert_columns_to_float32(chunk))
     finally:
         engine.dispose()
+
+    if chunks:
+        df = pd.concat(chunks, ignore_index=True)
+        chunks.clear()
+        gc.collect()
+        log_memory_usage("行情数据加载后")
+    else:
+        # 查询无结果时返回带完整 schema 的空帧，保持与单次 read_sql 一致的下游行为
+        # （下游会在交易日数量检查处优雅退出，而非 KeyError）
+        df = pd.DataFrame(columns=[
+            "ts_code", "name", "date", "open", "high", "low", "close",
+            "volume", "amount", "pct_chg", "turn", "pe_ttm", "pb_mrq",
+            "circ_mv", "volume_ratio", "turnover_rate_f", "ps_ttm",
+            "dv_ratio", "total_mv", "net_mf_amount", "up_limit",
+            "down_limit", "profit_ratio", "avg_cost", "cost_90_low",
+            "cost_90_high", "concentration_90", "concentration_70", "rzye",
+        ])
 
     df["code"] = df["ts_code"].apply(_from_ts_code)
     df.drop(columns=["ts_code"], inplace=True)
 
-    for col in ["open", "high", "low", "close", "volume", "amount",
-                "pct_chg", "turn", "pe_ttm", "pb_mrq", "up_limit", "down_limit",
-                "circ_mv", "volume_ratio", "net_mf_amount"]:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
+    # 融资余额 5 日变化率（杠杆资金边际变化，按股票分组；
+    # SQL 已按 ts_code 排序，code 顺序一致，无需再次排序）
+    df["rzye_chg5"] = df.groupby("code")["rzye"].pct_change(5).astype("float32")
 
-    df = _convert_columns_to_float32(df)
     logger.info(f"总计 {len(df):,} 行 x {df['code'].nunique()} 只股票，耗时 {time.time()-t0:.1f}s")
     return df
 
@@ -595,6 +697,128 @@ def _financial_ok(df: pd.DataFrame) -> pd.Series:
     roe_ok = df["fin_roe"].isna() | (df["fin_roe"] >= 0)
     rev_ok = df["fin_or_yoy"].isna() | (df["fin_or_yoy"] >= -30)
     return roe_ok & rev_ok
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 增强信号数据加载（P2：股东人数/业绩预告/质押/机构龙虎榜，按公告日 as-of 对齐防前视）
+# ═══════════════════════════════════════════════════════════════════════════════
+
+AUX_MAX_AGE_DAYS = 400  # 事件类数据最大有效期（天），超过视为过期置 NaN
+
+
+def _merge_aux_by_date(df: pd.DataFrame, right: pd.DataFrame,
+                       right_on: str, cols: List[str]) -> pd.DataFrame:
+    """逐 code 分组的 merge_asof（方向 backward），把低频事件数据对齐到交易日。
+
+    right 需含 code 列与 right_on 日期列；未命中的组补 NaN（不过滤整行）。
+    """
+    df = df.sort_values(["code", "date"]).reset_index(drop=True)
+    right = right.sort_values(["code", right_on]).reset_index(drop=True)
+    right[right_on] = pd.to_datetime(right[right_on])
+    right2 = pd.concat([right[["code", right_on]], right[cols]], axis=1)
+    by_code = {code: g.drop(columns=["code"]) for code, g in right2.groupby("code", sort=False)}
+    pieces = []
+    for code, g in df.groupby("code", sort=False):
+        f = by_code.get(code)
+        if f is None or f.empty:
+            g = g.copy()
+            for c in cols:
+                g[c] = np.nan
+            pieces.append(g)
+            continue
+        pieces.append(pd.merge_asof(g, f, left_on="date", right_on=right_on,
+                                    direction="backward").drop(columns=[right_on], errors="ignore"))
+    return pd.concat(pieces, ignore_index=True)
+
+
+def load_signal_aux(df: pd.DataFrame) -> pd.DataFrame:
+    """加载并合并增强信号字段（股东人数环比 / 业绩预告方向 / 质押比例 / 机构龙虎榜净买）。
+
+    全部按公告口径 as-of 对齐（ann_date / end_date+30d），避免前视偏差；
+    事件数据超过 AUX_MAX_AGE_DAYS 视为过期置 NaN（保留列但过滤时放行）。
+    """
+    t0 = time.time()
+    start = df["date"].min().strftime("%Y-%m-%d")
+    end = df["date"].max().strftime("%Y-%m-%d")
+    engine = _get_pg_engine()
+
+    try:
+        with engine.connect() as conn:
+            # 股东人数（ann_date 对齐 + 环比变化，环比下降=筹码集中）
+            hol = pd.read_sql(
+                "SELECT ts_code, ann_date, end_date, holder_num FROM tushare_stk_holdernumber "
+                "WHERE ann_date BETWEEN %s AND %s ORDER BY ts_code, ann_date",
+                conn, params=(start, end),
+            )
+            # 业绩预告（ann_date 对齐，type 分类为正向/负向）
+            fc = pd.read_sql(
+                "SELECT ts_code, ann_date, type, p_change_min FROM tushare_forecast "
+                "WHERE ann_date BETWEEN %s AND %s ORDER BY ts_code, ann_date",
+                conn, params=(start, end),
+            )
+            # 质押统计（end_date 后移 30 天近似公告日）
+            pl = pd.read_sql(
+                "SELECT ts_code, end_date, pledge_ratio FROM tushare_pledge_stat "
+                "WHERE end_date BETWEEN %s AND %s ORDER BY ts_code, end_date",
+                conn, params=(start, end),
+            )
+            # 机构龙虎榜（按日聚合净买入）
+            ti = pd.read_sql(
+                "SELECT ts_code, trade_date, net_buy FROM tushare_top_inst "
+                "WHERE trade_date BETWEEN %s AND %s ORDER BY ts_code, trade_date",
+                conn, params=(start, end),
+            )
+    finally:
+        engine.dispose()
+
+    # ── 股东人数 ──
+    hol["code"] = hol["ts_code"].apply(_from_ts_code)
+    hol.drop(columns=["ts_code"], inplace=True)
+    hol["holder_num"] = pd.to_numeric(hol["holder_num"], errors="coerce")
+    hol = hol.sort_values(["code", "ann_date"]).reset_index(drop=True)
+    hol["holder_chg"] = hol.groupby("code")["holder_num"].pct_change().astype("float32")
+    df = _merge_aux_by_date(df, hol, "ann_date", ["end_date", "holder_num", "holder_chg"])
+    df = df.rename(columns={"end_date": "holder_end_date"})
+    df["holder_end_date"] = pd.to_datetime(df["holder_end_date"], errors="coerce")
+    stale_holder = (df["date"] - df["holder_end_date"]).dt.days > AUX_MAX_AGE_DAYS
+    df.loc[stale_holder, ["holder_num", "holder_chg"]] = np.nan
+
+    # ── 业绩预告 ──
+    POS_TYPES = {"预增", "略增", "续盈", "扭亏", "减亏"}
+    NEG_TYPES = {"预减", "略减", "首亏", "续亏", "增亏"}
+    fc["code"] = fc["ts_code"].apply(_from_ts_code)
+    fc.drop(columns=["ts_code"], inplace=True)
+    fc["forecast_pos"] = fc["type"].isin(POS_TYPES).astype("float32")
+    fc["forecast_neg"] = fc["type"].isin(NEG_TYPES).astype("float32")
+    fc["forecast_pmin"] = pd.to_numeric(fc["p_change_min"], errors="coerce").astype("float32")
+    df = _merge_aux_by_date(df, fc, "ann_date", ["forecast_pos", "forecast_neg", "forecast_pmin"])
+    fc_last = fc.groupby("code")["ann_date"].max().rename("fc_last_ann")
+    df = df.merge(fc_last, on="code", how="left")
+    df["fc_last_ann"] = pd.to_datetime(df["fc_last_ann"], errors="coerce")
+    stale_fc = (df["date"] - df["fc_last_ann"]).dt.days > AUX_MAX_AGE_DAYS
+    df.loc[stale_fc, ["forecast_pos", "forecast_neg", "forecast_pmin"]] = np.nan
+    df.drop(columns=["fc_last_ann"], inplace=True)
+
+    # ── 质押比例 ──
+    pl["code"] = pl["ts_code"].apply(_from_ts_code)
+    pl.drop(columns=["ts_code"], inplace=True)
+    pl["pledge_ratio"] = pd.to_numeric(pl["pledge_ratio"], errors="coerce").astype("float32")
+    pl["end_date"] = pd.to_datetime(pl["end_date"])
+    pl["pub_date"] = pl["end_date"] + pd.Timedelta(days=30)
+    df = _merge_aux_by_date(df, pl, "pub_date", ["pledge_ratio"])
+
+    # ── 机构龙虎榜近 5 日净买入 ──
+    ti["code"] = ti["ts_code"].apply(_from_ts_code)
+    ti.drop(columns=["ts_code"], inplace=True)
+    ti["net_buy"] = pd.to_numeric(ti["net_buy"], errors="coerce")
+    ti = ti.groupby(["code", "trade_date"], as_index=False)["net_buy"].sum()
+    ti = ti.sort_values(["code", "trade_date"]).reset_index(drop=True)
+    ti["inst_buy5"] = (ti.groupby("code")["net_buy"].rolling(5).sum()
+                       .reset_index(level=0, drop=True).astype("float32"))
+    df = _merge_aux_by_date(df, ti, "trade_date", ["inst_buy5"])
+
+    logger.info(f"增强信号合并完成，耗时 {time.time()-t0:.1f}s")
+    return df
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -952,6 +1176,79 @@ def _apply_cooldown(df: pd.DataFrame, sig: pd.Series, cooldown_days: int = SIGNA
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# 策略族质量过滤（P2：按策略特性差异化应用增强数据过滤，数据缺失时放行）
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _quality_mask(df: pd.DataFrame, kind: str) -> pd.Series:
+    """按策略族返回质量过滤掩码。
+
+    族定义：
+      - standard：趋势/突破族——换手率带 + 获利盘带 + 质押上限 + 股息率下限
+      - washout ：超跌/反抽族——换手率带 + 质押上限 + 股息率下限（不含获利盘带，
+                  因信号本身要求获利盘 < 0.2，两者互斥）
+      - limitup_break ：涨停启动族——质押上限 + 涨停日筹码集中度上限
+      - limitup_pullback：涨停回调族——换手率带 + 质押上限
+      - chase   ：龙头接力族——换手率带 + 质押上限（获利盘条件内置于信号）
+      - base    ：无额外过滤（沿用原买入掩码）
+    """
+    trf = df["turnover_rate_f"]
+    pr = df["profit_ratio"]
+    pl = df["pledge_ratio"]
+    dv = df["dv_ratio"]
+    cc90 = df["concentration_90"]
+
+    trf_ok = (trf >= MIN_TURNOVER_RATE_F) & (trf <= MAX_TURNOVER_RATE_F)
+    pledge_ok = pl.isna() | (pl <= MAX_PLEDGE_RATIO)
+
+    if kind == "standard":
+        return (trf_ok & (pr >= MIN_PROFIT_RATIO) & (pr <= MAX_PROFIT_RATIO)
+                & pledge_ok & (dv >= MIN_DIV_YIELD))
+    if kind == "washout":
+        return trf_ok & pledge_ok & (dv >= MIN_DIV_YIELD)
+    if kind == "limitup_break":
+        return pledge_ok & (cc90 < MAX_CONC_90_LIMITUP)
+    if kind == "limitup_pullback":
+        return trf_ok & pledge_ok
+    if kind == "chase":
+        # 涨停次日高开日换手率天然偏高，仅用质押过滤（获利盘/集中度条件内置于信号）
+        return pledge_ok
+    return pd.Series(True, index=df.index)
+
+
+STRATEGY_MASKS: Dict[str, str] = {
+    "ma_crossover": "standard",
+    "volume_surge_std": "standard",
+    "wonderful_9_turn": "standard",
+    "n_pattern": "standard",
+    "limit_up_pullback": "limitup_pullback",
+    "stable_then_limit_up": "limitup_break",
+    "monthly_macd_20ma": "standard",
+    "low_position_limit_up": "base",
+    "multi_ma_resonance": "standard",
+    "ensemble": "standard",
+    "volume_breakout": "standard",
+    "ma_golden_cross": "standard",
+    "dragon_head": "chase",
+    "emotion_cycle": "standard",
+    "one_yang_three_yin": "washout",
+    "box_oscillation": "standard",
+    "wave_theory": "standard",
+    "chan_theory": "base",
+    "washout_break": "washout",
+    "low_profit_hold": "washout",
+    "holder_conc_break": "standard",
+    "inst_smart_break": "standard",
+    "fc_pos_break": "standard",
+}
+
+
+def _strategy_signal(df: pd.DataFrame, name: str) -> pd.Series:
+    """策略信号 = 信号函数 & 买入掩码 & 该策略族的质量过滤（回测/验证/推荐共用）。"""
+    sig = STRATEGIES[name](df)
+    return sig & _entry_mask(df) & _quality_mask(df, STRATEGY_MASKS.get(name, "base"))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # 策略信号函数（23 个策略）
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1257,6 +1554,7 @@ def sig_volume_breakout(df):
     return score >= 8
 
 
+@deprecated("该函数已废弃，胜率无法通过过滤提升（41.9% 为大盘组最低）")
 def sig_bull_trend(df):
     """策略14：多头趋势——短均线多头排列 + RSI 健康 + 放量，趋势跟随型信号。
 
@@ -1284,6 +1582,7 @@ def sig_ma_golden_cross(df):
     return cross & (df["volume"] > df["vol_ma5"] * 1.2) & (df["close"] > df["ma10"])
 
 
+@deprecated("该函数已废弃，缩量条件与买入掩码量比过滤矛盾导致 5 年零信号")
 def sig_shrink_pullback(df):
     """策略16：缩量回调——极度缩量（量 < 30% vol_ma5）且价格贴近 MA10 的回踩企稳信号。
 
@@ -1304,10 +1603,14 @@ def sig_dragon_head(df):
     逻辑（全部满足）：
       - 前一日涨停（pct_chg >= 9.5%）
       - 当日开盘价 > 前收 * 1.02（高开 2% 以上）
+      - 获利盘 <= 90%（剔除纯高位接力）
+      - 90% 筹码集中度 < 15%（筹码集中，未过度分散）
     """
     pp = df.groupby("code")["pct_chg"].shift(1)
     pc = df.groupby("code")["close"].shift(1)
-    return (pp >= 9.5) & (df["open"] > pc * 1.02)
+    return (pp >= 9.5) & (df["open"] > pc * 1.02) \
+        & (df["profit_ratio"] <= MAX_DRAGON_PROFIT_RATIO) \
+        & (df["concentration_90"] < MAX_CONC_90_LIMITUP)
 
 
 def sig_emotion_cycle(df):
@@ -1405,7 +1708,73 @@ def sig_chan_theory(df):
     return new_low & macd_not_new_low & vol_ok & rsi_oversold & close_above_open
 
 
+def sig_washout_break(df):
+    """策略24：超跌突破——获利盘 < 20%（筹码深度套牢）后放量阳线站上 MA20，洗盘后的反转突破。
+
+    逻辑（全部满足）：
+      - 获利盘 < 20%（绝大部分筹码被套，抛压枯竭）
+      - 阳线（收 > 开）
+      - 放量（量 > 1.5*vol_ma5）
+      - 收盘站上 MA20
+    """
+    return ((df["profit_ratio"] < WASHOUT_PROFIT_RATIO) & (df["close"] > df["open"])
+            & (df["volume"] > df["vol_ma5"] * 1.5) & (df["close"] > df["ma20"]))
+
+
+def sig_low_profit_hold(df):
+    """策略25：超跌+筹码集中——获利盘 < 20% 且股东人数下降（筹码向少数人集中），阳线站上 MA20。
+
+    逻辑（全部满足）：
+      - 获利盘 < 20%（深度套牢）
+      - 最近一期股东人数环比下降（筹码集中）
+      - 收盘站上 MA20
+      - 阳线（收 > 开）
+    """
+    return ((df["profit_ratio"] < WASHOUT_PROFIT_RATIO) & (df["holder_chg"] < 0)
+            & (df["close"] > df["ma20"]) & (df["close"] > df["open"]))
+
+
+def sig_holder_conc_break(df):
+    """策略26：股东人数下降突破——股东人数环比下降超 3%（显著集中）+ 放量阳线站上 MA20。
+
+    逻辑（全部满足）：
+      - 股东人数环比下降 > 3%
+      - 收盘站上 MA20
+      - 阳线（收 > 开）
+      - 放量（量 > 1.2*vol_ma5）
+    """
+    return ((df["holder_chg"] < MAX_HOLDER_CHG_PCT / 100.0) & (df["close"] > df["ma20"])
+            & (df["close"] > df["open"]) & (df["volume"] > df["vol_ma5"] * 1.2))
+
+
+def sig_inst_smart_break(df):
+    """策略27：机构龙虎榜净买——机构席位近 5 日累计净买入超 500 万，阳线站上 MA20。
+
+    逻辑（全部满足）：
+      - 机构龙虎榜近 5 日累计净买入 > 500 万元
+      - 收盘站上 MA20
+      - 阳线（收 > 开）
+    """
+    return ((df["inst_buy5"] > MIN_INST_NET_BUY) & (df["close"] > df["ma20"])
+            & (df["close"] > df["open"]))
+
+
+def sig_fc_pos_break(df):
+    """策略28：业绩预增突破——最新业绩预告为正向（预增/略增/续盈/扭亏/减亏），量价配合站上 MA20。
+
+    逻辑（全部满足）：
+      - 最近一期业绩预告为正向类型
+      - 收盘站上 MA20
+      - 放量（量 > 1.2*vol_ma5）
+      - RSI6 处于 40~70 健康区间
+    """
+    return ((df["forecast_pos"] == 1) & (df["close"] > df["ma20"])
+            & (df["volume"] > df["vol_ma5"] * 1.2)
+            & (df["rsi6"] > 40) & (df["rsi6"] < 70))
+
+
 # 策略注册表：策略名 -> 信号函数。回测、验证、推荐均通过该表调度。
+# 各策略的差异化质量过滤见 STRATEGY_MASKS（P2）。
 STRATEGIES = {
     "ma_crossover": sig_ma_crossover,
     "volume_surge_std": sig_volume_surge_std,
@@ -1420,9 +1789,9 @@ STRATEGIES = {
     "multi_ma_resonance": sig_multi_ma_resonance,
     "ensemble": sig_ensemble,
     "volume_breakout": sig_volume_breakout,
-    "bull_trend": sig_bull_trend,
+    # "bull_trend": sig_bull_trend,
     "ma_golden_cross": sig_ma_golden_cross,
-    "shrink_pullback": sig_shrink_pullback,
+    # "shrink_pullback": sig_shrink_pullback,
     "dragon_head": sig_dragon_head,
     "emotion_cycle": sig_emotion_cycle,
     # "bottom_volume": sig_bottom_volume,
@@ -1430,6 +1799,11 @@ STRATEGIES = {
     "box_oscillation": sig_box_oscillation,
     "wave_theory": sig_wave_theory,
     "chan_theory": sig_chan_theory,
+    "washout_break": sig_washout_break,
+    "low_profit_hold": sig_low_profit_hold,
+    "holder_conc_break": sig_holder_conc_break,
+    "inst_smart_break": sig_inst_smart_break,
+    "fc_pos_break": sig_fc_pos_break,
 }
 
 
@@ -1630,7 +2004,7 @@ def log_memory_usage(stage: str):
 # 回测（自动串行/并行）
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _backtest_single(name: str, df: pd.DataFrame) -> Dict:
+def _backtest_single(name: str, df: pd.DataFrame, select_period_by: str = "total_return") -> Dict:
     """单策略回测：生成信号 -> 剔除不可成交（涨停）信号 -> 按持有期分别统计绩效。
 
     修复要点：
@@ -1639,10 +2013,13 @@ def _backtest_single(name: str, df: pd.DataFrame) -> Dict:
       - P0-2：每个持有期的收益按日期排序后再计算最大回撤（时间序列回撤）
     异常时返回 {"strategy": name, "error": ...}，不中断整体回测；
     无信号时返回全 0 指标。
+
+    select_period_by：最优持有期（best_p）的选取口径，默认 "total_return"（保持
+    历史行为）；WFO 回测传 "expectation"（单笔期望不受样本量影响，选期更稳）。
     """
     t0 = time.time()
     try:
-        sig = STRATEGIES[name](df)
+        sig = _strategy_signal(df, name)
         signals = df[_apply_cooldown(df, sig)]
         n = signals["code"].count()
         if n == 0:
@@ -1687,8 +2064,8 @@ def _backtest_single(name: str, df: pd.DataFrame) -> Dict:
                     "total_return": 0, "annualized_return": 0,
                     "max_drawdown": 0, "sharpe_ratio": 0, "time_s": round(time.time() - t0, 1)}
 
-        # 聚合：取最优持有期（总收益最高）作为该策略代表指标，同时保留各持有期明细
-        best_p = max(period_metrics, key=lambda p: period_metrics[p]["total_return"])
+        # 聚合：取最优持有期（默认总收益最高，WFO 传 expectation）作为该策略代表指标，同时保留各持有期明细
+        best_p = max(period_metrics, key=lambda p: period_metrics[p].get(select_period_by, period_metrics[p]["total_return"]))
         m = dict(period_metrics[best_p])
         m["strategy"] = name
         m["total_trades"] = n
@@ -1729,6 +2106,25 @@ def compute_benchmark_metrics(df: pd.DataFrame, index_df: Optional[pd.DataFrame]
         "benchmark_annualized": round(annualized, 2),
         "benchmark_max_drawdown": round(max_drawdown, 2),
     }
+
+
+def _compute_ensemble_weights(component_results: Dict[str, Dict]) -> Dict[str, float]:
+    """按组件策略历史胜率归一化计算组合策略权重（C1）。
+
+    输入为各组件策略的回测结果 dict（键为组件名），
+    返回 {组件名: 权重}；组件无有效胜率时返回空 dict（调用方回退等权）。
+    """
+    wr = np.array([
+        component_results[c].get("win_rate", 0) if "error" not in component_results[c] else 0
+        for c in ENSEMBLE_COMPONENTS
+    ], dtype=float)
+    wr_sum = wr.sum()
+    if wr_sum <= 0:
+        logger.warning("组件策略无有效胜率,组合策略退化为等权")
+        return {}
+    weights = {c: float(w / wr_sum) for c, w in zip(ENSEMBLE_COMPONENTS, wr)}
+    logger.info(f"组合策略权重: {', '.join(f'{c}={weights[c]:.3f}' for c in ENSEMBLE_COMPONENTS)}")
+    return weights
 
 
 def run_backtests(df_bt: pd.DataFrame, index_df: Optional[pd.DataFrame] = None) -> List[Dict]:
@@ -1775,14 +2171,7 @@ def run_backtests(df_bt: pd.DataFrame, index_df: Optional[pd.DataFrame] = None) 
         if "error" not in r:
             logger.info(f"  [component] {r['strategy']}: {r['total_trades']} 笔, "
                         f"胜率{r['win_rate']:.1f}%, 总收益{r['total_return']:.1f}%")
-    wr = np.array([component_results[c].get("win_rate", 0) if "error" not in component_results[c] else 0
-                   for c in ENSEMBLE_COMPONENTS], dtype=float)
-    wr_sum = wr.sum()
-    if wr_sum > 0:
-        _ENSEMBLE_WEIGHTS = {c: float(w / wr_sum) for c, w in zip(ENSEMBLE_COMPONENTS, wr)}
-        logger.info(f"组合策略权重: {', '.join(f'{c}={_ENSEMBLE_WEIGHTS[c]:.3f}' for c in ENSEMBLE_COMPONENTS)}")
-    else:
-        logger.warning("组件策略无有效胜率,组合策略退化为等权")
+    _ENSEMBLE_WEIGHTS = _compute_ensemble_weights(component_results)
 
     remaining = [n for n in strategy_names if n not in ENSEMBLE_COMPONENTS]
 
@@ -1847,7 +2236,7 @@ def validate_week(df_week, top_results, top_n=5):
 
     for name in top_names:
         try:
-            sig = STRATEGIES[name](df_week) & _entry_mask(df_week)
+            sig = _strategy_signal(df_week, name)
             matched_rows = df_week.loc[sig.values].copy()
             matched_stocks = matched_rows.loc[matched_rows["date"] == buy_date, ["code", "name"]].drop_duplicates()
             n = len(matched_stocks)
@@ -2004,7 +2393,7 @@ def get_top_stocks_by_win_rate(df_week, results, top_n=10):
             continue
 
         try:
-            sig = STRATEGIES[strategy_name](df_week) & _entry_mask(df_week)
+            sig = _strategy_signal(df_week, strategy_name)
             mask = sig.values
             if mask.sum() == 0:
                 continue
@@ -2110,7 +2499,7 @@ def get_next_day_recommendations(df_latest, top_stocks_or_results, results=None,
 
     for strategy_name in unique_strategies:
         try:
-            sig = STRATEGIES[strategy_name](df_latest) & _entry_mask(df_latest)
+            sig = _strategy_signal(df_latest, strategy_name)
             latest_mask = sig.values & (df_latest["date"] == latest_date).values
             if latest_mask.sum() == 0:
                 continue
@@ -2310,6 +2699,11 @@ def main(argv=None):
     gc.collect()
     log_memory_usage("复权计算后")
 
+    logger.info("加载增强信号数据（股东人数/业绩预告/质押/机构龙虎榜）...")
+    df_adjusted = load_signal_aux(df_adjusted)
+    gc.collect()
+    log_memory_usage("增强信号合并后")
+
     df_all = compute_indicators(df_adjusted)
     del df_adjusted
     gc.collect()
@@ -2386,7 +2780,10 @@ def main(argv=None):
 
     results = run_backtests(df_bt, index_df=df_bench_index)
     val_results = validate_week(df_week, results, TOP_N_VALIDATE)
-    print_results(results, val_results, backtest_start_date, backtest_end_date)
+    # 绩效表格经 print 输出，双写到控制台与回测日志文件
+    with open(_LOG_FILE, "a", encoding="utf-8") as log_fp:
+        with contextlib.redirect_stdout(_Tee(sys.stdout, log_fp)):
+            print_results(results, val_results, backtest_start_date, backtest_end_date)
 
     # 汇总本周验证胜率前 10 股票，作为主程序个股决策的输入
     top_stocks = get_top_stocks_by_win_rate(df_week, results, top_n=10)
