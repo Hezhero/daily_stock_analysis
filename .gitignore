@@ -103,3 +103,10 @@ result/*.txt
 /changes/
 /.omo/
 /specs/
+
+# 回测实验过程产物（可重新生成的中间输出；精选报告/模型仍显式跟踪）
+result/*.json
+result/wfo_experiments_*.md
+
+# 本机 pyright 类型检查配置（含本机绝对路径，不入库）
+pyrightconfig.json

@@ -188,6 +188,9 @@ def build_full_frame(start: str, end: str) -> pd.DataFrame:
         df_all["market_ok"] = df_all["market_ok"].fillna(False).astype(bool)
         del df_index, regime_df
         gc.collect()
+    except MemoryError:
+        logger.error("市场环境数据加载失败: 内存不足(MemoryError), 中止运行以免静默降级污染结果")
+        raise
     except Exception as e:
         logger.warning(f"市场环境数据加载失败，跳过 regime 过滤: {e}")
         df_all["market_ok"] = True
@@ -198,8 +201,12 @@ def build_full_frame(start: str, end: str) -> pd.DataFrame:
             df_all = merge_fina_by_ann_date(df_all, df_fina)
             df_all.rename(columns={"roe": "fin_roe", "grossprofit_margin": "fin_gross_margin",
                                    "or_yoy": "fin_or_yoy"}, inplace=True)
+            logger.info(f"财务指标字段: fin_roe 覆盖率 {df_all['fin_roe'].notna().mean()*100:.1f}%")
         del df_fina
         gc.collect()
+    except MemoryError:
+        logger.error("财务数据加载失败: 内存不足(MemoryError), 中止运行以免静默降级污染结果")
+        raise
     except Exception as e:
         logger.warning(f"财务数据加载失败，跳过财务过滤: {e}")
 
@@ -302,12 +309,14 @@ def _find_exit_day_offset(close: np.ndarray, high: np.ndarray, low: np.ndarray,
     """按 compute_dynamic_exit_returns 同码逻辑求实际出场日偏移（1..best_p）。
 
     入场日 entry_idx 收盘买入,持有期内逐日检查:
-      - ATR 止损:某日 low <= close[entry] - 2*atr[entry]
-      - 移动止盈:某日 close <= 持有期最高价*0.92
+      - ATR 止损:某日 low <= close[entry] - 2.5*atr[entry]
+      - 移动止盈:某日 close <= 持有期最高价*0.95
       - 时间止损:持有 best_p 日仍未触发
     返回出场日偏移 k（入场日 + k 个交易日）,与 dyn_ret_{best_p}d 的退出时点一致。
+    出场参数 (2.5, 0.95) 与生产函数 compute_dynamic_exit_returns 保持一致
+    （WFO 实验 Exp3 回写,见 result/wfo_experiments_20260820.md）。
     """
-    stop = close[entry_idx] - 2.0 * atr[entry_idx]
+    stop = close[entry_idx] - 2.5 * atr[entry_idx]
     if not np.isfinite(stop):
         return best_p
     w = min(best_p, len(close) - 1 - entry_idx)
@@ -318,7 +327,7 @@ def _find_exit_day_offset(close: np.ndarray, high: np.ndarray, low: np.ndarray,
     win_close = close[entry_idx + 1: entry_idx + 1 + w]
     peaks = np.maximum.accumulate(win_high)
     atr_hit = win_low <= stop
-    trail_hit = win_close <= peaks * 0.92
+    trail_hit = win_close <= peaks * 0.95
     hit = atr_hit | trail_hit
     if hit.any():
         return int(np.argmax(hit)) + 1
