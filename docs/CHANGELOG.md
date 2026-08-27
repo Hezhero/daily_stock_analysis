@@ -41,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [改进] `scripts/data_collection/tushare_pg_utils.py` 的 `TushareClient.query` 识别限频错误（code=40203）时等待 60s 让限频窗口重置后重试，避免原指数退避 3 秒即放弃导致数据静默丢失；`incremental_factor.py`/`incremental_index.py` 的 `RATE_LIMIT` 注释记录实测依据（账号 5000 积分档全局限频 500 次/分，19 个接口 3 连测无接口级限频，`RATE_LIMIT=480` 合理）。
 - [chore] 移除沪深港通成分表 `tushare_hs_const` 及对应采集代码：`scripts/data_collection/incremental_base.py` 的 `refresh_hs_const` 与 `ts2pg.py` 的 hs_const 初始导入段移除，`docs/tushare_postgres_schema.sql` 同步删除表结构（含索引与注释）与 updated_at 触发器注册，`tests/test_hs_const.py` 删除；该接口数据源停更于 2019 年（in_date 最晚 2019-12-27），为静态历史且仓库内无消费方，故整体移除。
 - [改进] `scripts/backtest_5y_23strategies.py` 推荐输出新增 `recommended_hold_days` 字段：对 5 日验证胜率前 10 股票，取命中策略回测最优持有期（`best_period`∈{1,3,5,10}）的胜率加权平均并取整到最近候选期作为「推荐持仓 N 日」输出；推荐「收益」口径由固定 5 日窗口收益改为命中策略最优持有期的前瞻收益（`dyn_ret_{best_p}d` 优先、`ret_{best_p}d` 兜底，与回测/动态出场规则同口径；最优期 5/10 日超出 5 日验证窗口无法测量时回退固定窗口收益），会改变推荐排序与结果。
+- [改进] `scripts/data_collection/run_all_incremental.py` 本脚本控制台输出统一加 `[YYYY-MM-DD HH:MM:SS]` 时间戳前缀：新增 `_log` 助手逐行打印（非空行加时间戳、空行保留为换行分隔），信号转发/计划/开始/完成/汇总/失败等全部 `print` 改为 `_log`；`run_task` 写入任务日志的「超时」「启动失败」两条记录同步补齐时间戳，便于与各增量脚本日志对时。
 
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->

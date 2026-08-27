@@ -18,6 +18,7 @@
     避免增量子脚本成为孤儿进程继续写库
   - --only 与 --skip 互斥，只能使用其中一个
   - 日志追加写入 logs/<脚本名>.log（与 crontab 日志文件一致）
+  - 本脚本自身的控制台输出每行带 [YYYY-MM-DD HH:MM:SS] 时间戳（_log）
   - 策略回测（backtest_5y_23strategies.py）不属于数据获取，未纳入
 
 用法:
@@ -55,6 +56,17 @@ TASKS = [
 
 DOW_NAMES = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"]
 
+
+def _log(msg: str) -> None:
+    """带时间戳输出：非空行加 [YYYY-MM-DD HH:MM:SS] 前缀，空行保留为换行分隔。"""
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    for line in str(msg).split("\n"):
+        if line:
+            print(f"[{ts}] {line}")
+        else:
+            print()
+
+
 # 信号转发状态：外层 timeout（或 Ctrl+C）触发后，终止当前子进程并停止后续任务，
 # 避免正在运行的增量子脚本成为孤儿进程继续占用数据库连接。
 _current_proc: subprocess.Popen | None = None
@@ -67,7 +79,7 @@ def _forward_signal(signum, frame) -> None:
     _stop_requested = True
     proc = _current_proc
     if proc is not None and proc.poll() is None:
-        print(f"\n[run_all_incremental] 收到信号 {signum}，正在终止子进程 PID={proc.pid} ...")
+        _log(f"\n[run_all_incremental] 收到信号 {signum}，正在终止子进程 PID={proc.pid} ...")
         try:
             proc.terminate()
         except OSError:
@@ -110,10 +122,10 @@ def run_task(script: str, log_name: str, timeout: int) -> tuple[bool, float]:
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait()
-                fh.write(f"\n[run_all_incremental] {script} 超过 {timeout}s 超时，已终止\n")
+                fh.write(f"\n[{datetime.now():%Y-%m-%d %H:%M:%S}] [run_all_incremental] {script} 超过 {timeout}s 超时，已终止\n")
                 ok = False
         except OSError as exc:
-            fh.write(f"\n[run_all_incremental] {script} 启动失败: {exc}\n")
+            fh.write(f"\n[{datetime.now():%Y-%m-%d %H:%M:%S}] [run_all_incremental] {script} 启动失败: {exc}\n")
             ok = False
         finally:
             _current_proc = None
@@ -159,39 +171,39 @@ def main() -> int:
             selected.append((script, log_name, freq))
 
     if not selected:
-        print(f"今天({DOW_NAMES[today]})没有需要执行的增量任务，无需运行")
+        _log(f"今天({DOW_NAMES[today]})没有需要执行的增量任务，无需运行")
         return 0
 
-    print(f"今天: {DOW_NAMES[today]} | 计划执行 {len(selected)} 个任务"
+    _log(f"今天: {DOW_NAMES[today]} | 计划执行 {len(selected)} 个任务"
           f"{'（--all 强制全部）' if args.all else ''}:")
     for script, _, freq in selected:
-        print(f"  - {script}  [{freq}]")
+        _log(f"  - {script}  [{freq}]")
     if args.dry_run:
-        print("dry-run 模式，不实际执行")
+        _log("dry-run 模式，不实际执行")
         return 0
 
     results = []
     for i, (script, log_name, _) in enumerate(selected, 1):
         if _stop_requested:
-            print("已收到终止信号，停止后续任务")
+            _log("已收到终止信号，停止后续任务")
             break
-        print(f"\n[{i}/{len(selected)}] 开始: {script} ...")
+        _log(f"\n[{i}/{len(selected)}] 开始: {script} ...")
         ok, elapsed = run_task(script, log_name, args.timeout_per_task)
         status = "成功" if ok else "失败"
-        print(f"[{i}/{len(selected)}] {script} -> {status}（耗时 {elapsed:.0f}s）")
+        _log(f"[{i}/{len(selected)}] {script} -> {status}（耗时 {elapsed:.0f}s）")
         results.append((script, ok))
 
     failed = [script for script, ok in results if not ok]
-    print("\n===== 执行汇总 =====")
+    _log("\n===== 执行汇总 =====")
     for script, ok in results:
-        print(f"  [{'OK' if ok else 'FAIL'}] {script}")
+        _log(f"  [{'OK' if ok else 'FAIL'}] {script}")
     if failed:
-        print(f"\n失败 {len(failed)} 个: {', '.join(failed)}；日志见 logs/ 目录")
+        _log(f"\n失败 {len(failed)} 个: {', '.join(failed)}；日志见 logs/ 目录")
         return 1
     if _stop_requested:
-        print("\n任务被信号中断（已转发并终止子进程）")
+        _log("\n任务被信号中断（已转发并终止子进程）")
         return 1
-    print("\n全部任务执行成功")
+    _log("\n全部任务执行成功")
     return 0
 
 
