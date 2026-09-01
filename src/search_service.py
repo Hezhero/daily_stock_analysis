@@ -281,11 +281,17 @@ class SearchResponse:
 
 class BaseSearchProvider(ABC):
     """搜索引擎基类"""
-    
+
+    # 熔断参数：配额/鉴权类错误冷却长（额度不会在几分钟内恢复），
+    # 连续超时/网络类错误冷却短（可能是临时抖动）。
+    _CB_QUOTA_COOLDOWN_SECONDS = 600.0   # 配额耗尽/无权限 -> 熔断 10 分钟
+    _CB_TRANSIENT_COOLDOWN_SECONDS = 60.0  # 连续超时/网络错误 -> 熔断 60 秒
+    _CB_TRANSIENT_THRESHOLD = 3          # 连续瞬态错误达到此次数才熔断
+
     def __init__(self, api_keys: List[str], name: str):
         """
         初始化搜索引擎
-        
+
         Args:
             api_keys: API Key 列表（支持多个 key 负载均衡）
             name: 搜索引擎名称
@@ -296,38 +302,65 @@ class BaseSearchProvider(ABC):
         self._key_usage: Dict[str, int] = {key: 0 for key in api_keys}
         self._key_errors: Dict[str, int] = {key: 0 for key in api_keys}
         self._state_lock = threading.RLock()
-    
+        # per-provider 熔断器（无 key 的引擎如 SearXNG 也适用）
+        self._cb_failures = 0
+        self._cb_open_until = 0.0
+        self._cb_half_open_tried = False  # 当前冷却窗口是否已放行过 half-open 探测
+
+    @staticmethod
+    def _is_quota_error(message: str) -> bool:
+        """配额耗尽 / 用量超限 / 鉴权类错误（额度短期内不会恢复，应长冷却）。"""
+        msg = (message or "").lower()
+        return any(k in msg for k in (
+            "quota", "rate limit", "usage limit", "exceeds", "insufficient",
+            "401", "403", "unauthorized", "forbidden", "invalid api key",
+            "余额", "配额", "欠费",
+        ))
+
+    @staticmethod
+    def _is_timeout_error(message: str) -> bool:
+        msg = (message or "").lower()
+        return any(k in msg for k in ("timeout", "timed out", "超时", "connection"))
+
     @property
     def name(self) -> str:
         return self._name
-    
+
     @property
     def is_available(self) -> bool:
-        """检查是否有可用的 API Key"""
-        return bool(self._api_keys)
-    
+        """是否可用：有 API Key 且熔断器未打开（冷却期内直接跳过，避免空等）。"""
+        if not self._api_keys:
+            return False
+        with self._state_lock:
+            if self._cb_open_until and time.time() < self._cb_open_until:
+                return False
+        return True
+
     def _get_next_key(self) -> Optional[str]:
         """
         获取下一个可用的 API Key（负载均衡）
-        
+
         策略：轮询 + 跳过错误过多的 key
         """
         with self._state_lock:
             if not self._key_cycle:
                 return None
-            
+
             # 最多尝试所有 key
             for _ in range(len(self._api_keys)):
                 key = next(self._key_cycle)
                 # 跳过错误次数过多的 key（超过 3 次）
                 if self._key_errors.get(key, 0) < 3:
                     return key
-            
-            # 所有 key 都有问题，重置错误计数并返回第一个
+
+            # 所有 key 都有问题：不立即无条件重置。若熔断已打开则返回 None
+            # （由 is_available 拦截）；否则重置计数返回第一个，保持旧的容错行为。
+            if self._cb_open_until and time.time() < self._cb_open_until:
+                return None
             logger.warning(f"[{self._name}] 所有 API Key 都有错误记录，重置错误计数")
             self._key_errors = {key: 0 for key in self._api_keys}
             return self._api_keys[0] if self._api_keys else None
-    
+
     def _record_success(self, key: str) -> None:
         """记录成功使用"""
         with self._state_lock:
@@ -335,13 +368,43 @@ class BaseSearchProvider(ABC):
             # 成功后减少错误计数
             if key in self._key_errors and self._key_errors[key] > 0:
                 self._key_errors[key] -= 1
-    
-    def _record_error(self, key: str) -> None:
-        """记录错误"""
+            # 成功重置熔断器
+            self._cb_failures = 0
+            self._cb_open_until = 0.0
+            self._cb_half_open_tried = False
+
+    def _record_error(self, key: str, error_message: str = "") -> None:
+        """记录错误并按错误类型维护熔断器。
+
+        - 配额/鉴权类错误：立即熔断长冷却（额度不会在几分钟内恢复）。
+        - 超时/网络类错误：连续达到阈值后熔断短冷却。
+        """
+        warning_message = None
         with self._state_lock:
-            self._key_errors[key] = self._key_errors.get(key, 0) + 1
-            error_count = self._key_errors[key]
-        logger.warning(f"[{self._name}] API Key {key[:8]}... 错误计数: {error_count}")
+            if key:
+                self._key_errors[key] = self._key_errors.get(key, 0) + 1
+                error_count = self._key_errors[key]
+            else:
+                error_count = 0
+            if self._is_quota_error(error_message):
+                self._cb_failures += 1
+                self._cb_open_until = time.time() + self._CB_QUOTA_COOLDOWN_SECONDS
+                warning_message = (
+                    f"[{self._name}] 熔断 {int(self._CB_QUOTA_COOLDOWN_SECONDS)}s："
+                    f"配额/鉴权错误（{error_message[:80]}），冷却期内跳过该引擎"
+                )
+            else:
+                self._cb_failures += 1
+                if self._cb_failures >= self._CB_TRANSIENT_THRESHOLD:
+                    self._cb_open_until = time.time() + self._CB_TRANSIENT_COOLDOWN_SECONDS
+                    warning_message = (
+                        f"[{self._name}] 熔断 {int(self._CB_TRANSIENT_COOLDOWN_SECONDS)}s："
+                        f"连续 {self._cb_failures} 次失败，冷却期内跳过该引擎"
+                    )
+        if key:
+            logger.warning(f"[{self._name}] API Key {key[:8]}... 错误计数: {error_count}")
+        if warning_message:
+            logger.warning(warning_message)
     
     @abstractmethod
     def _do_search(self, query: str, api_key: str, max_results: int, days: int = 7) -> SearchResponse:
@@ -358,6 +421,27 @@ class BaseSearchProvider(ABC):
         **search_kwargs: Any,
     ) -> SearchResponse:
         """Run the shared search flow with an optional preselected API key."""
+        # 熔断状态机：冷却期内每个冷却窗口允许一次 half-open 探测；
+        # 探测成功由 _record_success 重置熔断，探测失败则继续冷却到窗口结束。
+        now = time.time()
+        with self._state_lock:
+            if self._cb_open_until:
+                if now >= self._cb_open_until:
+                    # 冷却到期：开启新 half-open 窗口，放行一次探测
+                    self._cb_open_until = 0.0
+                    self._cb_half_open_tried = False
+                elif not self._cb_half_open_tried:
+                    # 冷却期内首次：放行 half-open 探测
+                    self._cb_half_open_tried = True
+                else:
+                    # 冷却期内已探测过（失败）：直接跳过，不打源
+                    return SearchResponse(
+                        query=query,
+                        results=[],
+                        provider=self._name,
+                        success=False,
+                        error_message=f"{self._name} 熔断冷却中（配额/连续失败），本次跳过"
+                    )
         api_key = api_key or self._get_next_key()
         if not api_key:
             return SearchResponse(
@@ -365,7 +449,7 @@ class BaseSearchProvider(ABC):
                 results=[],
                 provider=self._name,
                 success=False,
-                error_message=f"{self._name} 未配置 API Key"
+                error_message=f"{self._name} 暂无可⽤ API Key（熔断或未配置）"
             )
 
         start_time = time.time()
@@ -377,12 +461,12 @@ class BaseSearchProvider(ABC):
                 self._record_success(api_key)
                 logger.info(f"[{self._name}] 搜索 '{query}' 成功，返回 {len(response.results)} 条结果，耗时 {response.search_time:.2f}s")
             else:
-                self._record_error(api_key)
+                self._record_error(api_key, getattr(response, "error_message", "") or "")
 
             return response
 
         except Exception as e:
-            self._record_error(api_key)
+            self._record_error(api_key, str(e))
             elapsed = time.time() - start_time
             logger.error(f"[{self._name}] 搜索 '{query}' 失败: {e}")
             return SearchResponse(

@@ -503,6 +503,8 @@ class TestFundamentalContext(unittest.TestCase):
             fundamental_retry_max=1,
         )
         with patch("src.config.get_config", return_value=cfg), \
+                patch.object(manager, "_get_pg_capital_flow", return_value=None), \
+                patch.object(manager, "_get_pg_sector_fund_flow", return_value=None), \
                 patch(
                     "data_provider.fundamental_adapter.AkshareFundamentalAdapter.get_capital_flow",
                     return_value={

@@ -621,13 +621,20 @@ class StockAnalysisPipeline:
 
                 # 格式化情报报告
                 if intel_results:
-                    news_context = self.search_service.format_intel_report(intel_results, stock_name)
                     total_results = sum(
                         len(r.results) for r in intel_results.values() if r.success
                     )
                     news_result_count = total_results
                     logger.info(f"{stock_name}({code}) 情报搜索完成: 共 {total_results} 条结果")
-                    logger.debug(f"{stock_name}({code}) 情报搜索结果:\n{news_context}")
+                    # 仅在确有搜索结果时才生成情报文本；0 条结果时保持 news_context=None，
+                    # 避免 format_intel_report 恒返回非空字符串（含"未找到相关信息"）
+                    # 导致下游误判"包含新闻: 是"并把空情报当作有新闻上下文喂给 LLM。
+                    if total_results > 0:
+                        news_context = self.search_service.format_intel_report(intel_results, stock_name)
+                        logger.debug(f"{stock_name}({code}) 情报搜索结果:\n{news_context}")
+                    else:
+                        news_context = None
+                        logger.info(f"{stock_name}({code}) 情报搜索 0 条结果，按无新闻处理")
 
                     # 保存新闻情报到数据库（用于后续复盘与查询）
                     try:

@@ -666,6 +666,11 @@ class DataFetcherManager:
         self._fundamental_cache_lock = RLock()
         self._fundamental_timeout_worker_limit = 8
         self._fundamental_timeout_slots = BoundedSemaphore(self._fundamental_timeout_worker_limit)
+        # 实时行情短 TTL 去重缓存：同一只股票在一次分析流程内会被 pipeline 与
+        # fundamental valuation 块各取一次，短窗口内复用结果，避免重复打源。
+        self._realtime_quote_cache: Dict[str, tuple] = {}
+        self._realtime_quote_cache_lock = RLock()
+        self._realtime_quote_cache_ttl = 30.0  # 秒；同股短窗口去重，避免重复打源
 
     def _ensure_concurrency_guards(self) -> None:
         """Lazily initialize thread-safety primitives for test scaffolds using __new__."""
@@ -681,6 +686,12 @@ class DataFetcherManager:
             self._stock_name_cache = {}
         if not hasattr(self, "_stock_name_cache_lock") or self._stock_name_cache_lock is None:
             self._stock_name_cache_lock = RLock()
+        if not hasattr(self, "_realtime_quote_cache") or self._realtime_quote_cache is None:
+            self._realtime_quote_cache = {}
+        if not hasattr(self, "_realtime_quote_cache_lock") or self._realtime_quote_cache_lock is None:
+            self._realtime_quote_cache_lock = RLock()
+        if not hasattr(self, "_realtime_quote_cache_ttl") or self._realtime_quote_cache_ttl is None:
+            self._realtime_quote_cache_ttl = 30.0
 
     def _get_fetchers_snapshot(self) -> List[BaseFetcher]:
         self._ensure_concurrency_guards()
@@ -1198,6 +1209,7 @@ class DataFetcherManager:
         from .baostock_fetcher import BaostockFetcher
         from .yfinance_fetcher import YfinanceFetcher
         from .longbridge_fetcher import LongbridgeFetcher
+        from .pg_cache_fetcher import PgCacheFetcher
         config = get_config()
         # 创建所有数据源实例（优先级在各 Fetcher 的 __init__ 中确定）
         efinance = EfinanceFetcher()
@@ -1206,6 +1218,8 @@ class DataFetcherManager:
         pytdx = PytdxFetcher()      # 通达信数据源（可配 PYTDX_HOST/PYTDX_PORT）
         baostock = BaostockFetcher()
         yfinance = YfinanceFetcher()
+        # 本地 PostgreSQL Tushare 数据仓库兜底：仅在配置 PG 连接时注册，末位兜底
+        pg_cache = PgCacheFetcher() if PgCacheFetcher.is_configured() else None
         optional_fetchers: List[BaseFetcher] = []
 
         tushare_token = (getattr(config, "tushare_token", None) or "").strip()
@@ -1257,6 +1271,7 @@ class DataFetcherManager:
                 baostock,
                 yfinance,
                 tencent,
+                *([pg_cache] if pg_cache is not None else []),
                 *optional_fetchers,
             ]
 
@@ -1755,7 +1770,35 @@ class DataFetcherManager:
         setattr(quote, "is_stale", stale_seconds > int(ttl))
         return quote
     
-    def get_realtime_quote(self, stock_code: str, *, log_final_failure: bool = True):
+    def get_realtime_quote(self, stock_code: str, *, log_final_failure: bool = True,
+                           use_cache: bool = True):
+        """获取实时行情（短 TTL 去重缓存包装）。
+
+        同一只股票在一次分析流程内会被 pipeline 与 fundamental valuation 块各
+        请求一次；短窗口（默认 30s）内复用首次结果，避免重复打源（tushare+tencent
+        两轮）。use_cache=False 可强制刷新。
+        """
+        self._ensure_concurrency_guards()
+        norm_code = normalize_stock_code(stock_code)
+        ttl = getattr(self, "_realtime_quote_cache_ttl", 0.0) or 0.0
+        if use_cache and ttl > 0:
+            with self._realtime_quote_cache_lock:
+                entry = self._realtime_quote_cache.get(norm_code)
+                if entry and (time.time() - entry[0]) < ttl:
+                    logger.debug(f"[实时行情] {norm_code} 命中 {ttl:.0f}s 去重缓存，跳过重复请求")
+                    return entry[1]
+        quote = self._fetch_realtime_quote(stock_code, log_final_failure=log_final_failure)
+        if quote is not None and use_cache and ttl > 0:
+            with self._realtime_quote_cache_lock:
+                self._realtime_quote_cache[norm_code] = (time.time(), quote)
+                if len(self._realtime_quote_cache) > 200:
+                    cutoff = time.time() - ttl
+                    self._realtime_quote_cache = {
+                        k: v for k, v in self._realtime_quote_cache.items() if v[0] > cutoff
+                    }
+        return quote
+
+    def _fetch_realtime_quote(self, stock_code: str, *, log_final_failure: bool = True):
         """
         获取实时行情数据（自动故障切换）
         
@@ -3449,6 +3492,32 @@ class DataFetcherManager:
             self._prune_fundamental_cache(cache_ttl, cache_max_entries)
         return result_ctx
 
+    def _get_pg_capital_flow(self, stock_code: str) -> Optional[Dict[str, Any]]:
+        """从本地 PG 缓存数据源读取个股资金流（fail-open，失败返回 None）。"""
+        for fetcher in self._get_fetchers_snapshot():
+            if fetcher.name == "PgCacheFetcher":
+                try:
+                    return fetcher.get_capital_flow(stock_code)
+                except Exception as exc:
+                    logger.warning(f"[PgCacheFetcher] 个股资金流兜底失败 {stock_code}: {exc}")
+                    return None
+        return None
+
+    def _get_pg_sector_fund_flow(self, top_n: int = 5, sort_by: str = "net_inflow") -> Optional[Dict[str, Any]]:
+        """从本地 PG 读取申万行业资金流榜（capital_flow 板块资金流兜底，fail-open）。
+
+        仅用于资金流语境，与市场复盘的板块涨跌榜（东财/同花顺行业 + 概念）区分。
+        sort_by: "net_inflow"（默认，按主力净流入）或 "change_pct"（按行业均涨幅）。
+        """
+        for fetcher in self._get_fetchers_snapshot():
+            if fetcher.name == "PgCacheFetcher" and hasattr(fetcher, "get_sector_fund_flow_rankings"):
+                try:
+                    return fetcher.get_sector_fund_flow_rankings(top_n, sort_by=sort_by)
+                except Exception as exc:
+                    logger.warning(f"[PgCacheFetcher] 行业资金流榜兜底失败: {exc}")
+                    return None
+        return None
+
     def get_capital_flow_context(self, stock_code: str, budget_seconds: Optional[float] = None) -> Dict[str, Any]:
         """资金流向块（fail-open）。"""
         from src.config import get_config
@@ -3476,7 +3545,26 @@ class DataFetcherManager:
             timeout,
             "capital_flow",
         )
+
+        # 在线源整体失败（超时/异常）时，用本地 PG 兜底个股资金流 + 申万行业资金流榜
         if not isinstance(payload, dict):
+            pg_flow = self._get_pg_capital_flow(stock_code)
+            pg_sector = self._get_pg_sector_fund_flow(5)
+            if pg_flow or pg_sector:
+                pg_chain = []
+                if pg_flow:
+                    pg_chain.append("capital_stock:pg_tushare_moneyflow")
+                if pg_sector:
+                    pg_chain.append("capital_sector:pg_sw_industry_fund_flow")
+                return self._build_fundamental_block(
+                    "ok",
+                    {
+                        "stock_flow": pg_flow or {},
+                        "sector_rankings": pg_sector or {"top": [], "bottom": []},
+                    },
+                    self._normalize_source_chain(pg_chain, "capital_flow", "ok", cost_ms),
+                    [err or "online capital_flow failed; pg fallback used"],
+                )
             return self._build_fundamental_block(
                 "failed",
                 {},
@@ -3490,6 +3578,29 @@ class DataFetcherManager:
         if isinstance(stock_flow, dict):
             has_stock_flow = any(v is not None for v in stock_flow.values())
         has_sector_rankings = bool(sector_rankings.get("top")) or bool(sector_rankings.get("bottom"))
+
+        # 在线源未取到个股资金流时，用本地 PostgreSQL tushare_moneyflow 兜底
+        if not has_stock_flow:
+            pg_flow = self._get_pg_capital_flow(stock_code)
+            if pg_flow:
+                payload["stock_flow"] = pg_flow
+                stock_flow = pg_flow
+                has_stock_flow = True
+                chain = payload.get("source_chain")
+                if isinstance(chain, list):
+                    chain.append("capital_stock:pg_tushare_moneyflow")
+
+        # 在线源未取到行业资金流榜时，用本地 PG 申万行业资金流聚合兜底
+        if not has_sector_rankings:
+            pg_sector = self._get_pg_sector_fund_flow(5)
+            if pg_sector and (pg_sector.get("top") or pg_sector.get("bottom")):
+                payload["sector_rankings"] = pg_sector
+                sector_rankings = pg_sector
+                has_sector_rankings = True
+                chain = payload.get("source_chain")
+                if isinstance(chain, list):
+                    chain.append("capital_sector:pg_sw_industry_fund_flow")
+
         adapter_status = str(payload.get("status", "not_supported"))
         if has_stock_flow or has_sector_rankings:
             capital_flow_status = "ok"

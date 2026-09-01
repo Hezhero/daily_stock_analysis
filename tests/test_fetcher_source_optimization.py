@@ -115,6 +115,8 @@ class TestFetcherSourceOptimization(unittest.TestCase):
                 "LONGBRIDGE_APP_KEY": "",
                 "LONGBRIDGE_APP_SECRET": "",
                 "LONGBRIDGE_ACCESS_TOKEN": "",
+                "PG_HOST": "",
+                "PG_PASSWORD": "",
             },
         ), patch("data_provider.efinance_fetcher.EfinanceFetcher", return_value=_StubFetcher("EfinanceFetcher", 0)), patch(
             "data_provider.tencent_fetcher.TencentFetcher",

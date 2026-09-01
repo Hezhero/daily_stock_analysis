@@ -80,6 +80,9 @@ INITIAL_CAPITAL = 1000000.0   # 初始资金（元），用于回测收益口径
 TOP_N_VALIDATE = 5            # 本周验证取回测收益前 N 个策略
 HOLDING_PERIODS = [1, 3, 5, 10]  # 回测持有期（交易日），每个信号分别统计各持有期收益
 VALIDATE_DAYS = 5             # 本周验证的交易日窗口长度
+MIN_TRADES_FOR_RANKING = 30   # 策略参与排名/汇总的最小样本笔数；不足视为小样本，不参与期望值排名与跨策略平均
+HANDOFF_MIN_STRATEGIES = 3    # 5日验证股票自动送入主程序实盘分析的最小命中策略数（共振门槛）
+HANDOFF_MIN_STRATEGY_TRADES = 30  # 命中策略的历史回测最小笔数，低于此的策略不计入共振、不支撑 handoff
 
 # ─── 数据质量与可成交性过滤 ────────────────────────────────────────────────────
 MIN_DAILY_AMOUNT_K = 5000        # 最小日成交额（单位：千元，即 500 万元），过滤流动性不足的样本
@@ -575,7 +578,7 @@ def load_data(start: str, end: str) -> pd.DataFrame:
 
     # 融资余额 5 日变化率（杠杆资金边际变化，按股票分组；
     # SQL 已按 ts_code 排序，code 顺序一致，无需再次排序）
-    df["rzye_chg5"] = df.groupby("code")["rzye"].pct_change(5).astype("float32")
+    df["rzye_chg5"] = df.groupby("code")["rzye"].pct_change(5, fill_method=None).astype("float32")
 
     logger.info(f"总计 {len(df):,} 行 x {df['code'].nunique()} 只股票，耗时 {time.time()-t0:.1f}s")
     return df
@@ -832,7 +835,8 @@ def _merge_aux_by_date(df: pd.DataFrame, right: pd.DataFrame,
         if f is None or f.empty:
             g = g.copy()
             for c in cols:
-                g[c] = np.nan
+                # 显式 float dtype，避免 concat 全 NaN 列触发 pandas all-NA FutureWarning
+                g[c] = pd.Series(np.nan, index=g.index, dtype="float64")
             pieces.append(g)
             continue
         pieces.append(pd.merge_asof(g, f, left_on="date", right_on=right_on,
@@ -885,7 +889,7 @@ def load_signal_aux(df: pd.DataFrame) -> pd.DataFrame:
     hol.drop(columns=["ts_code"], inplace=True)
     hol["holder_num"] = pd.to_numeric(hol["holder_num"], errors="coerce")
     hol = hol.sort_values(["code", "ann_date"]).reset_index(drop=True)
-    hol["holder_chg"] = hol.groupby("code")["holder_num"].pct_change().astype("float32")
+    hol["holder_chg"] = hol.groupby("code")["holder_num"].pct_change(fill_method=None).astype("float32")
     df = _merge_aux_by_date(df, hol, "ann_date", ["end_date", "holder_num", "holder_chg"])
     df = df.rename(columns={"end_date": "holder_end_date"})
     df["holder_end_date"] = pd.to_datetime(df["holder_end_date"], errors="coerce")
@@ -2271,7 +2275,86 @@ else:
                 total_return_pct, annualized_return, max_drawdown, sharpe, float(n_valid))
 
 
-def calc_metrics(returns: np.ndarray, avg_holding: Optional[float] = None) -> Dict:
+def calc_portfolio_metrics(dates: pd.Series, returns: np.ndarray,
+                           avg_holding: float) -> Optional[Dict[str, float]]:
+    """日历日等权组合复利净值口径的绩效指标（与基准 compute_benchmark_metrics 同口径）。
+
+    策略信号是选股信号、持有期重叠，不能对逐笔收益直接 cumprod（会把重叠信号
+    重复复利成虚高净值），也不能简单累加（旧口径：总收益=Σ单笔、回撤在累加曲线
+    上算且被 clip 成 100%、年化用串行笔数折算）。这里把每笔信号的持有期收益
+    均匀分摊到其持有期内的每个交易日，按日历日对齐后取当日所有持仓的等权平均
+    作为组合日收益，再用复利净值 cumprod 计算总收益/年化/最大回撤/夏普——
+    与基准侧日频收益 cumprod 口径一致，正确反映重叠持仓与真实时间跨度。
+
+    Args:
+        dates: 与 returns 对齐的信号触发日（pd.Series / DatetimeIndex）。
+        returns: 单笔持有期净收益率（小数，已扣交易成本）。
+        avg_holding: 该持有期交易日数，用于把单笔收益分摊到日。
+
+    Returns:
+        含 total_return / annualized_return / max_drawdown / sharpe_ratio 的字典；
+        有效信号不足或无日期时返回 None（调用方回退逐笔口径）。
+    """
+    r = np.asarray(returns, dtype=float).flatten()
+    if dates is None or len(r) == 0 or avg_holding is None or avg_holding <= 0:
+        return None
+
+    d = pd.to_datetime(pd.Series(dates).values, errors="coerce")
+    mask = (~np.isnan(r)) & (np.abs(r) < 5) & pd.notna(d)
+    r = r[mask]
+    d = d[mask]
+    if len(r) < 2:
+        return None
+
+    # 全部交易日历（信号日的并集，按日排序）
+    trade_days = pd.DatetimeIndex(np.sort(pd.unique(d.values)))
+    if len(trade_days) < 2:
+        return None
+    day_pos = {day: i for i, day in enumerate(trade_days)}
+    n_days = len(trade_days)
+
+    # 每笔信号把持有期收益均匀分摊到 avg_holding 个交易日：daily_contrib[i] += r/holding
+    daily_sum = np.zeros(n_days, dtype=float)
+    daily_cnt = np.zeros(n_days, dtype=int)
+    per_day = r / float(avg_holding)
+    max_forward = int(avg_holding)
+    for sig_day, contrib in zip(d, per_day):
+        start = day_pos.get(pd.Timestamp(sig_day))
+        if start is None:
+            continue
+        end = min(start + max_forward, n_days)
+        if end <= start:
+            continue
+        idx = np.arange(start, end)
+        daily_sum[idx] += contrib
+        daily_cnt[idx] += 1
+
+    active = daily_cnt > 0
+    if active.sum() < 2:
+        return None
+    # 当日等权组合收益 = 当日持仓分摊收益的平均（满仓等权，空仓日收益 0 不补）
+    port_daily = np.zeros(n_days, dtype=float)
+    port_daily[active] = daily_sum[active] / daily_cnt[active]
+
+    eq = np.cumprod(1.0 + port_daily)
+    total_return = float(eq[-1] - 1.0) * 100.0
+    years = n_days / 252.0
+    annualized = float(eq[-1] ** (1.0 / max(years, 1e-10)) - 1.0) * 100.0
+    peak = np.maximum.accumulate(eq)
+    max_dd = float(((peak - eq) / peak).max() * 100.0)
+    std = float(np.std(port_daily))
+    sharpe = float(np.mean(port_daily) / std * np.sqrt(252.0)) if std > 1e-12 else 0.0
+
+    return {
+        "total_return": round(total_return, 2),
+        "annualized_return": round(annualized, 2),
+        "max_drawdown": round(max_dd, 2),
+        "sharpe_ratio": round(sharpe, 2),
+    }
+
+
+def calc_metrics(returns: np.ndarray, avg_holding: Optional[float] = None,
+                 dates: Optional[pd.Series] = None) -> Dict:
     """对单持有期的信号收益序列计算绩效指标字典。
 
     收益来源：信号触发日的某个持有期前瞻收益（ret_{p}d）序列，
@@ -2299,7 +2382,7 @@ def calc_metrics(returns: np.ndarray, avg_holding: Optional[float] = None) -> Di
         b = pl
         kelly = (b * wr_dec - (1 - wr_dec)) / b * 100.0
 
-    return {
+    metrics = {
         "total_trades": int(n_valid),
         "win_rate": round(wr, 2),
         "avg_win": round(aw, 2),
@@ -2312,6 +2395,20 @@ def calc_metrics(returns: np.ndarray, avg_holding: Optional[float] = None) -> Di
         "max_drawdown": round(float(np.clip(mxd, 0, 100)), 2),
         "sharpe_ratio": round(float(np.clip(sr, -100, 100)), 2),
     }
+
+    # 组合级指标（总收益/年化/回撤/夏普）改用日历日等权组合复利净值口径，
+    # 与基准 compute_benchmark_metrics 一致；逐笔指标（胜率/盈亏比/期望/凯利）保留。
+    # dates 缺失（如 WFO/诊断旧调用）时回退逐笔累加口径。
+    if dates is not None:
+        port = calc_portfolio_metrics(dates, r, avg_holding)
+        if port is not None:
+            metrics["total_return"] = port["total_return"]
+            metrics["annualized_return"] = port["annualized_return"]
+            metrics["max_drawdown"] = port["max_drawdown"]
+            metrics["sharpe_ratio"] = port["sharpe_ratio"]
+            metrics["portfolio_metric"] = "daily_equal_weight_compound"
+
+    return metrics
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2393,7 +2490,7 @@ def _backtest_single(name: str, df: pd.DataFrame, sig: Optional[pd.Series] = Non
             sub = sub.sort_values("date")
             # 扣减往返交易成本后再统计绩效
             net_ret = sub[col].values - TRADING_COST_PCT / 100.0
-            m = calc_metrics(net_ret, avg_holding=p)
+            m = calc_metrics(net_ret, avg_holding=p, dates=sub["date"])
             m["total_trades"] = int(len(sub))
             # 分年度评估（D1）：按信号年份拆分胜率/收益,识别过拟合或牛市 beta
             yearly = {}
@@ -2583,18 +2680,29 @@ def run_backtests(df_bt: pd.DataFrame, index_df: Optional[pd.DataFrame] = None,
         for name in remaining:
             _run_one(name)
 
-    # 附加基准对比与超额收益字段（P1-8）
+    # 附加基准对比与超额收益字段（P1-8）+ 小样本标记
     for r in results:
-        if "error" not in r and benchmark:
-            r["benchmark_return"] = benchmark["benchmark_return"]
-            r["benchmark_annualized"] = benchmark["benchmark_annualized"]
-            r["benchmark_max_drawdown"] = benchmark["benchmark_max_drawdown"]
-            r["excess_return"] = round(r["total_return"] - benchmark["benchmark_return"], 2)
+        if "error" not in r:
+            r["small_sample"] = r.get("total_trades", 0) < MIN_TRADES_FOR_RANKING
+            if benchmark:
+                r["benchmark_return"] = benchmark["benchmark_return"]
+                r["benchmark_annualized"] = benchmark["benchmark_annualized"]
+                r["benchmark_max_drawdown"] = benchmark["benchmark_max_drawdown"]
+                r["excess_return"] = round(r["total_return"] - benchmark["benchmark_return"], 2)
 
-    # 按期望值(每笔平均收益)降序排序,兼顾胜率与盈亏比(风险提示3)
-    valid = sorted([r for r in results if "error" not in r],
-                   key=lambda x: x.get("expectation", -999), reverse=True)
-    logger.info(f"回测完成，耗时 {time.time()-t0:.1f}s")
+    # 按期望值(每笔平均收益)降序排序,兼顾胜率与盈亏比(风险提示3)。
+    # 小样本策略（< MIN_TRADES_FOR_RANKING 笔）统计意义不足，标记 small_sample 并
+    # 统一排在样本充足策略之后，不参与头部排名/Top-N 验证与跨策略汇总平均。
+    valid = sorted(
+        [r for r in results if "error" not in r],
+        key=lambda x: (1 if x.get("small_sample") else 0, x.get("expectation", -999)),
+        reverse=True,
+    )
+    n_small = sum(1 for r in valid if r.get("small_sample"))
+    logger.info(
+        f"回测完成，耗时 {time.time()-t0:.1f}s（样本充足 {len(valid)-n_small} 个，"
+        f"小样本 <{MIN_TRADES_FOR_RANKING} 笔 {n_small} 个不参与头部排名）"
+    )
     return valid
 
 
@@ -2706,18 +2814,23 @@ def print_results(results, val_results, backtest_start, backtest_end, market_ok_
     print(f"初始资金: {INITIAL_CAPITAL:,.0f} 元")
     if results:
         valid_results = [r for r in results if r["total_trades"] > 0]
-        print(f"有信号策略: {len(valid_results)}/{len(results)}")
-        print(f"平均胜率:   {np.mean([r['win_rate'] for r in valid_results]):.1f}%")
-        print(f"平均总收益: {np.mean([r['total_return'] for r in valid_results]):.1f}%")
-        print(f"平均年化:   {np.mean([r['annualized_return'] for r in valid_results]):.1f}%")
+        # 跨策略平均只用样本充足（>= MIN_TRADES_FOR_RANKING 笔）的策略，
+        # 避免 1~10 笔的小样本策略（100% 胜率/虚高年化）污染汇总统计。
+        rankable = [r for r in valid_results if not r.get("small_sample")]
+        stat_base = rankable if rankable else valid_results
+        print(f"有信号策略: {len(valid_results)}/{len(results)}"
+              f"（其中样本充足 ≥{MIN_TRADES_FOR_RANKING} 笔 {len(rankable)} 个，小样本 {len(valid_results)-len(rankable)} 个）")
+        print(f"平均胜率:   {np.mean([r['win_rate'] for r in stat_base]):.1f}%")
+        print(f"平均总收益: {np.mean([r['total_return'] for r in stat_base]):.1f}%")
+        print(f"平均年化:   {np.mean([r['annualized_return'] for r in stat_base]):.1f}%")
         # 基准对比（P1-8）：取首个结果携带的基准字段
         if valid_results and "benchmark_return" in valid_results[0]:
             br = valid_results[0]["benchmark_return"]
             ba = valid_results[0]["benchmark_annualized"]
             bd = valid_results[0].get("benchmark_max_drawdown", 0)
-            above = sum(1 for r in valid_results if r.get("excess_return", 0) > 0)
+            above = sum(1 for r in stat_base if r.get("excess_return", 0) > 0)
             print(f"市场基准(沪深300): 总收益 {br:.1f}%  年化 {ba:.1f}%  最大回撤 {bd:.1f}%")
-            print(f"跑赢基准策略: {above}/{len(valid_results)}")
+            print(f"跑赢基准策略: {above}/{len(stat_base)}（按样本充足策略统计）")
 
         # 分年度评估（D1）：各策略逐年胜率,识别过拟合/牛市 beta
         years = sorted({y for r in valid_results for y in (r.get("yearly") or {})})
@@ -2979,7 +3092,41 @@ def get_top_stocks_by_win_rate(df_full, df_week, results, top_n=10, signals=None
         })
 
     stock_list.sort(key=lambda x: (x["sell_return"] if x["sell_return"] is not None else -999), reverse=True)
-    return stock_list[:top_n]
+
+    # handoff 实盘门槛：仅把"验证期收益为正 + 足够共振 + 命中策略有统计意义"的股票
+    # 自动送入主程序实盘分析，避免把验证期已亏损（如 -2.81%）或仅 1~2 个小样本策略
+    # 命中的股票自动实盘化。
+    #   - sell_return > 0：验证窗口内实际收益为正
+    #   - robust_strategy_count >= HANDOFF_MIN_STRATEGIES：由历史样本充足
+    #     （>= HANDOFF_MIN_STRATEGY_TRADES 笔）的策略命中数达到共振门槛
+    qualified = []
+    filtered_out = []
+    for s in stock_list:
+        ret_ok = s["sell_return"] is not None and pd.notna(s["sell_return"]) and s["sell_return"] > 0
+        robust_count = sum(
+            1 for t in s.get("total_trades_list", [])
+            if t is not None and t >= HANDOFF_MIN_STRATEGY_TRADES
+        )
+        s["robust_strategy_count"] = robust_count
+        if ret_ok and robust_count >= HANDOFF_MIN_STRATEGIES:
+            qualified.append(s)
+        else:
+            reasons = []
+            if not ret_ok:
+                reasons.append(f"验证期收益{s['sell_return']}<=0")
+            if robust_count < HANDOFF_MIN_STRATEGIES:
+                reasons.append(f"有效共振策略{robust_count}<{HANDOFF_MIN_STRATEGIES}")
+            filtered_out.append((s["code"], s["name"], "; ".join(reasons)))
+
+    if filtered_out:
+        logger.info(
+            f"handoff 门槛过滤：{len(filtered_out)} 只股票未达实盘标准"
+            f"（收益>0 且 有效策略数≥{HANDOFF_MIN_STRATEGIES}），不送入主程序："
+        )
+        for code, name, reason in filtered_out[:top_n]:
+            logger.info(f"  - {code} {name}: {reason}")
+
+    return qualified[:top_n]
 
 
 def get_unique_strategies_from_results(results, top_n=10):
@@ -3394,6 +3541,11 @@ def main(argv=None):
                             regime_filter=args.regime_filter,
                             industry_filter=industry_on,
                             entry_timing=args.entry_timing)
+    # 回测切片（580 万行级）回测后不再需要，立即释放，避免与后续验证信号计算
+    # 叠加内存峰值，并降低 handoff 子进程 spawn 时父进程 RSS（0 可用内存 + swap 问题）。
+    del df_bt
+    gc.collect()
+    log_memory_usage("回测完成后")
     # 验证信号统一基于完整历史 df_all 计算（修复：5 日切片导致 rolling/shift 特征丢失），
     # 并与回测同口径：enhanced regime + 冷却期 + 共振过滤 + 市况分族 + 行业动量（如启用）
     signals = {name: _strategy_signal(df_all, name, enhanced=enhanced,
@@ -3435,11 +3587,24 @@ def main(argv=None):
         hold_str = f" - 推荐持仓{s['recommended_hold_days']}日" if s.get('recommended_hold_days') else ""
         logger.info(f"  [{idx}] {s['code']} {s['name']} - 胜率{s['win_rate']:.1f}% - 策略数{s['strategy_count']} - 持仓期收益{ret_str}{hold_str}{pos_str}")
 
-    # 验证完成，释放完整历史数据与信号缓存
-    del signals
-    del df_all
+    # 验证完成，释放所有大 DataFrame 与中间结果，仅保留小的 top_stocks/results。
+    # handoff 会 spawn main.py 子进程；若父进程仍持有 580 万行级 DataFrame，
+    # 子进程启动时可用物理内存为 0、被迫全程 swap。这里在子进程前彻底归还内存。
+    # df_bt 已在回测后释放，df_all/signals 已在上一步 del；此处释放验证期大对象。
+    try:
+        del df_week
+    except NameError:
+        pass
+    try:
+        del val_results
+    except NameError:
+        pass
+    try:
+        del df_bench_index
+    except NameError:
+        pass
     gc.collect()
-    log_memory_usage("验证完成后")
+    log_memory_usage("handoff 主程序前（已释放大数据）")
 
     if top_stocks:
         logger.info("\n" + "=" * 60)
