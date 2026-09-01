@@ -87,7 +87,12 @@ def compute_dynamic_exit_returns_p(df: pd.DataFrame, atr_mult: float = 2.5,
     result/wfo_experiments_20260820.md;原 (2.0,0.92) 为旧生产参数）。
     """
     max_p = max(HOLDING_PERIODS)
-    df_sorted = df.sort_values(["code", "date"])
+    # 位置置换：规避 df 非唯一 index 下 reindex(df.index) 按重复标签错位（Exp3
+    # 交易数跨 combo 不一致的根因）。排序后全程用 0..n-1 位置，返回按逆置换还原。
+    sort_order = np.lexsort((df["date"].to_numpy(), df["code"].to_numpy()))
+    inv_order = np.empty_like(sort_order)
+    inv_order[sort_order] = np.arange(len(sort_order))
+    df_sorted = df.iloc[sort_order].reset_index(drop=True)
     out = pd.DataFrame(index=df_sorted.index, dtype="float32")
     for code, g in df_sorted.groupby("code", sort=False):
         n = len(g)
@@ -125,7 +130,9 @@ def compute_dynamic_exit_returns_p(df: pd.DataFrame, atr_mult: float = 2.5,
         for p, arr in rets.items():
             out.loc[g.index, f"dyn_ret_{p}d"] = arr
 
-    return out.reindex(df.index)
+    out = out.iloc[inv_order].reset_index(drop=True)
+    out.index = df.index
+    return out
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -382,8 +389,11 @@ def run_exit_sweep(df_all: pd.DataFrame, windows: List[Dict], data_end: str,
         t0 = time.time()
         # 重算全部 dyn_ret 列并整列替换（sweep_df 覆盖 val_start~data_end,含 lookahead）
         dyn = compute_dynamic_exit_returns_p(sweep_df, atr_mult=atr_mult, trail=trail)
+        # 按索引标签对齐赋值，不用 to_numpy() 位置赋值——sweep_df 的 index 继承自
+        # df_all（非唯一/非连续），位置赋值在 reindex 遇重复标签时会错位，导致 dyn_ret
+        # 的 NaN 模式跨 combo 随机漂移、交易数不一致（Exp3 非确定性根因）。
         for c in dyn_cols:
-            sweep_df[c] = dyn[c].to_numpy()
+            sweep_df[c] = dyn[c].reindex(sweep_df.index).to_numpy()
 
         # 用冻结选择跑 W2 OOS（run_oos_eval 内部再按 [val_start, val_end] 切片）
         oos = run_oos_eval(sweep_df, w2, w2_selection, price_paths)

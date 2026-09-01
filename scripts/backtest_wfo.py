@@ -60,6 +60,8 @@ from backtest_5y_23strategies import (
     load_data,
     load_fina_indicator,
     load_index_daily,
+    load_industry_context,
+    apply_industry_momentum,
     load_signal_aux,
     merge_fina_by_ann_date,
     resolve_parallel_config,
@@ -74,7 +76,10 @@ WFO_ANCHOR_START = "2021-01-01"  # 数据锚定起点（与现有 5Y 回测一�
 WFO_TOP_K = 8                    # 每窗口入选策略数
 WFO_MIN_IS_TRADES = 50           # IS 入选最低交易笔数
 WFO_BURN_IN_TRADING_DAYS = 120   # train 切片前 N 个交易日的信号剔除（warmup）
-WFO_MIN_OOS_TRADING_DAYS = 60    # OOS 有效交易日门槛（低于则不参与聚合）
+WFO_MIN_OOS_TRADING_DAYS = 30    # OOS 有效交易日门槛（低于则不参与聚合）。
+# 激活段为 6M 步长（约 120 交易日），旧门槛 60 日叠加 regime 过滤后常只剩 40~50 日，
+# 导致 4 个窗口中 3 个被排除、聚合只靠单窗口（结论易过拟合单 regime）；降到 30 日
+# 让 ≥3 个窗口入样，同时仍能排除 W4 那种仅 1 个交易日的残段。
 WFO_IS_METRIC = "expectation"    # 选期/排序口径
 WFO_DAILY_LOOKBACK_DAYS = 400    # 每日选股加载最近日历天数（含指标预热）
 WFO_MODEL_PATH = BASE_DIR / "result" / "wfo_model_latest.json"
@@ -210,6 +215,18 @@ def build_full_frame(start: str, end: str) -> pd.DataFrame:
     except Exception as e:
         logger.warning(f"财务数据加载失败，跳过财务过滤: {e}")
 
+    # 行业动量上下文（P2-7，主回测验证最强过滤器：胜率 55.5%→59.0%、回撤 80%→68%）：
+    # 申万 L1 行业 20 日动量排名 + 成分映射 → ind_rank 列；缺失时 _strategy_signal 放行。
+    try:
+        rank_df, member_df = load_industry_context(start, end)
+        df_all = apply_industry_momentum(df_all, rank_df, member_df)
+        del rank_df, member_df
+        gc.collect()
+    except MemoryError:
+        raise
+    except Exception as e:
+        logger.warning(f"行业动量上下文加载失败，ind_rank 缺失将全量放行: {e}")
+
     dyn_ret = compute_dynamic_exit_returns(df_all)
     df_all = pd.concat([df_all, dyn_ret], axis=1)
     del dyn_ret
@@ -246,10 +263,11 @@ def run_is_selection(df_all: pd.DataFrame, window: Dict) -> Dict:
         burn_info = {"burned_days": 0,
                      "effective_start": str(is_dates[0].date()) if is_dates else None}
 
-    # 组件策略先串行（需先确定组合权重,供 sig_ensemble 使用）
+    # 组件策略先串行（需先确定组合权重,供 sig_ensemble 使用）；行业动量过滤开启
     component_results = {}
     for name in ENSEMBLE_COMPONENTS:
-        r = _backtest_single(name, df_is, select_period_by=WFO_IS_METRIC)
+        r = _backtest_single(name, df_is, select_period_by=WFO_IS_METRIC,
+                             industry_filter=True)
         component_results[name] = r
     weights = _compute_ensemble_weights(component_results)
     # 模块级全局原地更新（sig_ensemble 运行时读取）
@@ -263,7 +281,8 @@ def run_is_selection(df_all: pd.DataFrame, window: Dict) -> Dict:
     n_workers = min(max_workers, len(remaining))
 
     def _run_one(name):
-        return name, _backtest_single(name, df_is, select_period_by=WFO_IS_METRIC)
+        return name, _backtest_single(name, df_is, select_period_by=WFO_IS_METRIC,
+                                      industry_filter=True)
 
     if enable_parallel and n_workers > 1 and len(remaining) > 1:
         with ThreadPoolExecutor(max_workers=n_workers) as executor:
@@ -361,7 +380,7 @@ def _trade_returns(df: pd.DataFrame, price_paths: Dict[str, Dict],
     与 _backtest_single 同码,但只取冻结持有期列,用于 OOS 聚合按天去重;
     额外输出 exit_date（实际出场日,组合曲线重建用）。
     """
-    sig = _strategy_signal(df, name)
+    sig = _strategy_signal(df, name, industry_filter=True)
     signals = df[_apply_cooldown(df, sig)]
     col = f"dyn_ret_{best_p}d" if f"dyn_ret_{best_p}d" in signals.columns else f"ret_{best_p}d"
     if col not in signals.columns:

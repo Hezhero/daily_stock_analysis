@@ -802,12 +802,23 @@ def apply_industry_momentum(df: pd.DataFrame, rank_df: pd.DataFrame,
     if rank_df.empty or member_df.empty:
         df["ind_rank"] = np.nan
         return df
+    # 统一 date 为 date-only（归一化到午夜），避免 merge 时因时间分量/ dtype 差异不匹配
+    df = df.copy()
+    df["date"] = pd.to_datetime(df["date"]).dt.normalize()
+    rank_df = rank_df.copy()
+    rank_df["date"] = pd.to_datetime(rank_df["date"]).dt.normalize()
+    n_before = len(df)
     df = df.merge(member_df, on="code", how="left")
     df = df.merge(rank_df[["date", "l1_code", "ind_rank"]],
                   on=["date", "l1_code"], how="left")
     df.drop(columns=["l1_code"], inplace=True, errors="ignore")
-    coverage = df.loc[df["date"] == df["date"].max(), "ind_rank"].notna().mean()
-    logger.info(f"行业动量覆盖: 最新交易日 {coverage*100:.1f}% 个股有排名")
+    if len(df) != n_before:
+        logger.warning(f"行业动量 merge 行数变化 {n_before} -> {len(df)}（member/rank 可能有重复键）")
+    # 覆盖率：全区间平均 + 最新交易日，避免只看最新日因边界/预热误判为 0
+    latest = df["date"].max()
+    cov_latest = df.loc[df["date"] == latest, "ind_rank"].notna().mean()
+    cov_all = df["ind_rank"].notna().mean()
+    logger.info(f"行业动量覆盖: 最新交易日 {cov_latest*100:.1f}% / 全区间均值 {cov_all*100:.1f}% 个股有排名")
     return df
 
 
@@ -1178,7 +1189,14 @@ def compute_dynamic_exit_returns(df: pd.DataFrame,
     与出场日保持与 close 口径一致，隔离纯入场价效应。atr 取信号日值，无前视。
     """
     max_p = max(HOLDING_PERIODS)
-    df_sorted = df.sort_values(["code", "date"])
+    # 用位置索引计算并按逆置换还原行序：df 原始 index 可能非唯一（多次
+    # concat/merge 后常见），直接 out.reindex(df.index) 会按重复标签错位，导致
+    # dyn_ret 的 NaN 模式漂移、回测交易数不确定。这里排序后全程用 0..n-1 位置，
+    # 返回时按 sorted->original 的逆位置映射还原。
+    sort_order = np.lexsort((df["date"].to_numpy(), df["code"].to_numpy()))
+    inv_order = np.empty_like(sort_order)
+    inv_order[sort_order] = np.arange(len(sort_order))
+    df_sorted = df.iloc[sort_order].reset_index(drop=True)
     out = pd.DataFrame(index=df_sorted.index, dtype="float32")
     for code, g in df_sorted.groupby("code", sort=False):
         n = len(g)
@@ -1214,7 +1232,9 @@ def compute_dynamic_exit_returns(df: pd.DataFrame,
                 hit_p = hit[:p]
                 if hit_p.any():
                     k = int(np.argmax(hit_p))
-                    exit_price = stop if atr_hit[k] else peaks[k] * 0.95
+                    # 移动止盈触发日按 peak*trail 退出（修复：原硬编码 0.95，
+                    # 导致 per-strategy trail 参数 0.97/0.92 在该分支失效）
+                    exit_price = stop if atr_hit[k] else peaks[k] * trail
                 else:
                     exit_price = close[i + p]
                 if entry > 0:
@@ -1223,8 +1243,10 @@ def compute_dynamic_exit_returns(df: pd.DataFrame,
         for p, arr in rets.items():
             out.loc[g.index, f"dyn_ret_{p}d"] = arr
 
-    # 对齐到原 df 的行顺序(函数内做了重排)
-    return out.reindex(df.index)
+    # 按逆置换还原到原 df 行序（位置对齐，规避非唯一 index 的 reindex 错位）
+    out = out.iloc[inv_order].reset_index(drop=True)
+    out.index = df.index
+    return out
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2432,7 +2454,8 @@ def log_memory_usage(stage: str):
 
 def _backtest_single(name: str, df: pd.DataFrame, sig: Optional[pd.Series] = None,
                      select_period_by: str = "total_return",
-                     entry_timing: str = "close") -> Dict:
+                     entry_timing: str = "close",
+                     industry_filter: bool = False) -> Dict:
     """单策略回测：生成信号 -> 剔除不可成交（涨停）信号 -> 按持有期分别统计绩效。
 
     sig 为 None 时内部按 _strategy_signal + _apply_cooldown 现算
@@ -2454,7 +2477,7 @@ def _backtest_single(name: str, df: pd.DataFrame, sig: Optional[pd.Series] = Non
     t0 = time.time()
     try:
         if sig is None:
-            sig = _apply_cooldown(df, _strategy_signal(df, name))
+            sig = _apply_cooldown(df, _strategy_signal(df, name, industry_filter=industry_filter))
         signals = df[sig.astype(bool)]
         n = signals["code"].count()
         if n == 0:
@@ -2566,18 +2589,33 @@ def _compute_ensemble_weights(component_results: Dict[str, Dict]) -> Dict[str, f
     """按组件策略历史胜率归一化计算组合策略权重（C1）。
 
     输入为各组件策略的回测结果 dict（键为组件名），
-    返回 {组件名: 权重}；组件无有效胜率时返回空 dict（调用方回退等权）。
+    返回 {组件名: 权重}。
+
+    容错：报错或胜率<=0 的组件视为"本窗口无效"，**排除**后对剩余有效组件按胜率
+    归一化（而不是赋权重 0——赋 0 会把该组件从 ensemble 打分中静默剔除、使加权分
+    被其余组件拉低，导致权重塌缩如 ma_crossover=0.000）。全部组件无效时返回空
+    dict，由 sig_ensemble 回退等权。
     """
-    wr = np.array([
-        component_results[c].get("win_rate", 0) if "error" not in component_results[c] else 0
-        for c in ENSEMBLE_COMPONENTS
-    ], dtype=float)
-    wr_sum = wr.sum()
-    if wr_sum <= 0:
-        logger.warning("组件策略无有效胜率,组合策略退化为等权")
+    valid_wr: Dict[str, float] = {}
+    for c in ENSEMBLE_COMPONENTS:
+        r = component_results.get(c)
+        if r is None or "error" in r:
+            continue
+        wr = float(r.get("win_rate", 0) or 0)
+        if wr > 0:
+            valid_wr[c] = wr
+    if not valid_wr:
+        logger.warning("组件策略均无有效胜率,组合策略退化为等权")
         return {}
-    weights = {c: float(w / wr_sum) for c, w in zip(ENSEMBLE_COMPONENTS, wr)}
-    logger.info(f"组合策略权重: {', '.join(f'{c}={weights[c]:.3f}' for c in ENSEMBLE_COMPONENTS)}")
+    wr_sum = sum(valid_wr.values())
+    weights = {c: w / wr_sum for c, w in valid_wr.items()}
+    # 被排除的无效组件权重记 0 仅用于日志展示；sig_ensemble 按 .get(c,1.0) 兜底
+    logger.info(
+        "组合策略权重: "
+        + ", ".join(f"{c}={weights.get(c, 0.0):.3f}" for c in ENSEMBLE_COMPONENTS)
+        + (f"（无效组件已排除: {[c for c in ENSEMBLE_COMPONENTS if c not in valid_wr]}）"
+           if len(valid_wr) < len(ENSEMBLE_COMPONENTS) else "")
+    )
     return weights
 
 
