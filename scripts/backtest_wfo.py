@@ -75,6 +75,8 @@ WFO_STEP_MONTHS = 6              # 滚动步长（月）
 WFO_ANCHOR_START = "2021-01-01"  # 数据锚定起点（与现有 5Y 回测一致）
 WFO_TOP_K = 8                    # 每窗口入选策略数
 WFO_MIN_IS_TRADES = 50           # IS 入选最低交易笔数
+WFO_MIN_IS_WIN_RATE = 47.0       # IS 入选最低胜率(%)：过滤靠少数大赢家撑期望但胜率过低的过拟合策略
+WFO_MIN_OOS_WIN_RATE = 42.0      # OOS 一致性门槛：前序窗口胜率≥此值才优先保留（过严会砍光样本）
 WFO_BURN_IN_TRADING_DAYS = 120   # train 切片前 N 个交易日的信号剔除（warmup）
 WFO_MIN_OOS_TRADING_DAYS = 30    # OOS 有效交易日门槛（低于则不参与聚合）。
 # 激活段为 6M 步长（约 120 交易日），旧门槛 60 日叠加 regime 过滤后常只剩 40~50 日，
@@ -191,6 +193,11 @@ def build_full_frame(start: str, end: str) -> pd.DataFrame:
         regime_df = compute_market_ok(df_index)
         df_all = df_all.merge(regime_df, on="date", how="left")
         df_all["market_ok"] = df_all["market_ok"].fillna(False).astype(bool)
+        # regime 三态（bull/range/bear）：缺失填 range（中性，不误杀），
+        # 供 _strategy_signal(regime_filter=True) 按市况分族调度策略
+        if "regime" not in df_all.columns:
+            df_all["regime"] = "range"
+        df_all["regime"] = df_all["regime"].fillna("range")
         del df_index, regime_df
         gc.collect()
     except MemoryError:
@@ -199,6 +206,7 @@ def build_full_frame(start: str, end: str) -> pd.DataFrame:
     except Exception as e:
         logger.warning(f"市场环境数据加载失败，跳过 regime 过滤: {e}")
         df_all["market_ok"] = True
+        df_all["regime"] = "range"
 
     try:
         df_fina = load_fina_indicator(start, end)
@@ -238,7 +246,71 @@ def build_full_frame(start: str, end: str) -> pd.DataFrame:
 # IS 训练（每窗口,只读 IS）
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def run_is_selection(df_all: pd.DataFrame, window: Dict) -> Dict:
+def _strategy_regimes(name: str) -> set:
+    """返回策略适用的 regime 集合（bull/range/bear）；未登记视为全 regime 适用。"""
+    allowed = getattr(bt, "STRATEGY_ALLOWED_REGIMES", {})
+    return allowed.get(name, {"bull", "range", "bear"})
+
+
+def _regime_distribution(names: List[str]) -> str:
+    """统计一组策略覆盖的 regime 族（用于日志）。"""
+    covered = set()
+    for n in names:
+        covered |= _strategy_regimes(n)
+    return "/".join(sorted(covered)) if covered else "none"
+
+
+def _select_with_regime_quota(ranked: List[Dict], top_k: int) -> List[Dict]:
+    """从已按优先级排序的候选中选 Top-K，同时保证 bull/range/bear 三族都有代表。
+
+    先按 ranked 顺序取 Top-K；若某 regime 族在已选集合中无任何策略适用，则用该族
+    排名最高的候选**替换**已选中排名最低、且其所属族已有其他代表的策略（腾位），
+    确保熊市窗口（如 2026Q3 bear 占 79%）也有 bear 策略可用。候选不足时自然截断。
+    """
+    selected = ranked[:top_k]
+    selected_names = {r["strategy"] for r in selected}
+
+    def covered_regimes():
+        cov = set()
+        for r in selected:
+            cov |= _strategy_regimes(r["strategy"])
+        return cov
+
+    for regime in ("bull", "range", "bear"):
+        if regime in covered_regimes():
+            continue
+        # 找该族排名最高的未选候选
+        rep = next((r for r in ranked
+                    if r["strategy"] not in selected_names
+                    and regime in _strategy_regimes(r["strategy"])), None)
+        if rep is None:
+            continue
+        # 找一个可腾位的已选策略：排名最低（selected 末尾）且其族还有其他代表
+        swap_idx = None
+        for i in range(len(selected) - 1, -1, -1):
+            s = selected[i]
+            s_regimes = _strategy_regimes(s["strategy"])
+            # 该策略去掉后，它覆盖的每个族是否仍有其他策略代表
+            if all(
+                any(r2 is not s and reg in _strategy_regimes(r2["strategy"])
+                    for r2 in selected)
+                for reg in s_regimes
+            ):
+                swap_idx = i
+                break
+        if swap_idx is not None:
+            selected_names.discard(selected[swap_idx]["strategy"])
+            selected[swap_idx] = rep
+            selected_names.add(rep["strategy"])
+        elif len(selected) < top_k:
+            selected.append(rep)
+            selected_names.add(rep["strategy"])
+
+    return selected[:top_k]
+
+
+def run_is_selection(df_all: pd.DataFrame, window: Dict,
+                     prior_oos: Optional[Dict[str, float]] = None) -> Dict:
     """在窗口 train 切片上执行 IS 训练,返回选择结果。
 
     流程（全部只读 IS）:
@@ -263,11 +335,11 @@ def run_is_selection(df_all: pd.DataFrame, window: Dict) -> Dict:
         burn_info = {"burned_days": 0,
                      "effective_start": str(is_dates[0].date()) if is_dates else None}
 
-    # 组件策略先串行（需先确定组合权重,供 sig_ensemble 使用）；行业动量过滤开启
+    # 组件策略先串行（需先确定组合权重,供 sig_ensemble 使用）；行业动量+市况分族过滤开启
     component_results = {}
     for name in ENSEMBLE_COMPONENTS:
         r = _backtest_single(name, df_is, select_period_by=WFO_IS_METRIC,
-                             industry_filter=True)
+                             industry_filter=True, regime_filter=True)
         component_results[name] = r
     weights = _compute_ensemble_weights(component_results)
     # 模块级全局原地更新（sig_ensemble 运行时读取）
@@ -282,7 +354,7 @@ def run_is_selection(df_all: pd.DataFrame, window: Dict) -> Dict:
 
     def _run_one(name):
         return name, _backtest_single(name, df_is, select_period_by=WFO_IS_METRIC,
-                                      industry_filter=True)
+                                      industry_filter=True, regime_filter=True)
 
     if enable_parallel and n_workers > 1 and len(remaining) > 1:
         with ThreadPoolExecutor(max_workers=n_workers) as executor:
@@ -292,11 +364,37 @@ def run_is_selection(df_all: pd.DataFrame, window: Dict) -> Dict:
         for name in remaining:
             is_metrics[name] = _run_one(name)[1]
 
-    # 过滤 + 排序 + Top-K
+    # 过滤 + 排序 + Top-K：交易笔数达标且 IS 胜率≥下限（过滤靠少数大赢家
+    # 撑期望但胜率<50% 的过拟合策略）
     candidates = [r for r in is_metrics.values()
-                  if "error" not in r and r.get("total_trades", 0) >= WFO_MIN_IS_TRADES]
+                  if "error" not in r
+                  and r.get("total_trades", 0) >= WFO_MIN_IS_TRADES
+                  and r.get("win_rate", 0) >= WFO_MIN_IS_WIN_RATE]
     candidates.sort(key=lambda x: x.get(WFO_IS_METRIC, -999), reverse=True)
-    selected = candidates[:WFO_TOP_K]
+
+    # OOS 一致性硬门槛（walk-forward 核心）：若有前序窗口的真实 OOS 表现，
+    # 优先保留"前序 OOS 期望>0 且胜率≥下限"的策略（IS 高但 OOS 已证伪的不入选），
+    # 不足 Top-K 时再用纯 IS 候选补齐。首个窗口无 prior 时退化为纯 IS。
+    if prior_oos:
+        def _oos_ok(name):
+            p = prior_oos.get(name)
+            return p is not None and p.get("expectation", 0) > 0 \
+                and p.get("win_rate", 0) >= WFO_MIN_OOS_WIN_RATE
+        consistent = [r for r in candidates if _oos_ok(r["strategy"])]
+        chosen_names = {r["strategy"] for r in consistent}
+        fill = [r for r in candidates if r["strategy"] not in chosen_names]
+        ranked = consistent + fill
+        logger.info(f"窗口 W{window['k']} OOS 一致性门槛: {len(consistent)} 个策略"
+                    f"前序 OOS 期望>0 且胜率≥{WFO_MIN_OOS_WIN_RATE:.0f}%（共 {len(candidates)} 个 IS 候选）")
+    else:
+        ranked = candidates
+
+    # regime 分族配额：保证 Top-K 覆盖 bull/range/bear 三族，避免 IS 训练期
+    # 以牛市为主时 Top-K 全是 bull 策略、熊市窗口（如 2026Q3 bear 占 79%）无策略可用。
+    # 按 ranked 顺序填充，但每个尚未代表的 regime 族插入其最强候选。
+    selected = _select_with_regime_quota(ranked, WFO_TOP_K)
+    logger.info(f"窗口 W{window['k']} 入选策略 regime 分布: "
+                f"{_regime_distribution([r['strategy'] for r in selected])}")
 
     selected_info = []
     for r in selected:
@@ -380,7 +478,7 @@ def _trade_returns(df: pd.DataFrame, price_paths: Dict[str, Dict],
     与 _backtest_single 同码,但只取冻结持有期列,用于 OOS 聚合按天去重;
     额外输出 exit_date（实际出场日,组合曲线重建用）。
     """
-    sig = _strategy_signal(df, name, industry_filter=True)
+    sig = _strategy_signal(df, name, industry_filter=True, regime_filter=True)
     signals = df[_apply_cooldown(df, sig)]
     col = f"dyn_ret_{best_p}d" if f"dyn_ret_{best_p}d" in signals.columns else f"ret_{best_p}d"
     if col not in signals.columns:
@@ -747,13 +845,20 @@ def run_research(data_end: str) -> Dict:
 
     selections = []
     oos_results = []
+    prior_oos_expectation = None  # 前序窗口的 OOS 期望，用于下一窗口 IS 的一致性硬门槛
     for w in windows:
         logger.info(f"窗口 W{w['k']}: IS {w['train_start']}~{w['train_end']} | "
                     f"OOS {w['val_start']}~{w['val_end']}")
-        selection = run_is_selection(df_all, w)
+        selection = run_is_selection(df_all, w, prior_oos=prior_oos_expectation)
         selections.append(selection)
         oos = run_oos_eval(df_all, w, selection, price_paths)
         oos_results.append(oos)
+        # 更新 prior：本窗口各策略的真实 OOS 期望+胜率，供下一窗口 IS 选择做一致性门槛
+        prior_oos_expectation = {
+            name: {"expectation": m.get("expectation", 0),
+                   "win_rate": m.get("win_rate", 0)}
+            for name, m in oos["oos_metrics"].items()
+        }
         for s in selection["selected"]:
             name = s["name"]
             oos_m = oos["oos_metrics"].get(name, {})

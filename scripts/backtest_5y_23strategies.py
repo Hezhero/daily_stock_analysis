@@ -2455,7 +2455,8 @@ def log_memory_usage(stage: str):
 def _backtest_single(name: str, df: pd.DataFrame, sig: Optional[pd.Series] = None,
                      select_period_by: str = "total_return",
                      entry_timing: str = "close",
-                     industry_filter: bool = False) -> Dict:
+                     industry_filter: bool = False,
+                     regime_filter: bool = False) -> Dict:
     """单策略回测：生成信号 -> 剔除不可成交（涨停）信号 -> 按持有期分别统计绩效。
 
     sig 为 None 时内部按 _strategy_signal + _apply_cooldown 现算
@@ -2477,7 +2478,8 @@ def _backtest_single(name: str, df: pd.DataFrame, sig: Optional[pd.Series] = Non
     t0 = time.time()
     try:
         if sig is None:
-            sig = _apply_cooldown(df, _strategy_signal(df, name, industry_filter=industry_filter))
+            sig = _apply_cooldown(df, _strategy_signal(
+                df, name, industry_filter=industry_filter, regime_filter=regime_filter))
         signals = df[sig.astype(bool)]
         n = signals["code"].count()
         if n == 0:
