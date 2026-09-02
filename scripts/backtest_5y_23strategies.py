@@ -811,6 +811,12 @@ def apply_industry_momentum(df: pd.DataFrame, rank_df: pd.DataFrame,
     df = df.merge(member_df, on="code", how="left")
     df = df.merge(rank_df[["date", "l1_code", "ind_rank"]],
                   on=["date", "l1_code"], how="left")
+    # 最新交易日行业指数数据可能比股票日线晚一天（如股票到 09-01、行业指数到 08-31），
+    # 导致最新日 ind_rank 全 NaN。行业动量排名是 20 日级慢变量，按行业分组用最近
+    # 前一交易日排名前向填充（仅向后填充历史已知值，不引入未来信息）。
+    df = df.sort_values(["l1_code", "date"])
+    df["ind_rank"] = df.groupby("l1_code")["ind_rank"].ffill()
+    df = df.sort_values(["date", "code"]).reset_index(drop=True)
     df.drop(columns=["l1_code"], inplace=True, errors="ignore")
     if len(df) != n_before:
         logger.warning(f"行业动量 merge 行数变化 {n_before} -> {len(df)}（member/rank 可能有重复键）")
