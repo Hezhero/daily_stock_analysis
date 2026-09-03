@@ -705,7 +705,9 @@ def merge_fina_by_ann_date(df: pd.DataFrame, fina_df: pd.DataFrame) -> pd.DataFr
     if fina_df is None or fina_df.empty or "ann_date" not in fina_df.columns:
         return df
     df = df.sort_values(["code", "date"]).reset_index(drop=True)
+    df["date"] = pd.to_datetime(df["date"]).astype("datetime64[ns]")
     fina = fina_df.sort_values(["code", "ann_date"]).reset_index(drop=True)
+    fina["ann_date"] = pd.to_datetime(fina["ann_date"]).astype("datetime64[ns]")
     fina_by_code = {code: g for code, g in fina.groupby("code", sort=False)}
     fina_cols = ["roe", "grossprofit_margin", "or_yoy"]
     keys = df[["code", "date"]]
@@ -842,8 +844,9 @@ def _merge_aux_by_date(df: pd.DataFrame, right: pd.DataFrame,
     right 需含 code 列与 right_on 日期列；未命中的组补 NaN（不过滤整行）。
     """
     df = df.sort_values(["code", "date"]).reset_index(drop=True)
+    df["date"] = pd.to_datetime(df["date"]).astype("datetime64[ns]")
     right = right.sort_values(["code", right_on]).reset_index(drop=True)
-    right[right_on] = pd.to_datetime(right[right_on])
+    right[right_on] = pd.to_datetime(right[right_on]).astype("datetime64[ns]")
     right2 = pd.concat([right[["code", right_on]], right[cols]], axis=1)
     by_code = {code: g.drop(columns=["code"]) for code, g in right2.groupby("code", sort=False)}
     pieces = []

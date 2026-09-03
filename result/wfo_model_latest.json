@@ -1,70 +1,70 @@
 {
-  "trained_at": "2026-08-16",
+  "trained_at": "2026-09-02",
   "window": {
     "train_start": "2022-07-01",
     "train_end": "2026-06-30"
   },
   "strategies": [
     {
-      "name": "stable_then_limit_up",
-      "best_period": 10,
-      "is_win_rate": 53.01,
-      "is_expectation": 2.5887,
-      "is_total_trades": 83
-    },
-    {
-      "name": "ma_golden_cross",
-      "best_period": 10,
-      "is_win_rate": 50.0,
-      "is_expectation": 2.3503,
-      "is_total_trades": 182
-    },
-    {
       "name": "wave_theory",
-      "best_period": 3,
-      "is_win_rate": 52.32,
-      "is_expectation": 2.1601,
-      "is_total_trades": 237
-    },
-    {
-      "name": "volume_surge_std",
       "best_period": 10,
-      "is_win_rate": 51.06,
-      "is_expectation": 1.86,
-      "is_total_trades": 566
-    },
-    {
-      "name": "ensemble",
-      "best_period": 3,
-      "is_win_rate": 51.33,
-      "is_expectation": 1.7884,
-      "is_total_trades": 415
-    },
-    {
-      "name": "holder_conc_break",
-      "best_period": 10,
-      "is_win_rate": 50.16,
-      "is_expectation": 1.7864,
-      "is_total_trades": 305
+      "is_win_rate": 50.96,
+      "is_expectation": 2.0282,
+      "is_total_trades": 157
     },
     {
       "name": "n_pattern",
       "best_period": 10,
-      "is_win_rate": 52.9,
-      "is_expectation": 1.7403,
-      "is_total_trades": 690
+      "is_win_rate": 54.88,
+      "is_expectation": 2.0262,
+      "is_total_trades": 215
     },
     {
-      "name": "fc_pos_break",
+      "name": "ma_crossover",
       "best_period": 10,
-      "is_win_rate": 50.3,
-      "is_expectation": 1.6529,
-      "is_total_trades": 169
+      "is_win_rate": 51.81,
+      "is_expectation": 1.8698,
+      "is_total_trades": 193
+    },
+    {
+      "name": "monthly_macd_20ma",
+      "best_period": 10,
+      "is_win_rate": 52.26,
+      "is_expectation": 1.6343,
+      "is_total_trades": 243
+    },
+    {
+      "name": "ensemble",
+      "best_period": 10,
+      "is_win_rate": 49.64,
+      "is_expectation": 1.6221,
+      "is_total_trades": 139
+    },
+    {
+      "name": "limit_up_pullback",
+      "best_period": 10,
+      "is_win_rate": 53.07,
+      "is_expectation": 5.3269,
+      "is_total_trades": 179
+    },
+    {
+      "name": "rsi_bullish_divergence",
+      "best_period": 10,
+      "is_win_rate": 57.38,
+      "is_expectation": 5.0598,
+      "is_total_trades": 61
+    },
+    {
+      "name": "volume_breakout",
+      "best_period": 10,
+      "is_win_rate": 52.86,
+      "is_expectation": 2.1036,
+      "is_total_trades": 210
     }
   ],
   "ensemble_weights": {
-    "ma_crossover": 0.3404240766073871,
-    "volume_surge_std": 0.34924760601915183,
-    "multi_ma_resonance": 0.31032831737346095
+    "ma_crossover": 0.3644485087225661,
+    "volume_surge_std": 0.3498171074845245,
+    "multi_ma_resonance": 0.2857343837929094
   }
 }
