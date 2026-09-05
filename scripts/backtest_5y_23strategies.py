@@ -1495,6 +1495,107 @@ for _regime, _names in REGIME_STRATEGIES.items():
     for _name in _names:
         STRATEGY_ALLOWED_REGIMES.setdefault(_name, set()).add(_regime)
 
+# 全市场强势锚（P1-1 软加权）：基本面/资金面确定性策略，业绩预增/机构净买/筹码集中
+# 在任何市况下都是避风港，不随 regime 被降级，且在弱势市况充当弱信号的确认锚。
+REGIME_ALL_WEATHER: set = {"fc_pos_break", "inst_smart_break", "holder_conc_break"}
+
+
+def _apply_regime_soft_filter(df: pd.DataFrame, sig_dict: Dict[str, pd.Series]
+                              ) -> Dict[str, pd.Series]:
+    """市况软加权过滤（P1-1）：替代 --regime-filter 的硬 gating。
+
+    硬 gating（REGIME_STRATEGIES）在非首选市况直接屏蔽信号，实测信号量被砍 61%、
+    并把 fc_pos_break/inst_smart_break 等基本面策略困死在 bear 族（熊市共振门槛不可达）。
+    软加权只在 bear regime 收紧（bull/range 日本就符合趋势/反转策略的适用市况，不干预）：
+      - 全市场锚（REGIME_ALL_WEATHER，基本面/资金面确定性）：任何 regime 都保留，
+        业绩预增/机构净买/筹码集中在熊市是避风港；
+      - bear 族策略（超跌/防守）：bear 日保留；
+      - 其余策略（趋势/突破/动量）在 bear 日为弱势信号，仅当同股同日存在至少 1 个
+        强势信号（全市场锚或 bear 族策略命中）确认时才保留，砍掉熊市孤立的低质量趋势信号。
+    幂等：对已过滤的 dict 再次调用结果不变（非 bear 日与强势信号不受影响）。
+    """
+    if not sig_dict or "regime" not in df.columns:
+        return sig_dict
+
+    is_bear = (df["regime"] == "bear").to_numpy()
+    bear_strategies = REGIME_STRATEGIES.get("bear", [])
+    names = list(sig_dict.keys())
+    bool_sigs = {n: sig_dict[n].astype(bool).to_numpy() for n in names}
+
+    # bear 日逐行（同股同日）强势信号计数：全市场锚恒强 + bear 族策略在 bear 日为强。
+    strong_hit_bear = np.zeros(len(df), dtype=np.int16)
+    for n in names:
+        if n in REGIME_ALL_WEATHER or n in bear_strategies:
+            strong_hit_bear += bool_sigs[n] & is_bear
+
+    out: Dict[str, pd.Series] = {}
+    for n in names:
+        sig = bool_sigs[n]
+        if n in REGIME_ALL_WEATHER or n in bear_strategies:
+            out[n] = pd.Series(sig, index=df.index)
+        else:
+            # 仅 bear 日的非防守策略信号需强势确认；非 bear 日原样保留。
+            weak_bear = sig & is_bear
+            keep = sig & (~is_bear | (strong_hit_bear >= 1))
+            out[n] = pd.Series(keep, index=df.index)
+    return out
+
+
+# 已在信号逻辑中内置基本面/资金面条件的策略，不参与技术策略的合流过滤（避免双重约束）。
+CONFLUENCE_EXEMPT = {"fc_pos_break", "inst_smart_break", "holder_conc_break",
+                     "low_profit_hold", "washout_break"}
+
+
+def _fundamental_catalyst(df: pd.DataFrame) -> pd.Series:
+    """基本面/资金面催化剂掩码：业绩预增、筹码集中（股东人数下降）或机构龙虎榜净买。
+
+    复用已加载的增强信号列（缺失=无该数据，按 False 处理，不误判为有催化剂）。
+    """
+    fc = (df["forecast_pos"] == 1) if "forecast_pos" in df.columns else pd.Series(False, index=df.index)
+    holder = (df["holder_chg"] < MAX_HOLDER_CHG_PCT / 100.0) if "holder_chg" in df.columns \
+        else pd.Series(False, index=df.index)
+    inst = (df["inst_buy5"] > MIN_INST_NET_BUY) if "inst_buy5" in df.columns \
+        else pd.Series(False, index=df.index)
+    return (fc.fillna(False) | holder.fillna(False) | inst.fillna(False))
+
+
+def _apply_confluence_filter(df: pd.DataFrame, sig_dict: Dict[str, pd.Series],
+                             regime_gate: str = "all"
+                             ) -> Dict[str, pd.Series]:
+    """基本面合流过滤（P1-3）。
+
+    fc_pos_break 胜率 60% vs 纯技术策略 ~49%，证明"技术信号 + 基本面确定性"合流能
+    显著提升胜率。对纯技术策略要求信号日存在基本面催化剂（业绩预增/筹码集中/机构净买），
+    已内置基本面条件的策略（CONFLUENCE_EXEMPT）豁免。
+
+    regime_gate 控制催化剂要求的市况范围，缓解硬过滤在强牛市误杀动量信号的问题：
+      - "all"（--confluence-only）：任何市况都要求催化剂（信号量降 ~31%，胜率 +1.8pct）；
+      - "non_bull"（--confluence-regime）：仅 range/bear 日要求催化剂，bull 日纯技术
+        信号放行（强牛市动量本就 65-82% 胜率，不需基本面确认）；
+      - "bear"：仅 bear 日要求催化剂（最宽松）。
+    regime 列缺失时退化为 "all"（不误放）。
+    """
+    catalyst = _fundamental_catalyst(df).to_numpy()
+    if regime_gate in ("non_bull", "bear") and "regime" in df.columns:
+        regime = df["regime"]
+        if regime_gate == "non_bull":
+            gated = (regime != "bull").to_numpy()
+        else:
+            gated = (regime == "bear").to_numpy()
+    else:
+        gated = np.ones(len(df), dtype=bool)
+    # gated=True 的行需催化剂；非 gated 行（如 bull）纯技术信号放行
+    need = gated & catalyst
+    allow = ~gated
+    keep = need | allow
+    out: Dict[str, pd.Series] = {}
+    for n, sig in sig_dict.items():
+        if n in CONFLUENCE_EXEMPT:
+            out[n] = sig
+        else:
+            out[n] = pd.Series(sig.astype(bool).to_numpy() & keep, index=df.index)
+    return out
+
 
 def _strategy_signal(df: pd.DataFrame, name: str, enhanced: bool = False,
                      regime_filter: bool = False,
@@ -1802,17 +1903,20 @@ def sig_multi_ma_resonance(df):
     return _multi_ma_resonance_score(df) >= 10
 
 
-# 组合策略的组件与权重缓存:权重由 run_backtests 按各组件历史胜率填充
-ENSEMBLE_COMPONENTS = ["ma_crossover", "volume_surge_std", "multi_ma_resonance"]
+# 组合策略组件（P1-2）：2 个动量/突破族 + 1 个反转族，跨风格低相关，避免原三组件
+# （ma_crossover/volume_surge_std/multi_ma_resonance）同为高相关动量导致集成不分散
+# 反而摊薄 alpha；multi_ma_resonance 期望/笔全场最低（~0.46%）已剔除，换成
+# rsi_bullish_divergence（底背离反转，与动量负相关时段互补）。
+ENSEMBLE_COMPONENTS = ["ma_crossover", "volume_surge_std", "rsi_bullish_divergence"]
 ENSEMBLE_MIN_WEIGHTED_SCORE = 0.5   # 加权分触发阈值(权重和为 1)
 _ENSEMBLE_WEIGHTS: Dict[str, float] = {}
 
 
 def sig_ensemble(df):
-    """策略12：组合策略——按各组件策略历史胜率加权,加权分 >= 阈值触发。
+    """策略12：组合策略——按各组件策略历史期望/笔加权,加权分 >= 阈值触发。
 
-    替代简单"≥2 个组件同时触发":权重由 run_backtests 依据组件策略
-    5 年回测胜率归一化后填充(_ENSEMBLE_WEIGHTS);未填充时退化为等权。
+    权重由 run_backtests 依据组件策略回测的每笔期望收益（兼顾胜率与盈亏比，
+    优于单纯胜率）归一化后填充(_ENSEMBLE_WEIGHTS)；未填充时退化为等权。
     """
     weights = np.array([_ENSEMBLE_WEIGHTS.get(c, 1.0) for c in ENSEMBLE_COMPONENTS], dtype=float)
     w_sum = weights.sum()
@@ -1821,7 +1925,7 @@ def sig_ensemble(df):
     hits = np.column_stack([
         sig_ma_crossover(df).astype(float),
         sig_volume_surge_std(df).astype(float),
-        sig_multi_ma_resonance(df).astype(float),
+        sig_rsi_bullish_divergence(df).astype(float),
     ])
     score = hits @ weights
     return score >= ENSEMBLE_MIN_WEIGHTED_SCORE
@@ -2183,7 +2287,11 @@ except ImportError:
 
 
 if _HAS_NUMBA:
-    @numba.njit(cache=True)
+    # cache=False：磁盘缓存按模块名/源码行号索引，脚本经 runpy/importlib 以非 __main__
+    # 名（如 <dynamic>）加载时会写出/读入错配缓存，导致后续运行 njit 函数集体抛
+    # "No module named '<dynamic>'"、策略静默 0 笔。回测单次 20 分钟级，JIT 重编译
+    # 仅 1~2 秒，关闭磁盘缓存彻底消除该污染面。
+    @numba.njit(cache=False)
     def _calc_max_drawdown(r: np.ndarray) -> float:
         """计算最大回撤（%）。
 
@@ -2207,7 +2315,7 @@ if _HAS_NUMBA:
         return max_dd * 100.0
 
 
-    @numba.njit(cache=True)
+    @numba.njit(cache=False)
     def _calc_metrics_core(r: np.ndarray, n: int, avg_holding: float) -> Tuple:
         """绩效指标核心计算（Numba JIT 加速）。
 
@@ -2597,35 +2705,34 @@ def compute_benchmark_metrics(df: pd.DataFrame, index_df: Optional[pd.DataFrame]
 
 
 def _compute_ensemble_weights(component_results: Dict[str, Dict]) -> Dict[str, float]:
-    """按组件策略历史胜率归一化计算组合策略权重（C1）。
+    """按组件策略历史每笔期望收益归一化计算组合策略权重（P1-2，原为胜率 C1）。
 
-    输入为各组件策略的回测结果 dict（键为组件名），
-    返回 {组件名: 权重}。
+    输入为各组件策略的回测结果 dict（键为组件名），返回 {组件名: 权重}。
+    用 expectation（每笔平均收益%，兼顾胜率与盈亏比）代替 win_rate：胜率高但盈亏比
+    差的策略不应获得高权重，期望才是单笔可兑现的 edge。
 
-    容错：报错或胜率<=0 的组件视为"本窗口无效"，**排除**后对剩余有效组件按胜率
-    归一化（而不是赋权重 0——赋 0 会把该组件从 ensemble 打分中静默剔除、使加权分
-    被其余组件拉低，导致权重塌缩如 ma_crossover=0.000）。全部组件无效时返回空
-    dict，由 sig_ensemble 回退等权。
+    容错：报错或期望<=0 的组件视为"本窗口无效"，**排除**后对剩余有效组件按期望
+    归一化（赋 0 会把该组件从 ensemble 打分中静默剔除、使加权分被其余组件拉低塌缩）。
+    全部组件无效时返回空 dict，由 sig_ensemble 回退等权。
     """
-    valid_wr: Dict[str, float] = {}
+    valid_exp: Dict[str, float] = {}
     for c in ENSEMBLE_COMPONENTS:
         r = component_results.get(c)
         if r is None or "error" in r:
             continue
-        wr = float(r.get("win_rate", 0) or 0)
-        if wr > 0:
-            valid_wr[c] = wr
-    if not valid_wr:
-        logger.warning("组件策略均无有效胜率,组合策略退化为等权")
+        exp = float(r.get("expectation", 0) or 0)
+        if exp > 0:
+            valid_exp[c] = exp
+    if not valid_exp:
+        logger.warning("组件策略均无正期望,组合策略退化为等权")
         return {}
-    wr_sum = sum(valid_wr.values())
-    weights = {c: w / wr_sum for c, w in valid_wr.items()}
-    # 被排除的无效组件权重记 0 仅用于日志展示；sig_ensemble 按 .get(c,1.0) 兜底
+    exp_sum = sum(valid_exp.values())
+    weights = {c: w / exp_sum for c, w in valid_exp.items()}
     logger.info(
-        "组合策略权重: "
+        "组合策略权重(按期望): "
         + ", ".join(f"{c}={weights.get(c, 0.0):.3f}" for c in ENSEMBLE_COMPONENTS)
-        + (f"（无效组件已排除: {[c for c in ENSEMBLE_COMPONENTS if c not in valid_wr]}）"
-           if len(valid_wr) < len(ENSEMBLE_COMPONENTS) else "")
+        + (f"（无效组件已排除: {[c for c in ENSEMBLE_COMPONENTS if c not in valid_exp]}）"
+           if len(valid_exp) < len(ENSEMBLE_COMPONENTS) else "")
     )
     return weights
 
@@ -2635,12 +2742,16 @@ def run_backtests(df_bt: pd.DataFrame, index_df: Optional[pd.DataFrame] = None,
                   resonance_min: int = 1,
                   regime_filter: bool = False,
                   industry_filter: bool = False,
-                  entry_timing: str = "close") -> List[Dict]:
+                  entry_timing: str = "close",
+                  regime_soft: bool = False,
+                  confluence_only: bool = False,
+                  confluence_regime: Optional[str] = None) -> List[Dict]:
     """对全部 23 个策略执行回测，返回按期望值降序的有效结果列表。
 
     enhanced_regime=True 时使用 market_ok_enh（放宽 regime, P0-1）；
     resonance_min>1 时启用同股同日多策略共振过滤（P0-2）；
-    regime_filter=True 时按市况分族调度策略（P1-4，需 df_bt 含 regime 列）；
+    regime_filter=True 时按市况分族硬调度策略（P1-4，需 df_bt 含 regime 列）；
+    regime_soft=True 时启用市况软加权（P1-1，弱信号需强势信号确认，与 regime_filter 互斥）；
     industry_filter=True 时仅保留行业动量前 N 行业的信号（P2-7，需 ind_rank 列）；
     entry_timing="next_open" 时以次日开盘入场列统计（P3-13）。
 
@@ -2674,15 +2785,31 @@ def run_backtests(df_bt: pd.DataFrame, index_df: Optional[pd.DataFrame] = None,
     strategy_names = list(STRATEGIES.keys())
     results = []
 
+    # 软加权（P1-1）与硬 gating（P1-4）互斥：软模式不做硬 regime 屏蔽，信号全量生成后
+    # 再按强势/弱势两档过滤；硬模式保持原 _strategy_signal 内的 regime 屏蔽。
+    hard_regime = regime_filter and not regime_soft
+
     # 预计算全部策略信号（含冷却期），组合策略先按等权回退生成（权重随后填充）
     global _ENSEMBLE_WEIGHTS
     _ENSEMBLE_WEIGHTS = {}
     cooled_signals: Dict[str, pd.Series] = {}
     for name in strategy_names:
         raw = _strategy_signal(df_bt, name, enhanced=enhanced_regime,
-                               regime_filter=regime_filter,
+                               regime_filter=hard_regime,
                                industry_filter=industry_filter)
         cooled_signals[name] = _apply_cooldown(df_bt, raw, enhanced=enhanced_regime)
+
+    # 市况软加权（P1-1）：组件回测前先过滤，保证组合权重基于软过滤后的胜率
+    if regime_soft:
+        cooled_signals = _apply_regime_soft_filter(df_bt, cooled_signals)
+    # 基本面合流（P1-3）：--confluence-only 全市况硬过滤；--confluence-regime 市况感知
+    confluence_gate = None
+    if confluence_regime:
+        confluence_gate = confluence_regime
+    elif confluence_only:
+        confluence_gate = "all"
+    if confluence_gate:
+        cooled_signals = _apply_confluence_filter(df_bt, cooled_signals, regime_gate=confluence_gate)
 
     # 先串行计算组合策略的组件,按其胜率填充 _ENSEMBLE_WEIGHTS(C1)
     component_results = {}
@@ -2699,9 +2826,12 @@ def run_backtests(df_bt: pd.DataFrame, index_df: Optional[pd.DataFrame] = None,
     # 用真实权重重算组合策略信号 + 冷却期（组件权重依赖其回测胜率）
     if "ensemble" in strategy_names:
         ens_raw = _strategy_signal(df_bt, "ensemble", enhanced=enhanced_regime,
-                                   regime_filter=regime_filter,
+                                   regime_filter=hard_regime,
                                    industry_filter=industry_filter)
         cooled_signals["ensemble"] = _apply_cooldown(df_bt, ens_raw, enhanced=enhanced_regime)
+        if regime_soft:
+            # 幂等：仅对新重算的 ensemble 生效（强信号不变、弱信号已剔除）
+            cooled_signals = _apply_regime_soft_filter(df_bt, cooled_signals)
 
     # 同股同日多策略共振过滤（P0-2）
     if resonance_min > 1:
@@ -2728,6 +2858,17 @@ def run_backtests(df_bt: pd.DataFrame, index_df: Optional[pd.DataFrame] = None,
     else:
         for name in remaining:
             _run_one(name)
+
+    # 系统性失败熔断（P1-4）：单策略失败本应容错，但当过半策略集体报错时，通常是
+    # numba JIT/缓存污染、依赖缺失或数据加载异常等系统性问题，继续只会静默产出
+    # "0 笔/0 收益"的空结果并污染下游 handoff。此处大声失败，避免假成功。
+    errored = [r for r in results if "error" in r]
+    if len(errored) > len(results) / 2:
+        sample = "; ".join(f"{r['strategy']}: {r['error']}" for r in errored[:5])
+        raise RuntimeError(
+            f"回测系统性失败：{len(errored)}/{len(results)} 个策略报错（超过半数），"
+            f"疑似 numba JIT/缓存或数据加载异常。前 5 个错误：{sample}"
+        )
 
     # 附加基准对比与超额收益字段（P1-8）+ 小样本标记
     for r in results:
@@ -3394,7 +3535,16 @@ def main(argv=None):
     parser.add_argument("--resonance", type=int, default=MIN_RESONANCE_STRATEGIES,
                         help="共振门槛：同一股票同日至少 N 个策略命中才保留（默认 2；传 1 关闭，P0-2）")
     parser.add_argument("--regime-filter", action="store_true",
-                        help="按市况分族调度策略（bull/range/bear 激活不同策略族，P1-4）")
+                        help="按市况分族硬调度策略（bull/range/bear 激活不同策略族，P1-4）")
+    parser.add_argument("--regime-soft", action="store_true",
+                        help="市况软加权（P1-1）：基本面策略全市况为强势锚，弱势信号需强势信号确认，"
+                             "不硬砍信号；与 --regime-filter 互斥，同时传入时软模式优先")
+    parser.add_argument("--confluence-only", action="store_true",
+                        help="基本面合流过滤（P1-3）：纯技术策略信号需当日有业绩预增/筹码集中/机构净买"
+                             "催化剂才保留（全市况硬过滤，信号量约 -31%、胜率 +1.8pct）")
+    parser.add_argument("--confluence-regime", choices=["non_bull", "bear"], default=None,
+                        help="市况感知合流（P1-3 软化）：non_bull=仅 range/bear 日要求催化剂、bull 日放行；"
+                             "bear=仅 bear 日要求。比 --confluence-only 少砍强牛市动量信号")
     parser.add_argument("--no-industry-momentum", action="store_true",
                         help="关闭行业动量过滤（默认开启仅保留动量前 3 行业信号，P2-7）")
     parser.add_argument("--per-strategy-exit", action="store_true",
@@ -3406,6 +3556,14 @@ def main(argv=None):
     parser.add_argument("--ml-filter", action="store_true",
                         help="按 ML 置信度阈值过滤信号（P3-11，需先运行 train_signal_filter.py 生成工件）")
     args = parser.parse_args(argv)
+
+    # 环境变量开关（供 GitHub Actions / 定时任务在不改命令的情况下启用质量门槛）：
+    #   BACKTEST_CONFLUENCE=1 等价 --confluence-only（基本面合流，实盘推荐质量门槛）；
+    #   BACKTEST_REGIME_SOFT=1 等价 --regime-soft。CLI 显式参数优先于环境变量。
+    if os.environ.get("BACKTEST_CONFLUENCE", "").strip().lower() in ("1", "true", "yes", "on"):
+        args.confluence_only = True
+    if os.environ.get("BACKTEST_REGIME_SOFT", "").strip().lower() in ("1", "true", "yes", "on"):
+        args.regime_soft = True
 
     # P0 默认启用 enhanced regime + 共振≥2；P2 默认启用行业动量（P2-7 实测最优）。
     # 旧行为分别通过 --strict / --resonance 1 / --no-industry-momentum 显式回退。
@@ -3448,9 +3606,15 @@ def main(argv=None):
         logger.info(f"模式说明: {resources}，串行（未设置 BACKTEST_ENABLE_PARALLEL 默认串行,"
                     f"并行需显式设 BACKTEST_ENABLE_PARALLEL=true）")
     logger.info(f"回测起始: {anchored_start} ~ {today_str}")
+    if args.regime_soft:
+        regime_label = "软加权(soft)"
+    elif args.regime_filter:
+        regime_label = "硬分族(hard)"
+    else:
+        regime_label = "未启用"
     logger.info(f"市场环境: {'enhanced regime (market_ok_enh)' if enhanced else 'strict regime (market_ok)'}"
                 f" | 共振门槛: {'同股同日≥' + str(args.resonance) + '策略' if args.resonance > 1 else '未启用'}"
-                f" | 市况分族: {'启用' if args.regime_filter else '未启用'}"
+                f" | 市况分族: {regime_label}"
                 f" | 行业动量: {'启用' if industry_on else '未启用'}"
                 f" | 分组止损: {'启用' if args.per_strategy_exit else '未启用'}")
     logger.info("=" * 60)
@@ -3589,7 +3753,10 @@ def main(argv=None):
                             enhanced_regime=enhanced, resonance_min=args.resonance,
                             regime_filter=args.regime_filter,
                             industry_filter=industry_on,
-                            entry_timing=args.entry_timing)
+                            entry_timing=args.entry_timing,
+                            regime_soft=args.regime_soft,
+                            confluence_only=args.confluence_only,
+                            confluence_regime=args.confluence_regime)
     # 回测切片（580 万行级）回测后不再需要，立即释放，避免与后续验证信号计算
     # 叠加内存峰值，并降低 handoff 子进程 spawn 时父进程 RSS（0 可用内存 + swap 问题）。
     del df_bt
@@ -3597,11 +3764,18 @@ def main(argv=None):
     log_memory_usage("回测完成后")
     # 验证信号统一基于完整历史 df_all 计算（修复：5 日切片导致 rolling/shift 特征丢失），
     # 并与回测同口径：enhanced regime + 冷却期 + 共振过滤 + 市况分族 + 行业动量（如启用）
+    hard_regime = args.regime_filter and not args.regime_soft
     signals = {name: _strategy_signal(df_all, name, enhanced=enhanced,
-                                      regime_filter=args.regime_filter,
+                                      regime_filter=hard_regime,
                                       industry_filter=industry_on)
                for name in STRATEGIES}
     signals = {name: _apply_cooldown(df_all, sig, enhanced=enhanced) for name, sig in signals.items()}
+    if args.regime_soft:
+        signals = _apply_regime_soft_filter(df_all, signals)
+    if args.confluence_regime:
+        signals = _apply_confluence_filter(df_all, signals, regime_gate=args.confluence_regime)
+    elif args.confluence_only:
+        signals = _apply_confluence_filter(df_all, signals, regime_gate="all")
     if args.resonance > 1:
         signals = _apply_resonance(df_all, signals, min_strategies=args.resonance)
     if args.ml_filter:

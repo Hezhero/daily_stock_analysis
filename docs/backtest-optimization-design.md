@@ -773,3 +773,41 @@ Week 4-5:
 | Exp2c enhanced | enhanced regime | 48.8-49.3% | +0.573~+0.632 | 18.2-21.3% | 10.8% | 1.1-1.2 |
 | Exp3 exit | (2.5, 0.95) | 53.1% | +1.119 | 59.4% | - | - |
 | Exp4 resonance | ≥2 策略 | 50.8% | +0.544 | 11.8% | - | - |
+---
+
+## 8. P1-1 / P1-2 / P1-3 / P1-4 落地实验（2026-09，5 年 2021-01 ~ 2026-08）
+
+> 基于 24 策略 5 年回测的 A/B 实验，口径：enhanced regime + 共振≥2 + 行业动量开启 + 统一出场 (2.5, 0.95)。
+
+### 8.1 新增 CLI / 环境变量开关
+
+| 开关 | 含义 | 默认 | 实测结论 |
+|------|------|------|----------|
+| `--regime-soft` | 市况软加权（P1-1）：基本面策略为全市场强势锚，bear 日趋势弱信号需强势确认 | 关 | 信号量 100% 恢复但胜率/收益≈baseline（近 no-op），安全保留 |
+| `--confluence-only` | 基本面合流硬过滤（P1-3）：纯技术策略信号需当日有业绩预增/筹码集中/机构净买催化剂 | 关 | **推荐质量门槛**，见 8.3 |
+| `--confluence-regime {non_bull,bear}` | 市况感知合流（P1-3 软化）：仅 non_bull / bear 日要求催化剂 | 关 | 实测劣于硬过滤，见 8.3 |
+| `BACKTEST_CONFLUENCE=1` / `BACKTEST_REGIME_SOFT=1` | 等价上述 CLI 的环境变量，供 Actions/定时任务不改命令启用 | 关 | CLI 显式参数优先 |
+
+### 8.2 P1-2 组合策略（ensemble）重构
+
+- 组件由 `ma_crossover / volume_surge_std / multi_ma_resonance` 改为 `ma_crossover / volume_surge_std / rsi_bullish_divergence`：剔除期望/笔最低（~0.46%）的 multi_ma_resonance，换入低相关反转族 rsi_bullish_divergence。
+- 权重依据由"总胜率归一化"改为"**每笔期望收益**归一化"（`_compute_ensemble_weights`），高胜率低盈亏比的策略不再获高权重。
+- 实测：ensemble 230→415 笔、胜率 47.4%→48.2%、总收益 50.9%→56.7%、夏普 2.78→3.22（默认生效）。
+
+### 8.3 P1-3 基本面合流过滤（核心结论）
+
+纯技术策略信号要求当日存在基本面催化剂（`forecast_pos==1` 或 `holder_chg<-3%` 或 `inst_buy5>500万`）；已内置基本面条件的 fc_pos_break/inst_smart_break/holder_conc_break/low_profit_hold/washout_break 豁免。
+
+| 门控 | 总笔数 | 平均胜率 | 期望/笔 | 平均总收益 | 平均夏普 | 平均回撤 |
+|------|:---:|:---:|:---:|:---:|:---:|:---:|
+| baseline（不合流） | 3637 | 49.8% | 1.315% | 52.7% | 3.92 | 7.2% |
+| **hard（`--confluence-only`）** | 2501 | **51.6%** | **1.481%** | 46.1% | **5.05** | **6.8%** |
+| non_bull | 3412 | 49.3% | 1.248% | 46.0% | 4.19 | 6.9% |
+| bear | 3744 | 49.4% | 1.270% | 53.5% | 3.92 | 7.8% |
+
+结论：**硬过滤（全市况要求催化剂）风险调整后收益最优**——用 31% 信号量换胜率 +1.8pct、期望 +12.6%、夏普 +29%、回撤下降。软化变体（non_bull/bear）把牛市纯动量信号放回后胜率/期望回落至 baseline，说明基本面催化剂**在牛市同样有区分度**，"强牛市动量不需基本面确认"的直觉不成立。分策略看 wave_theory 49.6→54.0、monthly_macd_20ma 51.2→55.6、ma_crossover 49.3→52.0 胜率提升最明显。
+
+### 8.4 P1-4 numba 静默失效加固
+
+- `@numba.njit(cache=True)` → `cache=False`：磁盘缓存按模块名/源码行号索引，脚本经 runpy/importlib 以非 `__main__` 名（如 `<dynamic>`）加载时会写出/读入错配缓存，导致后续运行 njit 函数集体抛 `No module named '<dynamic>'`、策略静默 0 笔。关闭磁盘缓存彻底消除该污染面（JIT 重编译仅 1~2 秒）。
+- 新增过半策略报错熔断：`run_backtests` 结束时若 >50% 策略报错则抛 `RuntimeError`，不再静默产出"0 笔/0 收益"空结果污染下游 handoff。
