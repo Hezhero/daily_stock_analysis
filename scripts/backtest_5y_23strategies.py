@@ -77,7 +77,8 @@ sys.path.insert(0, str(BASE_DIR))
 
 # ─── 配置 ──────────────────────────────────────────────────────────────────────
 INITIAL_CAPITAL = 1000000.0   # 初始资金（元），用于回测收益口径展示
-TOP_N_VALIDATE = 5            # 本周验证取回测收益前 N 个策略
+TOP_N_VALIDATE = 5            # 本周验证取回测收益前 N 个策略（旧表头兼容）
+VALIDATE_CANDIDATES = 8       # 5 日验证候选策略数：回测期望前 8 且样本充足(≥30 笔)
 HOLDING_PERIODS = [1, 3, 5, 10]  # 回测持有期（交易日），每个信号分别统计各持有期收益
 VALIDATE_DAYS = 5             # 本周验证的交易日窗口长度
 MIN_TRADES_FOR_RANKING = 30   # 策略参与排名/汇总的最小样本笔数；不足视为小样本，不参与期望值排名与跨策略平均
@@ -92,6 +93,12 @@ LIMIT_UP_PCT_GEM = 19.5          # 创业板涨停判定阈值（%），2020-08 
 
 # ─── 交易成本 ──────────────────────────────────────────────────────────────────
 TRADING_COST_PCT = 0.15          # 单边往返交易成本（%）：佣金+印花税+滑点合计约 0.15%
+
+# ─── 已加载数据 parquet 缓存（跳过 ~8 分钟 PG 加载/复权/增强信号合并） ───────────
+# 缓存的是"复权 + 增强信号合并后、指标计算前"的准备态 DataFrame；指标/出场收益
+# 每次运行实时重算。加载/合并逻辑变更时必须 bump CACHE_VERSION 使旧缓存失效。
+CACHE_VERSION = "v1"
+CACHE_DIR = BASE_DIR / "data" / "cache"
 
 # ─── 信号质量过滤（P1） ────────────────────────────────────────────────────────
 MIN_CIRC_MV_W = 200000           # 最小流通市值（万元，即 20 亿），过滤易被操纵的小盘股
@@ -114,7 +121,14 @@ MAX_CONC_90_LIMITUP = 0.15       # 涨停族策略的 90% 筹码集中度上限�
 MIN_INST_NET_BUY = 500.0         # 机构龙虎榜近 5 日累计净买入阈值（万元）
 MAX_HOLDER_CHG_PCT = -3.0        # 股东人数环比下降阈值（%），负值=筹码集中
 MAX_DRAGON_PROFIT_RATIO = 0.9    # 龙头策略获利盘上限，剔除纯高位接力的涨停
-WASHOUT_PROFIT_RATIO = 0.2       # 超跌族策略的获利盘上限（绝大部分筹码被套）
+WASHOUT_PROFIT_RATIO = 0.35      # 超跌族策略的获利盘上限（P1：0.2→0.35，放宽深度套牢约束以捕捉突破时刻）
+
+# ── P1 批次 2：可配置行为开关（由 main() 按 CLI 参数设置，旧行为均有回退开关） ──
+_REGIME_MODE = "enh2"            # 市场环境口径：enh2=market_ok_enh2(广度+波动率确认, 默认)；
+                                 # enh=market_ok_enh(旧增强)；strict=market_ok(旧严格)
+_BEAR_CONFIRM_MIN = 2            # bear 日弱信号所需的强势确认数（锚或 bear 族命中），旧行为=1
+_HANDOFF_MODE = "score"          # handoff 口径：score=共振强度评分排序(默认)；gate=旧硬门槛
+_ENSEMBLE_CLASSIC = False        # True=旧 3 组件二值 ensemble；False=6 组件连续强度 ensemble
 
 # ─── 日志配置 ──────────────────────────────────────────────────────────────────
 _LOG_DIR = Path(os.environ.get("LOG_DIR") or "logs")
@@ -229,11 +243,37 @@ def _detect_total_memory_gb() -> Optional[float]:
 
 
 def _detect_available_memory_gb() -> Optional[float]:
-    """检测当前可用物理内存（GB），仅支持 psutil，失败返回 None。"""
+    """检测当前可用物理内存（GB）。
+
+    优先 psutil；不可用时在 Windows 回退 ctypes GlobalMemoryStatusEx 的
+    ullAvailPhys（可用物理内存），避免无 psutil 环境下可用内存恒为 None、
+    并行模式决策退化为只看总量。
+    """
     try:
         import psutil
         return psutil.virtual_memory().available / (1024 ** 3)
     except ImportError:
+        pass
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        class MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+        mem_status = MEMORYSTATUSEX()
+        mem_status.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+        kernel32.GlobalMemoryStatusEx(ctypes.byref(mem_status))
+        return mem_status.ullAvailPhys / (1024 ** 3)
+    except Exception:
         pass
     return None
 
@@ -268,9 +308,13 @@ def _detect_swap_memory_gb() -> Optional[Dict[str, float]]:
         mem_status = MEMORYSTATUSEX()
         mem_status.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
         ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(mem_status))
-        total = mem_status.ullTotalPageFile / (1024 ** 3)
-        free = mem_status.ullAvailPageFile / (1024 ** 3)
-        used = total - free
+        # ullTotalPageFile/ullAvailPageFile 是"物理内存 + 页面文件"的提交限额
+        # （commit limit），不是 swap 本身；swap = 提交限额 - 物理内存。
+        # 原实现直接把提交限额当 swap 总量，导致 swap≈物理内存、可用物理内存
+        # 被误报为 0（"RAM仅0.0GB，Swap补充63.7GB"）。
+        total = max(0.0, (mem_status.ullTotalPageFile - mem_status.ullTotalPhys) / (1024 ** 3))
+        free = max(0.0, (mem_status.ullAvailPageFile - mem_status.ullAvailPhys) / (1024 ** 3))
+        used = max(0.0, total - free)
         pct = (used / total * 100) if total > 0 else 0
         return {"total": total, "free": free, "used": used, "pct": pct}
     except Exception:
@@ -614,7 +658,7 @@ def load_index_daily(start: str, end: str, ts_code: str = "000001.SH") -> pd.Dat
     return df
 
 
-def compute_market_ok(index_df: pd.DataFrame) -> pd.DataFrame:
+def compute_market_ok(index_df: pd.DataFrame, stock_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     """根据指数日线计算每日 market_ok(适合开仓的市场环境)。
 
     判定规则(组合应用):
@@ -623,8 +667,13 @@ def compute_market_ok(index_df: pd.DataFrame) -> pd.DataFrame:
       - market_ok_enh（增强, P0-1）: 严格条件 OR (指数 > MA20 且 MA20 上行)，
         放宽 MA60/MA5 要求以减少空仓天数（WFO Exp2c：年化 4.6%→18-21%，
         回撤 12.7%→10.8%，代价是胜率微降 ~1.5pct）
+      - market_ok_enh2（P1 批次2, 默认）: market_ok_enh 再叠加
+        市场广度（close>ma20 的股票占比 >= 0.45）与指数 20 日年化波动率
+        分位（<= 0.85，高波动恐慌期不开仓）双重确认；stock_df 缺失或
+        列不全时退化为 market_ok_enh（不误杀）
       - regime（P1-4）: bull/range/bear 三态市况，供策略分族调度
-    返回 DataFrame,含 date、market_ok(bool)、market_ok_enh(bool)、regime(str)四列。
+    返回 DataFrame,含 date、market_ok(bool)、market_ok_enh(bool)、
+    market_ok_enh2(bool)、regime(str)五列。
     """
     df = index_df.sort_values("date").reset_index(drop=True).copy()
     close = df["index_close"]
@@ -645,6 +694,29 @@ def compute_market_ok(index_df: pd.DataFrame) -> pd.DataFrame:
         & (df["idx_ma20"] > df["idx_ma20_prev"])
     )
 
+    # enh2 双重确认（P1 批次2）：
+    #   breadth = 当日 close > ma20 的股票占比（全市场向量化按日聚合）；
+    #   vol_pct = 指数 20 日年化波动率的扩展分位（当前值在历史中的相对位置，
+    #             >0.85 表示处于历史高波动区间，恐慌/见顶阶段不开新仓）。
+    breadth_ok = pd.Series(True, index=df.index)
+    vol_ok = pd.Series(True, index=df.index)
+    if stock_df is not None and not stock_df.empty and {"date", "close", "ma20"} <= set(stock_df.columns):
+        b = (stock_df["close"] > stock_df["ma20"]).groupby(stock_df["date"]).mean()
+        breadth = pd.Series(b.values, index=pd.to_datetime(b.index))
+        mapped = pd.to_datetime(df["date"]).map(breadth)
+        breadth_ok = mapped.fillna(1.0).ge(0.45).reset_index(drop=True)
+        logger.info(f"市场广度(close>ma20 占比) 均值 {mapped.mean():.2f}, "
+                    f"≥0.45 的交易日占比 {breadth_ok.mean()*100:.1f}%")
+    idx_ret = close.pct_change()
+    vol20 = idx_ret.rolling(20, min_periods=10).std() * np.sqrt(252)
+    vol_pct = vol20.expanding(min_periods=20).rank(pct=True)
+    vol_ok = vol_pct.fillna(0.0).le(0.85)
+    df["market_ok_enh2"] = df["market_ok_enh"] & breadth_ok & vol_ok
+    n_enh = int(df["market_ok_enh"].sum())
+    n_enh2 = int(df["market_ok_enh2"].sum())
+    logger.info(f"市场环境: enh 可开仓 {n_enh}/{len(df)} ({n_enh/len(df)*100:.1f}%), "
+                f"enh2(广度+波动率确认) {n_enh2}/{len(df)} ({n_enh2/len(df)*100:.1f}%)")
+
     # 市况三态（P1-4）：bull=指数>MA60 且 MA20 五日斜率上行；
     # bear=指数<MA60 且 MA20 下行；其余为 range
     slope5 = df["idx_ma20"].pct_change(5) * 100
@@ -653,7 +725,7 @@ def compute_market_ok(index_df: pd.DataFrame) -> pd.DataFrame:
     regime[(close < df["idx_ma60"]) & (slope5 < 0)] = "bear"
     df["regime"] = regime
 
-    return df[["date", "market_ok", "market_ok_enh", "regime"]]
+    return df[["date", "market_ok", "market_ok_enh", "market_ok_enh2", "regime"]]
 
 
 # ─── 财务质量过滤(ann_date 对齐防前视偏差,B3) ─────────────────────────────────
@@ -710,14 +782,19 @@ def merge_fina_by_ann_date(df: pd.DataFrame, fina_df: pd.DataFrame) -> pd.DataFr
     fina["ann_date"] = pd.to_datetime(fina["ann_date"]).astype("datetime64[ns]")
     fina_by_code = {code: g for code, g in fina.groupby("code", sort=False)}
     fina_cols = ["roe", "grossprofit_margin", "or_yoy"]
+    # 无财务数据分组补 NA 时显式 float64 dtype，避免 concat 混合 all-NA object
+    # 与 float 列触发 pandas "empty or all-NA entries" FutureWarning
+    na_dtype = {c: pd.Series(dtype="float64").dtype for c in fina_cols}
     keys = df[["code", "date"]]
     pieces = []
     for code, g in keys.groupby("code", sort=False):
         f = fina_by_code.get(code)
         if f is None or f.empty:
+            if g.empty:
+                continue
             g = g.copy()
             for c in fina_cols:
-                g[c] = np.nan
+                g[c] = pd.Series(np.nan, index=g.index, dtype=na_dtype[c])
             pieces.append(g)
             continue
         f = f[["ann_date"] + fina_cols]
@@ -725,8 +802,14 @@ def merge_fina_by_ann_date(df: pd.DataFrame, fina_df: pd.DataFrame) -> pd.DataFr
             g, f,
             left_on="date", right_on="ann_date", direction="backward",
         )
-        pieces.append(merged)
-    aligned = pd.concat(pieces, ignore_index=True)
+        if not merged.empty:
+            pieces.append(merged)
+    if not pieces:
+        aligned = keys.copy()
+        for c in fina_cols:
+            aligned[c] = pd.Series(np.nan, index=aligned.index, dtype="float64")
+    else:
+        aligned = pd.concat(pieces, ignore_index=True)
     # aligned 与 df 同源排序、同序分组,行序一一对应,按位置回填财务列
     out = df.copy()
     out[fina_cols] = aligned[fina_cols].to_numpy()
@@ -752,13 +835,19 @@ INDUSTRY_TOP_N = 3                # 仅保留动量排名前 N 的行业
 
 
 def load_industry_context(start: str, end: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """加载申万 L1 行业动量排名与股票→行业映射。
+    """加载申万 L1 行业动量排名与股票→行业映射（point-in-time 成分）。
 
     返回:
       rank_df: date(datetime64), l1_code, ret_20d, ind_rank(1=最强)
-      member_df: code(内部格式), l1_code
-    局限: 成分映射取 out_date IS NULL 的当前口径，历史行业变更不回溯
-    （point-in-time 偏差，对 5 年回测影响有限但存在）。
+      member_df: code(内部格式), l1_code, in_date(datetime64), out_date(datetime64|NaT)
+                按 code, in_date 升序排列，供 apply_industry_momentum 做 as-of 对齐；
+                同 code 多行时最后一行即最新（当前）成分，optimize_portfolio 的
+                dict(zip(...)) 取最后一行恰好得到当前映射。
+    PIT 口径: 股票在日期 d 属于行业 l1 当且仅当 in_date <= d 且
+    (out_date IS NULL 或 out_date > d)。本地 tushare_index_member_all 表
+    out_date 全为 NULL（只存当前成分+各自 in_date），此时 as-of in_date 可消除
+    "纳入前即属于该行业"的前视偏差，但调出历史缺失（股票调出后仍映射到旧行业），
+    行业过滤结果可能偏乐观——此局限以 warning 明示。
     """
     t0 = time.time()
     engine = _get_pg_engine()
@@ -774,16 +863,18 @@ def load_industry_context(start: str, end: str) -> Tuple[pd.DataFrame, pd.DataFr
             """
             idx = pd.read_sql(idx_sql, conn, params=(start, end), parse_dates=["date"])
             mem_sql = """
-                SELECT ts_code, l1_code FROM tushare_index_member_all
-                WHERE out_date IS NULL
+                SELECT ts_code, l1_code, in_date, out_date
+                FROM tushare_index_member_all
+                WHERE in_date IS NOT NULL
+                ORDER BY ts_code, in_date
             """
-            mem = pd.read_sql(mem_sql, conn)
+            mem = pd.read_sql(mem_sql, conn, parse_dates=["in_date", "out_date"])
     finally:
         engine.dispose()
 
     if idx.empty or mem.empty:
         return pd.DataFrame(columns=["date", "l1_code", "ind_rank"]), \
-               pd.DataFrame(columns=["code", "l1_code"])
+               pd.DataFrame(columns=["code", "l1_code", "in_date", "out_date"])
 
     idx = idx.sort_values(["ts_code", "date"])
     idx["ret_20d"] = idx.groupby("ts_code")["close"].pct_change(
@@ -791,16 +882,33 @@ def load_industry_context(start: str, end: str) -> Tuple[pd.DataFrame, pd.DataFr
     idx["ind_rank"] = idx.groupby("date")["ret_20d"].rank(ascending=False)
 
     mem["code"] = mem["ts_code"].apply(_from_ts_code)
-    member_df = mem[["code", "l1_code"]].drop_duplicates("code")
+    member_df = mem[["code", "l1_code", "in_date", "out_date"]].copy()
+    member_df["in_date"] = pd.to_datetime(member_df["in_date"])
+    member_df["out_date"] = pd.to_datetime(member_df["out_date"])
+    member_df = member_df.sort_values(["code", "in_date"]).reset_index(drop=True)
     rank_df = idx[["date", "ts_code", "ind_rank"]].rename(columns={"ts_code": "l1_code"})
+    n_codes = member_df["code"].nunique()
+    has_out = member_df["out_date"].notna().any()
+    if not has_out:
+        logger.warning(
+            "行业成分表 tushare_index_member_all 的 out_date 全为空：PIT 对齐仅能按 "
+            "in_date 消除'纳入前'前视偏差，行业调出历史缺失，行业动量过滤结果可能偏乐观"
+        )
     logger.info(f"行业动量上下文: {rank_df['l1_code'].nunique()} 个 L1 行业, "
-                f"{len(member_df)} 只股票映射, 耗时 {time.time()-t0:.1f}s")
+                f"{n_codes} 只股票映射（PIT: in_date as-of"
+                f"{'，out_date 区间完整' if has_out else '，out_date 缺失'}）, "
+                f"耗时 {time.time()-t0:.1f}s")
     return rank_df, member_df
 
 
 def apply_industry_momentum(df: pd.DataFrame, rank_df: pd.DataFrame,
                             member_df: pd.DataFrame) -> pd.DataFrame:
-    """将股票的行业动量排名合并为 ind_rank 列（无映射/无排名的日子为 NaN=放行）。"""
+    """将股票的行业动量排名合并为 ind_rank 列（无映射/无排名的日子为 NaN=放行）。
+
+    成分映射按 point-in-time as-of 对齐：每个交易日取 in_date <= 当日 的最新
+    一条成分记录（merge_asof backward），且 out_date 为空或晚于当日才生效，
+    避免用当前成分回溯全部历史（前视偏差）。
+    """
     if rank_df.empty or member_df.empty:
         df["ind_rank"] = np.nan
         return df
@@ -810,7 +918,29 @@ def apply_industry_momentum(df: pd.DataFrame, rank_df: pd.DataFrame,
     rank_df = rank_df.copy()
     rank_df["date"] = pd.to_datetime(rank_df["date"]).dt.normalize()
     n_before = len(df)
-    df = df.merge(member_df, on="code", how="left")
+
+    # ── PIT 成分映射：merge_asof 按 code 取 in_date <= date 的最新成分 ──
+    members = member_df.copy()
+    members["in_date"] = pd.to_datetime(members["in_date"]).dt.normalize()
+    has_out = members["out_date"].notna().any()
+    if has_out:
+        members["out_date"] = pd.to_datetime(members["out_date"]).dt.normalize()
+    # merge_asof(by=) 要求两侧按 on 键(date/in_date)全局单调递增；by 仅用于分组匹配，
+    # 不能按 [code, date] 排序——date 会在 code 切换处回跳，触发 "left keys must be sorted"。
+    members = members.sort_values("in_date")
+    df = df.sort_values("date").reset_index(drop=True)
+    df = pd.merge_asof(
+        df, members[["code", "in_date", "l1_code"] + (["out_date"] if has_out else [])],
+        left_on="date", right_on="in_date", by="code", direction="backward",
+    )
+    df.drop(columns=["in_date"], inplace=True, errors="ignore")
+    if has_out:
+        # 已调出（out_date <= 当日）的成分失效：l1_code 置空，不参与行业排名
+        expired = df["out_date"].notna() & (df["out_date"] <= df["date"])
+        df.loc[expired, "l1_code"] = np.nan
+        df.drop(columns=["out_date"], inplace=True)
+    df = df.sort_values(["date", "code"]).reset_index(drop=True)
+
     df = df.merge(rank_df[["date", "l1_code", "ind_rank"]],
                   on=["date", "l1_code"], how="left")
     # 最新交易日行业指数数据可能比股票日线晚一天（如股票到 09-01、行业指数到 08-31），
@@ -849,18 +979,38 @@ def _merge_aux_by_date(df: pd.DataFrame, right: pd.DataFrame,
     right[right_on] = pd.to_datetime(right[right_on]).astype("datetime64[ns]")
     right2 = pd.concat([right[["code", right_on]], right[cols]], axis=1)
     by_code = {code: g.drop(columns=["code"]) for code, g in right2.groupby("code", sort=False)}
+    # 目标 dtype 以 right 为准（如 end_date 为 datetime64）：无事件数据的分组补全
+    # NA 列时必须对齐同一 dtype，否则 concat 混合 datetime 与 all-NA float 列会触发
+    # pandas "empty or all-NA entries" FutureWarning（未来版本 dtype 推断会变）。
+    target_dtypes = {c: right[c].dtype for c in cols}
+
+    def _na_series(index, dtype):
+        # float 列用 np.nan（pd.NA 会生成 NAType 对象列，下游数值运算报错）；
+        # datetime 等用 pd.NA 保持 dtype
+        if pd.api.types.is_float_dtype(dtype) or pd.api.types.is_integer_dtype(dtype):
+            return pd.Series(np.nan, index=index, dtype="float64")
+        return pd.Series(pd.NA, index=index, dtype=dtype)
+
     pieces = []
     for code, g in df.groupby("code", sort=False):
         f = by_code.get(code)
         if f is None or f.empty:
+            if g.empty:
+                continue
             g = g.copy()
             for c in cols:
-                # 显式 float dtype，避免 concat 全 NaN 列触发 pandas all-NA FutureWarning
-                g[c] = pd.Series(np.nan, index=g.index, dtype="float64")
+                g[c] = _na_series(g.index, target_dtypes[c])
             pieces.append(g)
             continue
-        pieces.append(pd.merge_asof(g, f, left_on="date", right_on=right_on,
-                                    direction="backward").drop(columns=[right_on], errors="ignore"))
+        merged = pd.merge_asof(g, f, left_on="date", right_on=right_on,
+                               direction="backward").drop(columns=[right_on], errors="ignore")
+        if not merged.empty:
+            pieces.append(merged)
+    if not pieces:
+        out = df.copy()
+        for c in cols:
+            out[c] = _na_series(out.index, target_dtypes[c])
+        return out
     return pd.concat(pieces, ignore_index=True)
 
 
@@ -952,6 +1102,41 @@ def load_signal_aux(df: pd.DataFrame) -> pd.DataFrame:
 
     logger.info(f"增强信号合并完成，耗时 {time.time()-t0:.1f}s")
     return df
+
+
+def _prepared_cache_path(start: str, end: str) -> Path:
+    """准备态数据缓存文件路径（日期紧凑格式，Windows 文件名安全）。"""
+    s = start.replace("-", "")
+    e = end.replace("-", "")
+    return CACHE_DIR / f"backtest_{s}_{e}_{CACHE_VERSION}.parquet"
+
+
+def load_prepared_cache(start: str, end: str):
+    """命中准备态 parquet 缓存则返回 DataFrame，否则 None。任何异常都视为未命中
+    （缓存是加速手段，失败必须回退 PG 全量加载，不能中断回测）。"""
+    path = _prepared_cache_path(start, end)
+    if not path.exists():
+        return None
+    try:
+        t0 = time.time()
+        df = pd.read_parquet(path)
+        logger.info(f"加载缓存 {path.name} (跳过 PG 加载, 耗时 {time.time()-t0:.1f}s)")
+        return df
+    except Exception as e:
+        logger.warning(f"缓存读取失败，回退 PG 全量加载: {e}")
+        return None
+
+
+def write_prepared_cache(df: pd.DataFrame, start: str, end: str) -> None:
+    """写准备态缓存；失败仅告警不中断（磁盘不足/权限问题不应影响回测）。"""
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        path = _prepared_cache_path(start, end)
+        t0 = time.time()
+        df.to_parquet(path, index=False)
+        logger.info(f"已写缓存 {path.name} ({len(df):,} 行, 耗时 {time.time()-t0:.1f}s)")
+    except Exception as e:
+        logger.warning(f"缓存写入失败（不影响本次运行）: {e}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1140,6 +1325,26 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
 DEFAULT_EXIT_PARAMS = (2.5, 0.95)   # WFO Exp3 全局最优 (atr_mult, trail)
 
+# 主入场口径（由 main() 按 --entry-timing 设置）：推荐/前瞻收益列选择与上报
+# 指标保持同一口径，默认 next_open（次日开盘，消除收盘入场前视偏差）。
+_PRIMARY_ENTRY_TIMING = "next_open"
+
+# 动态退出可选参数（由 main() 按 CLI 设置，默认 0.0 = 旧行为，稳定性优先）：
+#   _TRAIL_ACTIVATE_R：移动止盈激活门槛（R 倍数）。浮盈达到该倍数初始风险
+#     （atr_mult*atr20 入场值）后移动止盈才"武装"；武装前仅 ATR 止损/时间止损可出场。
+#     0.0 = 入场即武装（旧行为）。
+#   _TAKE_PROFIT_R：固定止盈（R 倍数）。>0 时，bar 最高价触及 entry+该倍数初始风险
+#     即按止盈价成交；0.0 = 关闭（旧行为，仅移动止盈）。
+_TRAIL_ACTIVATE_R = 0.0
+_TAKE_PROFIT_R = 0.0
+
+# 组合级波动率目标仓位（由 main() 按 CLI 设置，默认 0.0 = 旧等权口径）：
+#   _TARGET_VOL_ANNUAL：年化目标波动率（如 0.15=15%）；>0 时按 20 日已实现组合
+#     波动率缩放每日总敞口 g_t=clip(目标/已实现, 0, _MAX_LEVERAGE)，日收益×g_t。
+#   _MAX_LEVERAGE：g_t 上限，默认 1.0（不加杠杆）。
+_TARGET_VOL_ANNUAL = 0.0
+_MAX_LEVERAGE = 1.0
+
 # 策略族差异化出场参数（P2-10）：趋势族宽止损防震出、反转族紧止损快认错、
 # 涨停族超紧防回撤；未列出的策略用 DEFAULT_EXIT_PARAMS。
 STRATEGY_EXIT_PARAMS: Dict[str, Tuple[float, float]] = {
@@ -1178,7 +1383,10 @@ def _exit_param_key(atr_mult: float, trail: float) -> str:
 def compute_dynamic_exit_returns(df: pd.DataFrame,
                                  atr_mult: float = DEFAULT_EXIT_PARAMS[0],
                                  trail: float = DEFAULT_EXIT_PARAMS[1],
-                                 entry_timing: str = "close") -> pd.DataFrame:
+                                 entry_timing: str = "close",
+                                 dual_timing: bool = False,
+                                 trail_activate_r: float = 0.0,
+                                 take_profit_r: float = 0.0) -> pd.DataFrame:
     """按股票分组计算各持有期的动态退出收益,替换固定持有期收益。
 
     对每个持有期 p,入场日在持有期内逐日检查:
@@ -1193,11 +1401,29 @@ def compute_dynamic_exit_returns(df: pd.DataFrame,
     Exp3 sweep（3x3 网格中胜率 53.1% 最高）；P2-10 起支持按策略族传入
     不同参数，非默认组的输出列由调用方追加 __a{atr}_t{trail} 后缀区分。
 
-    entry_timing（P3-13）："close"=信号日收盘入场（默认）；"next_open"=次日
-    开盘入场——仅替换入场价为 open[t+1]（止损基准同步改为 entry），风险窗口
-    与出场日保持与 close 口径一致，隔离纯入场价效应。atr 取信号日值，无前视。
+    entry_timing（P3-13）："close"=信号日收盘入场（旧口径，默认，保持外部
+    调用兼容）；"next_open"=次日开盘入场——仅替换入场价为 open[t+1]（止损
+    基准同步改为 entry），风险窗口与出场日保持与 close 口径一致。atr 取信号
+    日值，无前视。
+    dual_timing=True 时一次扫描同时产出两种入场口径的列：close 口径列为
+    dyn_ret_{p}d（及非默认参数组的 __{key} 后缀列），next_open 口径列为
+    dyn_ret_{p}d_no（及 __{key}_no 后缀列），供双口径对比而无需二次全量计算。
+
+    trail_activate_r（移动止盈激活门槛，R 倍数，默认 0.0=旧行为）：浮盈达到
+    trail_activate_r × 初始风险（atr_mult*atr20 入场值）后移动止盈才武装；
+    武装前移动止盈不触发，仅 ATR 止损/时间止损可出场。0.0 = 入场即武装。
+    take_profit_r（固定止盈，R 倍数，默认 0.0=关闭）：>0 时，bar 最高价触及
+    entry + take_profit_r × 初始风险 即按该止盈价成交。同 bar 触发优先级
+    （保守口径）：ATR 止损 > 固定止盈 > 移动止盈。
+
+    跌停不可卖（sellability）：止损/移动止盈/固定止盈/时间止损若触发在跌停 bar
+    （_is_limit_down，复用入场侧精确 down_limit + 板块阈值兜底逻辑），当日
+    无法成交，顺延到其后第一个非跌停 bar 按该 bar 收盘价成交（保守口径）；
+    持有窗口内再无非跌停 bar 时，按窗口最后一个 bar 的收盘价退出。涨停 bar
+    不阻断卖出，固定止盈在涨停 bar 正常成交（仅跌停 defer）。
     """
     max_p = max(HOLDING_PERIODS)
+    timings = ("close", "next_open") if dual_timing else (entry_timing,)
     # 用位置索引计算并按逆置换还原行序：df 原始 index 可能非唯一（多次
     # concat/merge 后常见），直接 out.reindex(df.index) 会按重复标签错位，导致
     # dyn_ret 的 NaN 模式漂移、回测交易数不确定。这里排序后全程用 0..n-1 位置，
@@ -1206,55 +1432,106 @@ def compute_dynamic_exit_returns(df: pd.DataFrame,
     inv_order = np.empty_like(sort_order)
     inv_order[sort_order] = np.arange(len(sort_order))
     df_sorted = df.iloc[sort_order].reset_index(drop=True)
+    # 跌停标记（与入场侧 _is_limit_down 同逻辑：精确 down_limit 优先，pct 阈值兜底）
+    ld_all = _is_limit_down(df_sorted).fillna(False).to_numpy(dtype=bool)
     out = pd.DataFrame(index=df_sorted.index, dtype="float32")
     for code, g in df_sorted.groupby("code", sort=False):
         n = len(g)
+        sl = g.index[0]
         close = g["close"].to_numpy(dtype=np.float64)
         op = g["open"].to_numpy(dtype=np.float64)
         high = g["high"].to_numpy(dtype=np.float64)
         low = g["low"].to_numpy(dtype=np.float64)
         atr = g["atr20"].to_numpy(dtype=np.float64)
-        rets = {p: np.full(n, np.nan, dtype=np.float32) for p in HOLDING_PERIODS}
+        limit_down = ld_all[sl:sl + n]
+        rets = {t: {p: np.full(n, np.nan, dtype=np.float32) for p in HOLDING_PERIODS}
+                for t in timings}
 
         for i in range(n - 1):
-            if entry_timing == "next_open":
-                if i + 1 >= n:
-                    break
-                entry = op[i + 1]
-            else:
-                entry = close[i]
-            stop = entry - atr_mult * atr[i]
-            if not np.isfinite(stop) or not np.isfinite(entry) or entry <= 0:
-                continue
             w = min(max_p, n - 1 - i)
+            if w <= 0:
+                continue
             win_low = low[i + 1: i + 1 + w]
             win_high = high[i + 1: i + 1 + w]
             win_close = close[i + 1: i + 1 + w]
+            win_ld = limit_down[i + 1: i + 1 + w]
             peaks = np.maximum.accumulate(win_high)
-            atr_hit = win_low <= stop
-            trail_hit = win_close <= peaks * trail
-            hit = atr_hit | trail_hit
 
-            for p in HOLDING_PERIODS:
-                if p > w:
+            for t in timings:
+                entry = op[i + 1] if t == "next_open" else close[i]
+                risk0 = atr_mult * atr[i]
+                stop = entry - risk0
+                if not np.isfinite(stop) or not np.isfinite(entry) or entry <= 0:
                     continue
-                hit_p = hit[:p]
-                if hit_p.any():
-                    k = int(np.argmax(hit_p))
-                    # 移动止盈触发日按 peak*trail 退出（修复：原硬编码 0.95，
-                    # 导致 per-strategy trail 参数 0.97/0.92 在该分支失效）
-                    exit_price = stop if atr_hit[k] else peaks[k] * trail
-                else:
-                    exit_price = close[i + p]
-                if entry > 0:
-                    rets[p][i] = (exit_price / entry - 1.0)
+                atr_hit_t = win_low <= stop
 
-        for p, arr in rets.items():
-            out.loc[g.index, f"dyn_ret_{p}d"] = arr
+                # 移动止盈激活门槛（R 倍数）：浮盈（最高价相对入场）首次达到
+                # trail_activate_r*risk0 的 bar 起武装；武装前移动止盈不触发。
+                # trail_activate_r<=0 时全窗口武装（旧行为，bit-for-bit 一致）。
+                if trail_activate_r and trail_activate_r > 0:
+                    arm_level = entry + trail_activate_r * risk0
+                    armed = np.maximum.accumulate(win_high >= arm_level)
+                    trail_hit = armed & (win_close <= peaks * trail)
+                else:
+                    trail_hit = win_close <= peaks * trail
+
+                # 固定止盈（R 倍数）：bar 最高价触及 entry+take_profit_r*risk0
+                # 即按止盈价成交；take_profit_r<=0 关闭（旧行为）。
+                if take_profit_r and take_profit_r > 0:
+                    tp_price = entry + take_profit_r * risk0
+                    tp_hit_t = win_high >= tp_price
+                else:
+                    tp_price = np.nan
+                    tp_hit_t = np.zeros(w, dtype=bool)
+
+                # 同 bar 优先级（保守）：ATR 止损 > 固定止盈 > 移动止盈。
+                # 取最早触发 bar，再按优先级在该 bar 内判定退出类型/价格。
+                any_hit = atr_hit_t | tp_hit_t | trail_hit
+
+                for p in HOLDING_PERIODS:
+                    if p > w:
+                        continue
+                    hit_p = any_hit[:p]
+                    if hit_p.any():
+                        k = int(np.argmax(hit_p))
+                        if win_ld[k]:
+                            # 触发日跌停无法卖出：顺延到窗口内第一个非跌停 bar，
+                            # 按该 bar 收盘价成交；窗口内全部跌停则按最后 bar 收盘
+                            non_ld = np.flatnonzero(~win_ld[k:])
+                            j = (k + int(non_ld[0])) if non_ld.size else (w - 1)
+                            exit_price = win_close[j]
+                        elif atr_hit_t[k]:
+                            exit_price = stop
+                        elif tp_hit_t[k]:
+                            exit_price = tp_price
+                        else:
+                            # 移动止盈触发日按 peak*trail 退出（修复：原硬编码 0.95，
+                            # 导致 per-strategy trail 参数 0.97/0.92 在该分支失效）
+                            exit_price = peaks[k] * trail
+                    else:
+                        # 时间止损：第 p 日收盘退出；该日跌停同样顺延
+                        if win_ld[p - 1]:
+                            non_ld = np.flatnonzero(~win_ld[p - 1:])
+                            j = ((p - 1) + int(non_ld[0])) if non_ld.size else (w - 1)
+                            exit_price = win_close[j]
+                        else:
+                            exit_price = win_close[p - 1]
+                    if entry > 0:
+                        rets[t][p][i] = (exit_price / entry - 1.0)
+
+        for t in timings:
+            sfx = "_no" if t == "next_open" else ""
+            for p, arr in rets[t].items():
+                out.loc[g.index, f"dyn_ret_{p}d{sfx}"] = arr
 
     # 按逆置换还原到原 df 行序（位置对齐，规避非唯一 index 的 reindex 错位）
     out = out.iloc[inv_order].reset_index(drop=True)
     out.index = df.index
+    if not dual_timing and entry_timing == "close":
+        out = out[[f"dyn_ret_{p}d" for p in HOLDING_PERIODS]]
+    elif not dual_timing and entry_timing == "next_open":
+        out = out[[f"dyn_ret_{p}d_no" for p in HOLDING_PERIODS]]
+        out.columns = [f"dyn_ret_{p}d" for p in HOLDING_PERIODS]
     return out
 
 
@@ -1302,6 +1579,11 @@ def _is_limit_down(df: pd.DataFrame) -> pd.Series:
         return df["pct_chg"] <= threshold
 
 
+# 以涨停日本身为买点的策略：信号日涨停是策略意图（次日开盘入场口径下次日成交），
+# 豁免 _entry_mask 的涨停买入掩码；跌停掩码仍生效。
+LIMIT_UP_ENTRY_STRATEGIES = {"low_position_limit_up", "stable_then_limit_up"}
+
+
 def _moneyflow_ok(df: pd.DataFrame) -> pd.Series:
     """主力资金净流入确认:当日净流入 > 0 或近 N 日累计净流入 > 0。
 
@@ -1340,30 +1622,54 @@ def _volume_ratio_ok(df: pd.DataFrame) -> pd.Series:
     return ok.fillna(True)
 
 
-def _entry_mask(df: pd.DataFrame, enhanced: bool = False) -> pd.Series:
+def _regime_col(mode: Optional[str] = None) -> str:
+    """当前 _REGIME_MODE 对应的市场环境列名（回测/验证/handoff/统计统一口径）。"""
+    m = mode or _REGIME_MODE
+    if m == "strict":
+        return "market_ok"
+    if m == "enh":
+        return "market_ok_enh"
+    return "market_ok_enh2"
+
+
+def _entry_mask(df: pd.DataFrame, enhanced: bool = False, name: Optional[str] = None) -> pd.Series:
     """统一的买入可成交性掩码:剔除涨跌停日,并叠加市场环境、
     主力资金、市值、量比、财务质量过滤(回测/验证/推荐共用)。
 
-    enhanced=True 时使用 market_ok_enh(放宽 regime, P0-1)，
-    False 时使用 market_ok(严格 regime)。
+    市场环境列由全局 _REGIME_MODE 决定（--regime-mode）：enh2=market_ok_enh2
+    （默认，广度+波动率确认）、enh=market_ok_enh、strict=market_ok；
+    enhanced=False 仅在显式严格模式（--strict/--regime-mode strict）下等价。
+    目标列缺失时（如 regime 加载失败）退化为不过滤，保持旧容错行为。
+
+    LIMIT_UP_ENTRY_STRATEGIES 中的策略以涨停日本身为买点（次日开盘入场口径下
+    涨停日信号次日成交），剔除涨停日会与策略意图直接矛盾（实测 13k+ 原始信号
+    仅 7 行通过），故这些策略豁免涨停买入掩码；跌停掩码（接飞刀防护）对所有
+    策略保留。
     """
-    regime_col = "market_ok_enh" if enhanced else "market_ok"
-    mask = ~_is_limit_up(df) & ~_is_limit_down(df)
+    regime_col = _regime_col("strict" if not enhanced else None)
+    mask = ~_is_limit_down(df)
+    if name not in LIMIT_UP_ENTRY_STRATEGIES:
+        mask &= ~_is_limit_up(df)
     if regime_col in df.columns:
         mask &= df[regime_col].fillna(True).astype(bool)
+    elif enhanced and "market_ok_enh" in df.columns:
+        mask &= df["market_ok_enh"].fillna(True).astype(bool)
+    elif "market_ok" in df.columns:
+        mask &= df["market_ok"].fillna(True).astype(bool)
     mask &= _moneyflow_ok(df) & _size_ok(df) & _volume_ratio_ok(df) & _financial_ok(df)
     return mask
 
 
 def _apply_cooldown(df: pd.DataFrame, sig: pd.Series, cooldown_days: int = SIGNAL_COOLDOWN_DAYS,
-                    enhanced: bool = False) -> pd.Series:
+                    enhanced: bool = False, name: Optional[str] = None) -> pd.Series:
     """对信号施加冷却期:同一股票同一策略 N 日内只取第一次信号。
 
     按 code 分组,保留信号后 N 日内的后续信号被抑制,降低样本
     自相关与同一股票重复贡献,使胜率统计更真实(C3)。
     enhanced=True 时使用 market_ok_enh(放宽 regime, P0-1)。
+    name 透传给 _entry_mask（涨停买点策略豁免用）。
     """
-    sig = sig & _entry_mask(df, enhanced=enhanced)
+    sig = sig & _entry_mask(df, enhanced=enhanced, name=name)
     kept = pd.Series(False, index=df.index)
     tmp = df.copy()
     tmp["sig"] = sig.astype(bool)
@@ -1456,7 +1762,9 @@ STRATEGY_MASKS: Dict[str, str] = {
     "volume_breakout": "standard",
     "ma_golden_cross": "standard",
     "dragon_head": "chase",
-    "emotion_cycle": "standard",
+    # P1 批次2：emotion_cycle 为 RSI6<35 超卖反转，standard 族要求获利盘>=0.2
+    # 与超卖语义互斥（超卖 ⇒ 多数筹码被套），改用 washout 族（换手率带+质押+股息）
+    "emotion_cycle": "washout",
     "one_yang_three_yin": "washout",
     "box_oscillation": "standard",
     "wave_theory": "standard",
@@ -1510,8 +1818,9 @@ def _apply_regime_soft_filter(df: pd.DataFrame, sig_dict: Dict[str, pd.Series]
       - 全市场锚（REGIME_ALL_WEATHER，基本面/资金面确定性）：任何 regime 都保留，
         业绩预增/机构净买/筹码集中在熊市是避风港；
       - bear 族策略（超跌/防守）：bear 日保留；
-      - 其余策略（趋势/突破/动量）在 bear 日为弱势信号，仅当同股同日存在至少 1 个
-        强势信号（全市场锚或 bear 族策略命中）确认时才保留，砍掉熊市孤立的低质量趋势信号。
+      - 其余策略（趋势/突破/动量）在 bear 日为弱势信号，仅当同股同日存在至少
+        _BEAR_CONFIRM_MIN（默认 2，--bear-confirm 可调；旧行为=1）个强势信号
+        （全市场锚或 bear 族策略命中）确认时才保留，砍掉熊市孤立的低质量趋势信号。
     幂等：对已过滤的 dict 再次调用结果不变（非 bear 日与强势信号不受影响）。
     """
     if not sig_dict or "regime" not in df.columns:
@@ -1536,7 +1845,7 @@ def _apply_regime_soft_filter(df: pd.DataFrame, sig_dict: Dict[str, pd.Series]
         else:
             # 仅 bear 日的非防守策略信号需强势确认；非 bear 日原样保留。
             weak_bear = sig & is_bear
-            keep = sig & (~is_bear | (strong_hit_bear >= 1))
+            keep = sig & (~is_bear | (strong_hit_bear >= _BEAR_CONFIRM_MIN))
             out[n] = pd.Series(keep, index=df.index)
     return out
 
@@ -1609,7 +1918,8 @@ def _strategy_signal(df: pd.DataFrame, name: str, enhanced: bool = False,
     ind_rank 缺失(NaN=无映射/无排名)时放行。
     """
     sig = STRATEGIES[name](df)
-    mask = sig & _entry_mask(df, enhanced=enhanced) & _quality_mask(df, STRATEGY_MASKS.get(name, "base"))
+    mask = (sig & _entry_mask(df, enhanced=enhanced, name=name)
+            & _quality_mask(df, STRATEGY_MASKS.get(name, "base")))
     if regime_filter and "regime" in df.columns:
         allowed = STRATEGY_ALLOWED_REGIMES.get(name)
         if allowed:
@@ -1680,29 +1990,32 @@ def _wonderful_9_score(df):
     )
     mp = df.groupby("code")["macd_hist"].shift(1)
     m20p = df.groupby("code")["ma20"].shift(1)
-    m60p = df.groupby("code")["ma60"].shift(1)
     return (streak.astype(int) * 4 +
             (df["rsi6"] < 35).astype(int) * 3 +
             ((df["macd_hist"] > 0) & (df["macd_hist"] < mp)).astype(int) * 3 +
             (df["volume"] > df["vol_ma5"] * 1.2).astype(int) * 2 +
-            ((df["ma20"] > m60p) & (df["ma20"] > m20p) & (df["ma60"] > m60p)).astype(int) * 2 +
+            # P1 批次2：旧条件要求 ma20 刚上穿 ma60（九转下跌末端几乎不可能成立，
+            # 自相矛盾）；改为 MA20 上行 或 收盘回到 MA20*0.98 上方（趋势企稳）
+            ((df["ma20"] > m20p) | (close >= df["ma20"] * 0.98)).astype(int) * 2 +
             (close >= df["ma20"] * 0.98).astype(int) * 2 +
             (close > df["open"]).astype(int))
 
 
 def sig_wonderful_9_turn(df):
     """策略3：神奇九转——连续 9 个交易日收盘低于 4 日前收盘（下跌计数到 9），
-    叠加超卖 RSI、MACD 红柱回落、放量与均线多头排列，捕捉阶段性反转买点。
+    叠加超卖 RSI、MACD 红柱回落、放量与均线企稳，捕捉阶段性反转买点。
 
     打分权重：
       九转计数成立（连续9日走弱）             +4
       RSI6 < 35（超卖）                       +3
       MACD 红柱仍在但较前一日收窄（动能蓄势） +3
       放量（量 > 1.2*vol_ma5）                +2
-      MA20 上穿 MA60 且 MA20 上行（多头排列） +2
+      MA20 上行 或 收盘≥MA20*0.98（趋势企稳） +2
       收盘不低于 MA20*0.98（回踩到位）        +2
       阳线                                   +1
-    总分 >= 10 触发信号。
+    总分 >= 10 触发信号（P1 批次3：WFO 扫描 8/9/10 中阈值 10 稳定性并列最优、
+    期望 1.262%/胜率 54.7% 显著优于 8（0.464%/46.7%）与 9（0.517%/47.4%）；
+    P1 批次2 曾放松到 8，实测 26 笔/30.8% 胜率超发，回收到 10）。
     """
     return _wonderful_9_score(df) >= 10
 
@@ -1800,21 +2113,26 @@ def sig_monthly_macd_20ma(df):
 
 
 def sig_low_position_limit_up(df):
-    """策略8：低位涨停——股价处于 20 日低位区域的首个涨停，要求换手与价格门槛。
+    """策略8：低位涨停——股价处于 60 日低位区域的首个涨停（P1 批次2 放宽）。
 
     逻辑：
-      - 当日涨停（pct_chg >= 9.5%）
-      - 收盘价低于 20 日最高价的 90%（处于低位）
-      - 换手率 >= 5%（有资金参与）
-      - 股价 < 50 元（低价股偏好）
-      - 前 20 日内无涨停（no_lim，排除连板/高位接力）
+      - 当日涨停（主板 pct_chg >= 9.5%，创业板 >= 19.5%）
+      - 收盘价低于 60 日最高价的 95%（60 日低位；旧条件 20 日高点*0.9
+        与涨停日近乎互斥，信号常年为 0）
+      - 换手率 >= 3%（有资金参与；旧 5% 过严）
+      - 股价 < 80 元（低价股偏好；旧 50 元过严）
+      - 前 10 日内无涨停（排除连板/高位接力；旧 20 日过严）
     """
     pct = df["pct_chg"]
-    h20 = df["high_20d_max"]
+    gem = df["code"].str.startswith(("sz.300", "sz.301"))
+    is_lu = pct >= np.where(gem, LIMIT_UP_PCT_GEM, LIMIT_UP_PCT_MAIN)
+    h60 = df.groupby("code")["high"].transform(
+        lambda x: x.shift(1).rolling(60, min_periods=10).max())
     no_lim = ~(df.groupby("code")["pct_chg"].transform(
-        lambda x: (x >= 9.5).rolling(20, min_periods=1).max().shift(1).fillna(0).astype(bool)
+        lambda x: (x >= 9.5).rolling(10, min_periods=1).max().shift(1).fillna(0).astype(bool)
     ))
-    return (pct >= 9.5) & (df["close"] < h20 * 0.9) & (df["turn"] >= 5) & (df["close"] < 50) & no_lim
+    return (is_lu & (df["close"] < h60 * 0.95) & (df["turn"] >= 3)
+            & (df["close"] < 80) & no_lim)
 
 @deprecated("该函数已废弃，胜率太低")
 def sig_limit_up_resonance(df):
@@ -1903,32 +2221,99 @@ def sig_multi_ma_resonance(df):
     return _multi_ma_resonance_score(df) >= 10
 
 
-# 组合策略组件（P1-2）：2 个动量/突破族 + 1 个反转族，跨风格低相关，避免原三组件
-# （ma_crossover/volume_surge_std/multi_ma_resonance）同为高相关动量导致集成不分散
-# 反而摊薄 alpha；multi_ma_resonance 期望/笔全场最低（~0.46%）已剔除，换成
-# rsi_bullish_divergence（底背离反转，与动量负相关时段互补）。
-ENSEMBLE_COMPONENTS = ["ma_crossover", "volume_surge_std", "rsi_bullish_divergence"]
-ENSEMBLE_MIN_WEIGHTED_SCORE = 0.5   # 加权分触发阈值(权重和为 1)
+# 组合策略组件（P1 批次2 扩展为 6 个，跨趋势/突破/反转/基本面锚四族）：
+# ma_crossover/wave_theory/limit_up_pullback 为趋势/突破族（打分制，连续强度），
+# rsi_bullish_divergence 为反转族（打分制），fc_pos_break/holder_conc_break 为
+# 基本面/资金面锚（布尔 AND 制，命中即强度 1.0）。--ensemble-classic 回退旧 3 组件
+# 二值投票（ma_crossover/volume_surge_std/rsi_bullish_divergence，阈值 0.5）。
+ENSEMBLE_COMPONENTS = ["ma_crossover", "wave_theory", "limit_up_pullback",
+                       "rsi_bullish_divergence", "fc_pos_break", "holder_conc_break"]
+ENSEMBLE_COMPONENTS_CLASSIC = ["ma_crossover", "volume_surge_std", "rsi_bullish_divergence"]
+ENSEMBLE_MIN_WEIGHTED_SCORE = 0.45  # 连续强度加权分触发阈值（6 组件；WFO 扫描 0.35/0.45/0.55/0.65 中 0.45 稳定性 1.00 且期望/胜率最高）
+ENSEMBLE_MIN_WEIGHTED_SCORE_CLASSIC = 0.5   # 旧 3 组件二值投票阈值(权重和为 1)
 _ENSEMBLE_WEIGHTS: Dict[str, float] = {}
+# Walk-forward 权重（P4 前视偏差修复）：按季度桶存放"仅用该季度前已平仓交易"
+# 计算的组件权重，sig_ensemble 按信号日查表；_ENSEMBLE_WF_DATES 为升序季度
+# 起始日，_ENSEMBLE_WF_WEIGHTS 为同长度的权重数组（每行 N 个组件权重，和为 1；
+# 全 0 表示该季度等权回退）。
+_ENSEMBLE_WF_DATES: Optional[pd.DatetimeIndex] = None
+_ENSEMBLE_WF_WEIGHTS: Optional[np.ndarray] = None
+
+
+def _ensemble_components() -> List[str]:
+    """当前生效的组件列表（--ensemble-classic 时为旧 3 组件）。"""
+    return ENSEMBLE_COMPONENTS_CLASSIC if _ENSEMBLE_CLASSIC else ENSEMBLE_COMPONENTS
+
+
+def _ensemble_component_strength(df: pd.DataFrame, name: str) -> pd.Series:
+    """组件连续信号强度（0~1.5）：打分制组件用 raw_score/触发阈值 截断到 [0,1.5]，
+    布尔 AND 组件命中为 1.0、否则 0。classic 模式统一为二值 0/1（旧行为）。"""
+    if _ENSEMBLE_CLASSIC:
+        return STRATEGIES[name](df).astype(float)
+    if name == "ma_crossover":
+        return (_ma_cross(df) / 6.0).clip(0, 1.5)
+    if name == "wave_theory":
+        return (_wave_theory_score(df) / 8.0).clip(0, 1.5)
+    if name == "limit_up_pullback":
+        return (_limit_up_pullback_score(df) / 8.0).clip(0, 1.5)
+    if name == "rsi_bullish_divergence":
+        return (_rsi_bullish_divergence_score(df) / 9.0).clip(0, 1.5)
+    # fc_pos_break / holder_conc_break：布尔 AND 组件
+    return STRATEGIES[name](df).astype(float)
+
+
+def _ensemble_weights_for_date(d) -> np.ndarray:
+    """返回日期 d 适用的组件权重（walk-forward）；无历史桶时回退全样本权重/等权。"""
+    comps = _ensemble_components()
+    if _ENSEMBLE_WF_DATES is not None and _ENSEMBLE_WF_WEIGHTS is not None and len(_ENSEMBLE_WF_DATES):
+        pos = np.searchsorted(_ENSEMBLE_WF_DATES.to_numpy(), np.datetime64(pd.Timestamp(d)),
+                              side="right") - 1
+        if pos >= 0:
+            w = _ENSEMBLE_WF_WEIGHTS[pos]
+            if w.sum() > 0:
+                return w
+    weights = np.array([_ENSEMBLE_WEIGHTS.get(c, 1.0) for c in comps], dtype=float)
+    w_sum = weights.sum()
+    return weights / w_sum if w_sum > 0 else np.ones(len(comps)) / len(comps)
 
 
 def sig_ensemble(df):
     """策略12：组合策略——按各组件策略历史期望/笔加权,加权分 >= 阈值触发。
 
-    权重由 run_backtests 依据组件策略回测的每笔期望收益（兼顾胜率与盈亏比，
-    优于单纯胜率）归一化后填充(_ENSEMBLE_WEIGHTS)；未填充时退化为等权。
+    默认（P1 批次2）：6 组件跨族，打分制组件贡献连续强度（raw_score/触发阈值，
+    截断 [0,1.5]），布尔组件命中贡献 1.0；加权和 >= 0.35 触发。
+    classic（--ensemble-classic）：旧 3 组件二值投票，加权和 >= 0.5 触发。
+    权重为 walk-forward 口径（run_backtests 按季度填充 _ENSEMBLE_WF_*）：
+    每个信号日只用该日之前已平仓交易算出的组件期望权重，消除"全样本权重应用
+    于全样本"的前视偏差；无 walk-forward 数据时回退 _ENSEMBLE_WEIGHTS 全样本
+    权重，再回退等权。
     """
-    weights = np.array([_ENSEMBLE_WEIGHTS.get(c, 1.0) for c in ENSEMBLE_COMPONENTS], dtype=float)
-    w_sum = weights.sum()
-    if w_sum > 0:
-        weights = weights / w_sum
-    hits = np.column_stack([
-        sig_ma_crossover(df).astype(float),
-        sig_volume_surge_std(df).astype(float),
-        sig_rsi_bullish_divergence(df).astype(float),
+    comps = _ensemble_components()
+    threshold = ENSEMBLE_MIN_WEIGHTED_SCORE_CLASSIC if _ENSEMBLE_CLASSIC else ENSEMBLE_MIN_WEIGHTED_SCORE
+    dates = pd.to_datetime(df["date"]).to_numpy()
+    wf = _ENSEMBLE_WF_DATES is not None and _ENSEMBLE_WF_WEIGHTS is not None and len(_ENSEMBLE_WF_DATES)
+    if wf:
+        pos = np.searchsorted(_ENSEMBLE_WF_DATES.to_numpy(), dates, side="right") - 1
+        w_table = np.where(pos[:, None] >= 0, _ENSEMBLE_WF_WEIGHTS[np.clip(pos, 0, None)], 0.0)
+        equal = np.ones(len(comps)) / len(comps)
+        use_eq = (pos < 0) | (w_table.sum(axis=1) <= 0)
+        w_table[use_eq] = equal
+    else:
+        base = _ensemble_weights_for_date(dates[0] if len(dates) else pd.Timestamp.now())
+        w_table = np.tile(base, (len(df), 1))
+    strength = np.column_stack([
+        _ensemble_component_strength(df, c).astype(float).to_numpy() for c in comps
     ])
-    score = hits @ weights
-    return score >= ENSEMBLE_MIN_WEIGHTED_SCORE
+    score = (strength * w_table).sum(axis=1)
+    return pd.Series(score >= threshold, index=df.index)
+
+
+def _volume_breakout_score(df):
+    """放量突破打分（供 sig_volume_breakout 与阈值 sweep 共用），满分 13。"""
+    return ((df["volume"] > df["vol_ma5"] * 2).astype(int) * 5 +
+            (df["close"] > df["ma20"]).astype(int) * 4 +
+            (df["close"] > df["open"]).astype(int) * 2 +
+            (df["close"] > df["ma60"]).astype(int) * 2)
 
 
 def sig_volume_breakout(df):
@@ -1941,11 +2326,7 @@ def sig_volume_breakout(df):
       收盘站上 MA60             +2
     总分 >= 8 触发信号。
     """
-    score = ((df["volume"] > df["vol_ma5"] * 2).astype(int) * 5 +
-             (df["close"] > df["ma20"]).astype(int) * 4 +
-             (df["close"] > df["open"]).astype(int) * 2 +
-             (df["close"] > df["ma60"]).astype(int) * 2)
-    return score >= 8
+    return _volume_breakout_score(df) >= 8
 
 
 @deprecated("该函数已废弃，胜率无法通过过滤提升（41.9% 为大盘组最低）")
@@ -2087,50 +2468,53 @@ def sig_wave_theory(df):
 
 
 def sig_chan_theory(df):
-    """策略23：缠论底背驰——价格创新低但 MACD 未创新低，下跌动能衰竭的买点。
+    """策略23：缠论底背驰——价格创近期新低但 MACD DIF 低点抬高，下跌动能衰竭。
 
-    逻辑（全部满足）：
-      - 收盘创新低（close < 昨收）
-      - MACD DIF 未创新低（dif >= 昨 dif，底背驰核心条件）
-      - 放量（量 > vol_ma5）
-      - RSI6 < 50（仍处弱势但未极端）
+    逻辑（全部满足，P1 批次2 重写）：
+      - 收盘创 10 日新低（close <= 不含当日的 10 日最低收盘；20 日窗口过严，
+        与后续 mask 链叠加后近乎零信号）
+      - MACD DIF 不低于前 20 根的 DIF 谷底（dif >= dif.rolling(20).min().shift(1)，
+        即价格新低但动能指标未同步创新低，底背驰/底背离核心条件；旧实现仅比较
+        dif 与昨 dif 的 1 日 uptick，不是真正的背驰）
+      - 量能不低于 0.8×vol_ma5（下跌末端放量企稳；>1.0 与超跌场景互斥导致零信号）
+      - RSI6 < 55（仍处弱势但未极端）
       - 阳线（close > open）
     """
-    pc = df.groupby("code")["close"].shift(1)
-    new_low = df["close"] < pc
-    dif = df["macd_dif"]
-    difp = df.groupby("code")["macd_dif"].shift(1)
-    macd_not_new_low = dif >= difp
-    vol_ok = df["volume"] > df["vol_ma5"]
-    rsi_oversold = df["rsi6"] < 50
+    g = df.groupby("code")
+    close_low_10 = g["close"].transform(lambda x: x.shift(1).rolling(10, min_periods=5).min())
+    price_new_low = df["close"] <= close_low_10
+    dif_prev_trough = g["macd_dif"].transform(lambda x: x.rolling(20, min_periods=5).min().shift(1))
+    dif_higher_low = df["macd_dif"] >= dif_prev_trough
+    vol_ok = df["volume"] > df["vol_ma5"] * 0.8
+    rsi_oversold = df["rsi6"] < 55
     close_above_open = df["close"] > df["open"]
-    return new_low & macd_not_new_low & vol_ok & rsi_oversold & close_above_open
+    return price_new_low & dif_higher_low & vol_ok & rsi_oversold & close_above_open
 
 
 def sig_washout_break(df):
-    """策略24：超跌突破——获利盘 < 20%（筹码深度套牢）后放量阳线站上 MA20，洗盘后的反转突破。
+    """策略24：超跌突破——获利盘 < 35%（筹码普遍被套）后放量阳线贴近/站上 MA20。
 
-    逻辑（全部满足）：
-      - 获利盘 < 20%（绝大部分筹码被套，抛压枯竭）
+    逻辑（全部满足，P1 批次2 放宽）：
+      - 获利盘 < 0.35（旧 0.2 与"收盘站上 MA20"近乎互斥，信号常年为 0）
       - 阳线（收 > 开）
       - 放量（量 > 1.5*vol_ma5）
-      - 收盘站上 MA20
+      - 收盘不低于 MA20*0.98（MA20 上下 2% 内，捕捉突破时刻而非确认后追高）
     """
     return ((df["profit_ratio"] < WASHOUT_PROFIT_RATIO) & (df["close"] > df["open"])
-            & (df["volume"] > df["vol_ma5"] * 1.5) & (df["close"] > df["ma20"]))
+            & (df["volume"] > df["vol_ma5"] * 1.5) & (df["close"] > df["ma20"] * 0.98))
 
 
 def sig_low_profit_hold(df):
-    """策略25：超跌+筹码集中——获利盘 < 20% 且股东人数下降（筹码向少数人集中），阳线站上 MA20。
+    """策略25：超跌+筹码集中——获利盘 < 35% 且股东人数下降（筹码集中），阳线贴近 MA20。
 
-    逻辑（全部满足）：
-      - 获利盘 < 20%（深度套牢）
+    逻辑（全部满足，P1 批次2 放宽）：
+      - 获利盘 < 0.35（旧 0.2 过严）
       - 最近一期股东人数环比下降（筹码集中）
-      - 收盘站上 MA20
+      - 收盘不低于 MA20*0.98（突破时刻）
       - 阳线（收 > 开）
     """
     return ((df["profit_ratio"] < WASHOUT_PROFIT_RATIO) & (df["holder_chg"] < 0)
-            & (df["close"] > df["ma20"]) & (df["close"] > df["open"]))
+            & (df["close"] > df["ma20"] * 0.98) & (df["close"] > df["open"]))
 
 
 def sig_holder_conc_break(df):
@@ -2415,7 +2799,9 @@ else:
 
 
 def calc_portfolio_metrics(dates: pd.Series, returns: np.ndarray,
-                           avg_holding: float) -> Optional[Dict[str, float]]:
+                           avg_holding: float,
+                           target_vol_annual: float = 0.0,
+                           max_leverage: float = 1.0) -> Optional[Dict[str, float]]:
     """日历日等权组合复利净值口径的绩效指标（与基准 compute_benchmark_metrics 同口径）。
 
     策略信号是选股信号、持有期重叠，不能对逐笔收益直接 cumprod（会把重叠信号
@@ -2429,6 +2815,9 @@ def calc_portfolio_metrics(dates: pd.Series, returns: np.ndarray,
         dates: 与 returns 对齐的信号触发日（pd.Series / DatetimeIndex）。
         returns: 单笔持有期净收益率（小数，已扣交易成本）。
         avg_holding: 该持有期交易日数，用于把单笔收益分摊到日。
+        target_vol_annual: 年化波动率目标（如 0.15）；>0 启用波动率目标仓位，
+            0.0（默认）= 等权旧口径。仅影响组合级总收益/年化/回撤/夏普。
+        max_leverage: 波动率目标下每日总敞口 g_t 的上限，默认 1.0（不加杠杆）。
 
     Returns:
         含 total_return / annualized_return / max_drawdown / sharpe_ratio 的字典；
@@ -2474,6 +2863,24 @@ def calc_portfolio_metrics(dates: pd.Series, returns: np.ndarray,
     # 当日等权组合收益 = 当日持仓分摊收益的平均（满仓等权，空仓日收益 0 不补）
     port_daily = np.zeros(n_days, dtype=float)
     port_daily[active] = daily_sum[active] / daily_cnt[active]
+
+    # 波动率目标仓位（可选，target_vol_annual>0 启用；默认 0.0 = 等权旧口径）：
+    # 每日总敞口 g_t = clip(目标年化波动 / 已实现组合年化波动, 0, max_leverage)，
+    # 已实现波动用"截至前一日"的 20 日滚动 std（causal，无前视）×√252；
+    # 历史不足 20 日或波动≈0 时 g_t=1.0。缩放后日收益 = port_daily × g_t。
+    if target_vol_annual and target_vol_annual > 0:
+        gross = np.ones(n_days, dtype=float)
+        for t in range(1, n_days):
+            lo = max(0, t - 20)
+            window = port_daily[lo:t]
+            if window.size >= 2:
+                realized = float(np.std(window)) * np.sqrt(252.0)
+                if realized > 1e-8:
+                    gross[t] = float(np.clip(target_vol_annual / realized, 0.0, max_leverage))
+        avg_gross = float(gross[active].mean()) if active.any() else 1.0
+        logger.info(f"[波动率目标] 目标年化 {target_vol_annual*100:.1f}%, "
+                    f"杠杆上限 {max_leverage:g}, 平均总敞口 {avg_gross:.3f}")
+        port_daily = port_daily * gross
 
     eq = np.cumprod(1.0 + port_daily)
     total_return = float(eq[-1] - 1.0) * 100.0
@@ -2539,7 +2946,9 @@ def calc_metrics(returns: np.ndarray, avg_holding: Optional[float] = None,
     # 与基准 compute_benchmark_metrics 一致；逐笔指标（胜率/盈亏比/期望/凯利）保留。
     # dates 缺失（如 WFO/诊断旧调用）时回退逐笔累加口径。
     if dates is not None:
-        port = calc_portfolio_metrics(dates, r, avg_holding)
+        port = calc_portfolio_metrics(dates, r, avg_holding,
+                                      target_vol_annual=_TARGET_VOL_ANNUAL,
+                                      max_leverage=_MAX_LEVERAGE)
         if port is not None:
             metrics["total_return"] = port["total_return"]
             metrics["annualized_return"] = port["annualized_return"]
@@ -2569,11 +2978,29 @@ def log_memory_usage(stage: str):
 # 回测（自动串行/并行）
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _signal_return_col(columns, name: str, p: int, entry_timing: str) -> Optional[str]:
+    """与 _backtest_single 持有期收益列选择同口径：分组出场参数列优先，
+    再回退默认 dyn_ret / ret；next_open 口径取 _no 后缀列。无可用列返回 None。"""
+    params = STRATEGY_EXIT_PARAMS.get(name)
+    use_alt = params is not None and tuple(params) != DEFAULT_EXIT_PARAMS
+    key = _exit_param_key(*params) if use_alt else ""
+    sfx = "_no" if entry_timing == "next_open" else ""
+    if use_alt:
+        cand = f"dyn_ret_{p}d__{key}{sfx}"
+        if cand in columns:
+            return cand
+    for cand in (f"dyn_ret_{p}d{sfx}", f"ret_{p}d{sfx}"):
+        if cand in columns:
+            return cand
+    return None
+
+
 def _backtest_single(name: str, df: pd.DataFrame, sig: Optional[pd.Series] = None,
                      select_period_by: str = "total_return",
                      entry_timing: str = "close",
                      industry_filter: bool = False,
-                     regime_filter: bool = False) -> Dict:
+                     regime_filter: bool = False,
+                     collect_trades: bool = False) -> Dict:
     """单策略回测：生成信号 -> 剔除不可成交（涨停）信号 -> 按持有期分别统计绩效。
 
     sig 为 None 时内部按 _strategy_signal + _apply_cooldown 现算
@@ -2663,6 +3090,17 @@ def _backtest_single(name: str, df: pd.DataFrame, sig: Optional[pd.Series] = Non
         m["best_period"] = best_p
         m["periods"] = period_metrics
         m["time_s"] = round(time.time() - t0, 1)
+        if collect_trades:
+            # 供 walk-forward 权重：最优持有期的逐笔（信号日, 净收益）。平仓日按
+            # best_p 个交易日保守近似（信号日 + best_p*2 日历日），只晚不早。
+            col = _signal_return_col(signals.columns, name, best_p, entry_timing)
+            if col is not None:
+                sub_t = signals[["date", col]].dropna()
+                exit_dates = pd.to_datetime(sub_t["date"]) + pd.Timedelta(days=int(best_p) * 2)
+                m["_trades"] = list(zip(exit_dates.to_numpy(),
+                                        (sub_t[col].values - TRADING_COST_PCT / 100.0)))
+            else:
+                m["_trades"] = []
         return m
     except Exception as e:
         return {"strategy": name, "error": str(e), "time_s": round(time.time() - t0, 1)}
@@ -2715,8 +3153,9 @@ def _compute_ensemble_weights(component_results: Dict[str, Dict]) -> Dict[str, f
     归一化（赋 0 会把该组件从 ensemble 打分中静默剔除、使加权分被其余组件拉低塌缩）。
     全部组件无效时返回空 dict，由 sig_ensemble 回退等权。
     """
+    comps = _ensemble_components()
     valid_exp: Dict[str, float] = {}
-    for c in ENSEMBLE_COMPONENTS:
+    for c in comps:
         r = component_results.get(c)
         if r is None or "error" in r:
             continue
@@ -2730,11 +3169,257 @@ def _compute_ensemble_weights(component_results: Dict[str, Dict]) -> Dict[str, f
     weights = {c: w / exp_sum for c, w in valid_exp.items()}
     logger.info(
         "组合策略权重(按期望): "
-        + ", ".join(f"{c}={weights.get(c, 0.0):.3f}" for c in ENSEMBLE_COMPONENTS)
-        + (f"（无效组件已排除: {[c for c in ENSEMBLE_COMPONENTS if c not in valid_exp]}）"
-           if len(valid_exp) < len(ENSEMBLE_COMPONENTS) else "")
+        + ", ".join(f"{c}={weights.get(c, 0.0):.3f}" for c in comps)
+        + (f"（无效组件已排除: {[c for c in comps if c not in valid_exp]}）"
+           if len(valid_exp) < len(comps) else "")
     )
     return weights
+
+
+WF_MIN_CLOSED_TRADES = 10   # walk-forward 单组件参与权重所需的最小已平仓交易数
+
+
+def _build_walkforward_weights(component_results: Dict[str, Dict],
+                               signal_dates: pd.Series) -> Tuple[pd.DatetimeIndex, np.ndarray]:
+    """按自然季度构建 walk-forward 组件权重，消除全样本权重的前视偏差。
+
+    每个季度桶的权重 = 各组件"在该季度起始日之前已平仓交易"的正期望归一化：
+      - 交易平仓日近似为 信号日 + best_period 个交易日（用日历日 best_period*2
+        天保守估计，只会让交易更晚计入，不引入未来信息；ATR 提前止损只会更早）；
+      - 组件在历史窗口内已平仓交易 <= WF_MIN_CLOSED_TRADES 笔或期望 <= 0 时
+        排除出该季度分母；
+      - 有效组件 < 2 时该季度回退等权（返回全 0 行，由 sig_ensemble 处理）。
+    component_results 需含 _collect_trades=True 时附加的 "_trades"
+    （(exit_date, net_ret) 数组）。
+    """
+    dates = pd.to_datetime(pd.Series(signal_dates).values)
+    q_starts = pd.Period(dates.min(), freq="Q").to_timestamp(how="start")
+    q_end = pd.Period(dates.max(), freq="Q").to_timestamp(how="start")
+    quarters = pd.date_range(q_starts, q_end, freq="QS")
+    comps = _ensemble_components()
+    n_comp = len(comps)
+    wf_dates = pd.DatetimeIndex(quarters)
+    wf_weights = np.zeros((len(quarters), n_comp), dtype=np.float64)
+
+    comp_trades: Dict[str, pd.DataFrame] = {}
+    for c in comps:
+        r = component_results.get(c) or {}
+        trades = r.get("_trades")
+        if trades is not None and len(trades):
+            comp_trades[c] = pd.DataFrame(trades, columns=["exit_date", "ret"])
+    if not comp_trades:
+        logger.warning("walk-forward 权重：组件无交易明细，全部季度回退等权")
+        return wf_dates, wf_weights
+
+    n_equal = 0
+    for qi, q in enumerate(quarters):
+        exps = {}
+        for ci, c in enumerate(comps):
+            tdf = comp_trades.get(c)
+            if tdf is None:
+                continue
+            past = tdf[tdf["exit_date"] < q]
+            if len(past) <= WF_MIN_CLOSED_TRADES:
+                continue
+            exp = float(past["ret"].mean()) * 100.0
+            if exp > 0:
+                exps[ci] = exp
+        if len(exps) >= 2:
+            s = sum(exps.values())
+            for ci, e in exps.items():
+                wf_weights[qi, ci] = e / s
+        else:
+            n_equal += 1
+
+    first_valid = next((i for i in range(len(quarters)) if wf_weights[i].sum() > 0), None)
+    if first_valid is not None:
+        logger.info(
+            f"walk-forward 权重: {len(quarters)} 个季度桶，前 {first_valid} 个季度"
+            f"（历史不足）等权，{n_equal - min(n_equal, first_valid)} 个季度有效组件<2 等权；"
+            f"首个有效季度 {quarters[first_valid].date()} 权重 "
+            + ", ".join(f"{c}={wf_weights[first_valid, i]:.3f}"
+                        for i, c in enumerate(comps))
+        )
+    else:
+        logger.warning("walk-forward 权重：所有季度有效组件均不足，全部回退等权")
+    return wf_dates, wf_weights
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# WFO 参数扫描脚手架（--wfo-sweep）：对高流动性策略的打分阈值做 ±1 点 walk-forward
+# 扫描，按自然年度桶报告胜率/期望/稳定性。复用既有 信号→冷却→回测 路径，仅重算
+# 被扫策略的布尔掩码（原始打分序列廉价保留），不重算指标/出场，分钟级完成。
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# 参与阈值扫描的高流动性策略：策略名 -> (原始打分函数, 现行硬编码阈值)
+WFO_SWEEP_STRATEGIES: Dict[str, Tuple[Callable, float]] = {
+    "ma_crossover": (_ma_cross, 6.0),
+    "wave_theory": (_wave_theory_score, 8.0),
+    "limit_up_pullback": (_limit_up_pullback_score, 8.0),
+    "monthly_macd_20ma": (_monthly_macd_score, 10.0),
+    "n_pattern": (_n_pattern_score, 13.0),
+    "volume_breakout": (_volume_breakout_score, 8.0),
+    "wonderful_9_turn": (_wonderful_9_score, 10.0),
+}
+
+
+def _sweep_signal_from_score(df: pd.DataFrame, name: str, score: pd.Series,
+                             threshold: float,
+                             enhanced: bool = True) -> pd.Series:
+    """由原始打分序列按给定阈值生成布尔信号，并复用统一的买入掩码/族质量过滤/
+    冷却期（与 _strategy_signal + _apply_cooldown 同路径，仅替换阈值比较）。"""
+    raw = (score >= threshold)
+    mask = (raw & _entry_mask(df, enhanced=enhanced, name=name)
+            & _quality_mask(df, STRATEGY_MASKS.get(name, "base")))
+    return _apply_cooldown(df, mask, enhanced=enhanced, name=name)
+
+
+def sweep_strategy_thresholds(df: pd.DataFrame,
+                              strategy_names: Optional[List[str]] = None,
+                              deltas: Tuple[float, ...] = (-1.0, 0.0, 1.0),
+                              entry_timing: str = "next_open",
+                              enhanced: bool = True) -> List[Dict]:
+    """对高流动性策略的打分阈值做 walk-forward 扫描（脚手架，非自动调参）。
+
+    一次扫描内：原始打分序列只算一次；每个 (策略, 阈值) 变体仅重算该策略布尔掩码
+    并复用 _backtest_single 统计（指标/出场列已在 df 上，不重算）。按自然年度桶
+    报告胜率/期望，全期期望，以及稳定性（期望为正的年份占比）。
+
+    Args:
+        df: 已含指标与 dyn_ret/ret 出场列的全量 DataFrame（compute_indicators +
+            compute_dynamic_exit_returns 之后）。
+        strategy_names: 待扫策略；None 用 WFO_SWEEP_STRATEGIES 全部 6 个。
+        deltas: 相对现行阈值的偏移（分），默认 (-1, 0, +1)。
+        entry_timing: 入场口径，默认 next_open（与主回测一致）。
+        enhanced: 买入掩码 regime 口径，默认 True（enhanced）。
+
+    Returns:
+        每个变体一条 dict：strategy / delta / threshold / trades / win_rate /
+        full_expectancy / stability / yearly({年: {trades,win_rate,expectancy}})。
+    """
+    names = strategy_names or list(WFO_SWEEP_STRATEGIES.keys())
+    rows: List[Dict] = []
+    for name in names:
+        score_fn, base_thr = WFO_SWEEP_STRATEGIES.get(name, (None, None))
+        if score_fn is None:
+            logger.warning(f"[wfo-sweep] 策略 {name} 无打分函数，跳过")
+            continue
+        score = score_fn(df)
+        for d in deltas:
+            thr = base_thr + d
+            sig = _sweep_signal_from_score(df, name, score, thr, enhanced=enhanced)
+            r = _backtest_single(name, df, sig, entry_timing=entry_timing,
+                                 select_period_by="expectancy")
+            if "error" in r:
+                logger.warning(f"[wfo-sweep] {name} Δ{d:+.0f} 回测失败: {r['error']}")
+                continue
+            best_p = r.get("best_period")
+            yearly = (r.get("periods", {}).get(best_p, {}) or {}).get("yearly", {}) or {}
+            pos_years = sum(1 for y in yearly.values() if y.get("expectation", 0) > 0)
+            stability = (pos_years / len(yearly)) if yearly else 0.0
+            rows.append({
+                "strategy": name,
+                "delta": d,
+                "threshold": thr,
+                "trades": r.get("total_trades", 0),
+                "win_rate": r.get("win_rate", 0.0),
+                "full_expectancy": r.get("expectation", 0.0),
+                "stability": round(stability, 3),
+                "yearly": {int(y): {"trades": v.get("trades", 0),
+                                    "win_rate": v.get("win_rate", 0.0),
+                                    "expectancy": v.get("expectation", 0.0)}
+                           for y, v in yearly.items()},
+            })
+    return rows
+
+
+def sweep_ensemble_thresholds(df: pd.DataFrame,
+                              thresholds: Tuple[float, ...] = (0.35, 0.45, 0.55, 0.65),
+                              entry_timing: str = "next_open",
+                              enhanced: bool = True) -> List[Dict]:
+    """组合策略触发阈值扫描：6 组件连续强度加权和 >= threshold 才触发。
+
+    组件信号与 walk-forward 季度权重口径与 run_backtests 一致（组件冷却后信号
+    回测 -> _build_walkforward_weights），仅阈值变量；扫描期间临时改写全局阈值/
+    权重并在结束后恢复。单策略扫描无法施加共振过滤，信号量偏高，阈值排序有效。
+    返回行格式与 sweep_strategy_thresholds 一致，可直接并入 report_wfo_sweep。
+    """
+    global _ENSEMBLE_WEIGHTS, _ENSEMBLE_WF_DATES, _ENSEMBLE_WF_WEIGHTS, ENSEMBLE_MIN_WEIGHTED_SCORE
+    if _ENSEMBLE_CLASSIC:
+        logger.warning("[wfo-sweep] ensemble-classic 模式下跳过连续强度阈值扫描")
+        return []
+    saved = (_ENSEMBLE_WEIGHTS, _ENSEMBLE_WF_DATES, _ENSEMBLE_WF_WEIGHTS, ENSEMBLE_MIN_WEIGHTED_SCORE)
+    base_thr = ENSEMBLE_MIN_WEIGHTED_SCORE
+    rows: List[Dict] = []
+    try:
+        component_results: Dict[str, Dict] = {}
+        for c in _ensemble_components():
+            raw = _strategy_signal(df, c, enhanced=enhanced, industry_filter=True)
+            sig = _apply_cooldown(df, raw, enhanced=enhanced, name=c)
+            component_results[c] = _backtest_single(
+                c, df, sig, entry_timing=entry_timing,
+                select_period_by="expectation", collect_trades=True)
+        _ENSEMBLE_WEIGHTS = _compute_ensemble_weights(component_results)
+        try:
+            _ENSEMBLE_WF_DATES, _ENSEMBLE_WF_WEIGHTS = _build_walkforward_weights(
+                component_results, df["date"])
+        except Exception as e:
+            logger.warning(f"[wfo-sweep] ensemble WF 权重构建失败，回退等权: {e}")
+            _ENSEMBLE_WF_DATES, _ENSEMBLE_WF_WEIGHTS = None, None
+
+        for thr in thresholds:
+            ENSEMBLE_MIN_WEIGHTED_SCORE = thr
+            raw = _strategy_signal(df, "ensemble", enhanced=enhanced, industry_filter=True)
+            sig = _apply_cooldown(df, raw, enhanced=enhanced, name="ensemble")
+            r = _backtest_single("ensemble", df, sig, entry_timing=entry_timing,
+                                 select_period_by="expectation")
+            if "error" in r:
+                logger.warning(f"[wfo-sweep] ensemble 阈值 {thr:.2f} 回测失败: {r['error']}")
+                continue
+            best_p = r.get("best_period")
+            yearly = (r.get("periods", {}).get(best_p, {}) or {}).get("yearly", {}) or {}
+            pos_years = sum(1 for y in yearly.values() if y.get("expectation", 0) > 0)
+            stability = (pos_years / len(yearly)) if yearly else 0.0
+            rows.append({
+                "strategy": "ensemble",
+                "delta": round(thr - base_thr, 2),
+                "threshold": float(thr),
+                "trades": r.get("total_trades", 0),
+                "win_rate": r.get("win_rate", 0.0),
+                "full_expectancy": r.get("expectation", 0.0),
+                "stability": round(stability, 3),
+                "yearly": {int(y): {"trades": v.get("trades", 0),
+                                    "win_rate": v.get("win_rate", 0.0),
+                                    "expectancy": v.get("expectation", 0.0)}
+                           for y, v in yearly.items()},
+            })
+    finally:
+        (_ENSEMBLE_WEIGHTS, _ENSEMBLE_WF_DATES,
+         _ENSEMBLE_WF_WEIGHTS, ENSEMBLE_MIN_WEIGHTED_SCORE) = saved
+    return rows
+
+
+def report_wfo_sweep(rows: List[Dict]) -> None:
+    """把 sweep_strategy_thresholds 的结果按 (稳定性, 全期期望) 排序输出紧凑表格。"""
+    if not rows:
+        logger.warning("[wfo-sweep] 无有效结果")
+        return
+    years = sorted({y for r in rows for y in r["yearly"]})
+    logger.info("=" * 78)
+    logger.info("WFO 阈值扫描（walk-forward，年度桶；Δ=相对现行阈值的分数偏移）")
+    header = f"{'策略':<20}{'Δ':>4}{'阈值':>6}{'笔数':>6}{'胜率%':>7}{'全期期望':>9}{'稳定性':>7}"
+    header += "".join(f"{str(y)[2:]:>8}" for y in years)
+    logger.info(header)
+    for r in sorted(rows, key=lambda x: (x["stability"], x["full_expectancy"]),
+                    reverse=True):
+        line = (f"{r['strategy']:<20}{r['delta']:>+4.0f}{r['threshold']:>6.0f}"
+                f"{r['trades']:>6}{r['win_rate']:>7.1f}{r['full_expectancy']:>9.3f}"
+                f"{r['stability']:>7.2f}")
+        line += "".join(f"{r['yearly'].get(y, {}).get('expectancy', 0.0):>8.2f}"
+                        for y in years)
+        logger.info(line)
+    logger.info("（年度列为各年期望值；稳定性=期望为正的年份占比；脚手架，不自动改配置）")
+    logger.info("=" * 78)
 
 
 def run_backtests(df_bt: pd.DataFrame, index_df: Optional[pd.DataFrame] = None,
@@ -2790,14 +3475,16 @@ def run_backtests(df_bt: pd.DataFrame, index_df: Optional[pd.DataFrame] = None,
     hard_regime = regime_filter and not regime_soft
 
     # 预计算全部策略信号（含冷却期），组合策略先按等权回退生成（权重随后填充）
-    global _ENSEMBLE_WEIGHTS
+    global _ENSEMBLE_WEIGHTS, _ENSEMBLE_WF_DATES, _ENSEMBLE_WF_WEIGHTS
     _ENSEMBLE_WEIGHTS = {}
+    _ENSEMBLE_WF_DATES = None
+    _ENSEMBLE_WF_WEIGHTS = None
     cooled_signals: Dict[str, pd.Series] = {}
     for name in strategy_names:
         raw = _strategy_signal(df_bt, name, enhanced=enhanced_regime,
                                regime_filter=hard_regime,
                                industry_filter=industry_filter)
-        cooled_signals[name] = _apply_cooldown(df_bt, raw, enhanced=enhanced_regime)
+        cooled_signals[name] = _apply_cooldown(df_bt, raw, enhanced=enhanced_regime, name=name)
 
     # 市况软加权（P1-1）：组件回测前先过滤，保证组合权重基于软过滤后的胜率
     if regime_soft:
@@ -2811,33 +3498,61 @@ def run_backtests(df_bt: pd.DataFrame, index_df: Optional[pd.DataFrame] = None,
     if confluence_gate:
         cooled_signals = _apply_confluence_filter(df_bt, cooled_signals, regime_gate=confluence_gate)
 
-    # 先串行计算组合策略的组件,按其胜率填充 _ENSEMBLE_WEIGHTS(C1)
+    # 先串行计算组合策略的组件,按其期望填充权重；组件交易明细用于 walk-forward
+    ensemble_comps = _ensemble_components()
     component_results = {}
-    for name in ENSEMBLE_COMPONENTS:
+    for name in ensemble_comps:
         r = _backtest_single(name, df_bt, cooled_signals[name],
-                             entry_timing=entry_timing)
+                             entry_timing=entry_timing, collect_trades=True)
         component_results[name] = r
         results.append(r)
         if "error" not in r:
             logger.info(f"  [component] {r['strategy']}: {r['total_trades']} 笔, "
                         f"胜率{r['win_rate']:.1f}%, 总收益{r['total_return']:.1f}%")
     _ENSEMBLE_WEIGHTS = _compute_ensemble_weights(component_results)
+    # Walk-forward 权重（消除全样本权重前视偏差）：按季度用"该季度前已平仓交易"
+    # 的组件期望归一化，sig_ensemble 按信号日查表；与上报指标同口径（entry_timing）。
+    try:
+        _ENSEMBLE_WF_DATES, _ENSEMBLE_WF_WEIGHTS = _build_walkforward_weights(
+            component_results, df_bt["date"])
+    except Exception as e:
+        logger.warning(f"walk-forward 权重构建失败，组合策略回退全样本/等权: {e}")
+        _ENSEMBLE_WF_DATES, _ENSEMBLE_WF_WEIGHTS = None, None
 
     # 用真实权重重算组合策略信号 + 冷却期（组件权重依赖其回测胜率）
     if "ensemble" in strategy_names:
         ens_raw = _strategy_signal(df_bt, "ensemble", enhanced=enhanced_regime,
                                    regime_filter=hard_regime,
                                    industry_filter=industry_filter)
-        cooled_signals["ensemble"] = _apply_cooldown(df_bt, ens_raw, enhanced=enhanced_regime)
+        cooled_signals["ensemble"] = _apply_cooldown(df_bt, ens_raw, enhanced=enhanced_regime,
+                                                     name="ensemble")
         if regime_soft:
             # 幂等：仅对新重算的 ensemble 生效（强信号不变、弱信号已剔除）
             cooled_signals = _apply_regime_soft_filter(df_bt, cooled_signals)
+        logger.info(f"组合策略 ensemble 信号数（冷却后/共振前）: {int(cooled_signals['ensemble'].sum())}")
 
     # 同股同日多策略共振过滤（P0-2）
     if resonance_min > 1:
         cooled_signals = _apply_resonance(df_bt, cooled_signals, min_strategies=resonance_min)
+        # 修复：ensemble 组件在共振前已回测并写入 results（用于算权重），共振后其
+        # 信号被大幅削减（如 limit_up_pullback 冷却后 1244 -> 共振后 ~270），但 results
+        # 里仍是共振前的旧指标（830 笔/98.7%），与其余策略（共振后）口径不一致，导致
+        # 汇总表/排名/验证/handoff 与双口径对比全部失真。这里用共振后信号重算组件指标
+        # 并替换 results 中的旧条目；权重仍基于共振前 component_results（全样本历史，
+        # 权重口径不变，仅上报指标改为共振后）。
+        for ci, name in enumerate(ensemble_comps):
+            r_fixed = _backtest_single(name, df_bt, cooled_signals.get(name),
+                                       entry_timing=entry_timing)
+            # 替换该组件在 results 中的旧条目（组件在回测开头按序 append）
+            for ri in range(len(results)):
+                if results[ri].get("strategy") == name:
+                    results[ri] = r_fixed
+                    break
+            if "error" not in r_fixed:
+                logger.info(f"  [component-共振后] {r_fixed['strategy']}: {r_fixed['total_trades']} 笔, "
+                            f"胜率{r_fixed['win_rate']:.1f}%, 总收益{r_fixed['total_return']:.1f}%")
 
-    remaining = [n for n in strategy_names if n not in ENSEMBLE_COMPONENTS]
+    remaining = [n for n in strategy_names if n not in ensemble_comps]
 
     def _run_one(name):
         r = _backtest_single(name, df_bt, cooled_signals.get(name),
@@ -2858,6 +3573,36 @@ def run_backtests(df_bt: pd.DataFrame, index_df: Optional[pd.DataFrame] = None,
     else:
         for name in remaining:
             _run_one(name)
+
+    # 双口径对比（入场时点 close vs next_open）：主口径为 entry_timing（默认
+    # next_open），用另一口径复算各策略指标做对比，避免第二次 30 分钟全量运行。
+    # 复用已冷却/过滤信号，仅重算绩效（信号与出场列均已在 df_bt 上）。
+    cmp_timing = "close" if entry_timing == "next_open" else "next_open"
+    cmp_metrics: Dict[str, Dict] = {}
+    if entry_timing != cmp_timing:
+        for name in strategy_names:
+            sig = cooled_signals.get(name)
+            if sig is None:
+                continue
+            try:
+                rc = _backtest_single(name, df_bt, sig, entry_timing=cmp_timing)
+                if "error" not in rc:
+                    cmp_metrics[name] = rc
+            except Exception:
+                continue
+        primary = {r["strategy"]: r for r in results if "error" not in r}
+        logger.info(f"入场时点双口径对比（主口径 {entry_timing} vs 对比 {cmp_timing}）:")
+        for name in strategy_names:
+            r0 = primary.get(name)
+            r1 = cmp_metrics.get(name)
+            if r0 is None or r1 is None:
+                continue
+            logger.info(
+                f"  [cmp] {name:<24} 胜率 {r1['win_rate']:.1f}%→{r0['win_rate']:.1f}% "
+                f"({r0['win_rate'] - r1['win_rate']:+.1f}pct), "
+                f"总收益 {r1['total_return']:.1f}%→{r0['total_return']:.1f}% "
+                f"({r0['total_return'] - r1['total_return']:+.1f}pct)"
+            )
 
     # 系统性失败熔断（P1-4）：单策略失败本应容错，但当过半策略集体报错时，通常是
     # numba JIT/缓存污染、依赖缺失或数据加载异常等系统性问题，继续只会静默产出
@@ -2900,72 +3645,76 @@ def run_backtests(df_bt: pd.DataFrame, index_df: Optional[pd.DataFrame] = None,
 # 最近5日验证
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def validate_week(df_full, df_week, top_results, top_n=5, signals=None):
-    """最近 5 个交易日的本周验证：对回测 Top-N 策略做实际买入/卖出收益统计。
+def validate_week(df_full, df_week, top_results, top_n=VALIDATE_CANDIDATES, signals=None):
+    """最近 5 个交易日的本周验证（P1 批次2 重设计）。
 
     验证口径：
-      - 买入日 = 区间第 5 个交易日（开盘买入）
-      - 卖出日 = 区间最后 1 个交易日（收盘卖出）
-      - 仅统计买入日触发信号且买卖价均存在的股票
-    信号在完整历史 df_full 上计算后再按买入日筛选（修复：仅给 5 日切片会
-    丢失 rolling 窗口与前一日数据，导致 wonderful_9_turn / stable_then_limit_up
-    等策略信号系统性消失）；signals 为预计算的 {策略名: 信号Series} 时直接复用，
-    否则回退到 df_full 上现算。
-    返回每个策略的：交易数、胜率、平均收益、买入日信号明细（前 8 只）。
+      - 候选策略：回测期望值降序前 top_n（默认 8）且样本充足
+        （total_trades >= MIN_TRADES_FOR_RANKING），小样本策略不参与验证；
+      - 5 个交易日中**每一天**都作为入场日（旧实现只用第 5 天单日买入）；
+      - 每笔入场按该策略回测最优持有期（best_period）读取预计算的
+        dyn_ret 前瞻收益列（与回测同一套真实出场规则：ATR 止损/移动止盈/
+        时间止损 + 跌停顺延），主入场口径由 _PRIMARY_ENTRY_TIMING 决定；
+      - 出场窗口超出可用数据（前瞻收益为 NaN）记为"未平仓"，单独计数，
+        不计胜也不计负；已平仓笔扣交易成本后统计胜率/平均收益。
+    信号在完整历史 df_full 上计算后再按入场日筛选（rolling/shift 特征需要
+    历史窗口）；signals 为预计算的 {策略名: 信号Series} 时直接复用。
+    返回每个策略的：交易数（已平仓）、未平仓数、胜率、平均收益（已平仓口径）。
     """
-    top_names = [r["strategy"] for r in top_results[:top_n]]
+    candidates = [r["strategy"] for r in top_results
+                  if r.get("total_trades", 0) >= MIN_TRADES_FOR_RANKING][:top_n]
     val = []
-    logger.info(f"5日验证 {df_week['date'].min().date()} ~ {df_week['date'].max().date()}")
+    week_dates = sorted(df_week["date"].unique())
+    logger.info(f"5日验证 {pd.Timestamp(week_dates[0]).date()} ~ "
+                f"{pd.Timestamp(week_dates[-1]).date()}（候选策略 {len(candidates)} 个，"
+                f"5 个入场日 × 策略最优持有期真实出场）")
 
-    all_dates = sorted(df_week["date"].unique())
-    if len(all_dates) < 5:
+    if len(week_dates) < 5:
         logger.warning("验证区间不足5个交易日")
         return val
 
-    buy_date = all_dates[-5]
-    sell_date = all_dates[-1]
-
-    for name in top_names:
+    for name in candidates:
         try:
+            r = next((x for x in top_results if x["strategy"] == name), None)
+            best_p = r.get("best_period") if r else None
             if signals is not None and name in signals:
                 sig = signals[name]
             else:
                 sig = _strategy_signal(df_full, name)
-            matched_rows = df_full.loc[sig.values].copy()
-            matched_stocks = matched_rows.loc[matched_rows["date"] == buy_date, ["code", "name"]].drop_duplicates()
-            n = len(matched_stocks)
+            fwd_col = _signal_return_col(df_full.columns, name, best_p,
+                                         _PRIMARY_ENTRY_TIMING) if best_p else None
+            closed_rets = []
+            open_count = 0
+            for d in week_dates:
+                day_mask = sig.values & (df_full["date"] == d).values
+                if day_mask.sum() == 0:
+                    continue
+                if fwd_col is None:
+                    open_count += int(day_mask.sum())
+                    continue
+                rets = df_full.loc[day_mask, fwd_col]
+                net = rets.dropna() - TRADING_COST_PCT / 100.0
+                closed_rets.extend(net.tolist())
+                open_count += int(rets.isna().sum())
 
-            if n == 0:
-                val.append({"strategy": name, "week_trades": 0, "week_win_rate": 0, "week_avg_ret": 0})
-                continue
-
-            buy_prices = df_week.loc[df_week["date"] == buy_date, ["code", "open"]].rename(columns={"open": "buy_price"})
-            sell_prices = df_week.loc[df_week["date"] == sell_date, ["code", "close"]].rename(columns={"close": "sell_price"})
-
-            merged_df = matched_stocks[["code", "name"]].merge(buy_prices, on="code", how="left") \
-                                                       .merge(sell_prices, on="code", how="left")
-
-            valid_df = merged_df.dropna(subset=["buy_price", "sell_price"])
-            valid_df = valid_df[valid_df["buy_price"] > 0]
-            rets = (valid_df["sell_price"] / valid_df["buy_price"] - 1).values - TRADING_COST_PCT / 100.0
-
-            if len(rets) > 0:
-                win_rate = (rets > 0).sum() / len(rets) * 100
-                avg_ret = rets.mean() * 100
+            n_closed = len(closed_rets)
+            n_trades = n_closed + open_count
+            if n_closed > 0:
+                arr = np.array(closed_rets, dtype=float)
+                win_rate = float((arr > 0).sum() / n_closed * 100)
+                avg_ret = float(arr.mean() * 100)
             else:
-                win_rate = 0.0
-                avg_ret = 0.0
-
-            sigs_df = matched_rows.loc[matched_rows["date"] == buy_date, ["code", "name", "date", "close", "pct_chg"]].head(8)
-            sigs_out = sigs_df.to_dict("records")
-
+                win_rate, avg_ret = 0.0, 0.0
             val.append({
                 "strategy": name,
-                "week_trades": int(n),
+                "week_trades": n_closed,
+                "week_open_trades": open_count,
                 "week_win_rate": round(win_rate, 2),
                 "week_avg_ret": round(avg_ret, 2),
-                "week_signals": sigs_out,
+                "week_signals": [],
             })
+            logger.info(f"  [val] {name:<24} 入场 {n_trades} 笔（已平仓 {n_closed}，"
+                        f"未平仓 {open_count}），胜率 {win_rate:.1f}%，平均 {avg_ret:+.2f}%")
         except Exception as e:
             val.append({"strategy": name, "error": str(e)})
     return val
@@ -2987,8 +3736,14 @@ def print_results(results, val_results, backtest_start, backtest_end, market_ok_
     print(f"{'策略':<28} {'交易':>7} {'胜率%':>7} {'均盈%':>7} {'均亏%':>7} "
           f"{'盈亏比':>7} {'期望%':>8} {'凯利%':>7} {'总收益%':>9} {'超额%':>8} {'年化%':>8} {'最大回撤%':>10} {'夏普':>6} {'耗时':>5}")
     print("-" * 140)
-    for r in results:
-        excess = r.get("excess_return", 0) if "error" not in r else 0
+    # P1 批次2：主表仅排名样本充足（≥30 笔）策略；小样本/报错策略移到表后独立分区，
+    # 不参与排名/验证候选/handoff 满分权重，避免 1~10 笔的虚高胜率污染头部。
+    rankable = [r for r in results if "error" not in r and not r.get("small_sample")]
+    small = [r for r in results if "error" not in r and r.get("small_sample")]
+    errored = [r for r in results if "error" in r]
+
+    def _print_row(r):
+        excess = r.get("excess_return", 0)
         print(
             f"  {r['strategy']:<26} {r['total_trades']:>7} "
             f"{r['win_rate']:>7.1f} {r['avg_win']:>7.2f} {r['avg_loss']:>7.2f} "
@@ -2999,7 +3754,17 @@ def print_results(results, val_results, backtest_start, backtest_end, market_ok_
             f"{r['sharpe_ratio']:>6.2f} {r.get('time_s',0):>5.1f}s"
         )
 
+    for r in rankable:
+        _print_row(r)
     print("=" * 140)
+    if small:
+        print(f"\n小样本策略（<{MIN_TRADES_FOR_RANKING} 笔，不参与排名/验证/handoff 权重满分）:")
+        print("-" * 140)
+        for r in small:
+            _print_row(r)
+        print("=" * 140)
+    for r in errored:
+        print(f"  [ERROR] {r['strategy']}: {r.get('error')}")
     print(f"\n回测区间: {backtest_start.date()} ~ {backtest_end.date()}")
     print(f"初始资金: {INITIAL_CAPITAL:,.0f} 元")
     if results:
@@ -3042,27 +3807,25 @@ def print_results(results, val_results, backtest_start, backtest_end, market_ok_
             print("=" * 140)
 
     if val_results:
-        print("\n" + "=" * 75)
-        print(f"{'5日验证 Top-5':^75}")
-        print("-" * 75)
-        print(f"{'策略':<26} {'5日交易':>9} {'胜率%':>9} {'平均收益%':>11}")
-        print("-" * 75)
+        print("\n" + "=" * 85)
+        print(f"{'5日验证（5 入场日 × 最优持有期真实出场）':^85}")
+        print("-" * 85)
+        print(f"{'策略':<26} {'已平仓':>8} {'未平仓':>8} {'胜率%':>8} {'平均收益%':>11}")
+        print("-" * 85)
         for r in val_results:
             if "error" in r:
                 print(f"  {r['strategy']:<24} [ERROR] {r['error']}")
             else:
                 print(
-                    f"  {r['strategy']:<24} {r['week_trades']:>9} "
-                    f"{r['week_win_rate']:>9.1f} {r['week_avg_ret']:>11.2f}%"
+                    f"  {r['strategy']:<24} {r['week_trades']:>8} "
+                    f"{r.get('week_open_trades', 0):>8} "
+                    f"{r['week_win_rate']:>8.1f} {r['week_avg_ret']:>11.2f}%"
                 )
-                for s in r.get("week_signals", [])[:5]:
-                    dt = s["date"].date() if hasattr(s["date"], "date") else s["date"]
-                    print(f"    -> {s['code']} {s['name']} @{dt} 涨幅{s['pct_chg']:.2f}%")
         if market_ok_days is not None:
             ok_n, total_n = market_ok_days
             suffix = "（全部为空仓市况，信号被市场环境过滤）" if ok_n == 0 else f"（{total_n - ok_n} 天为空仓市况）"
-            print(f"市况提示: 验证区间 {total_n} 个交易日中 {ok_n} 天可开仓 (market_ok){suffix}")
-        print("=" * 75)
+            print(f"市况提示: 验证区间 {total_n} 个交易日中 {ok_n} 天可开仓 ({_regime_col()}){suffix}")
+        print("=" * 85)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -3157,6 +3920,8 @@ def get_top_stocks_by_win_rate(df_full, df_week, results, top_n=10, signals=None
     strategy_kelly = {r["strategy"]: r.get("kelly", 0) for r in results}
     # 各策略回测选出的最优持有期（best_period∈HOLDING_PERIODS）
     strategy_best_period = {r["strategy"]: r.get("best_period") for r in results}
+    # 各策略全样本每笔期望（%）：handoff 共振评分中负期望策略权重降为 0.3
+    strategy_expectancy = {r["strategy"]: float(r.get("expectation", 0) or 0) for r in results}
 
     for r in results:
         strategy_name = r["strategy"]
@@ -3176,21 +3941,12 @@ def get_top_stocks_by_win_rate(df_full, df_week, results, top_n=10, signals=None
             if mask.sum() == 0:
                 continue
             # 该策略最优持有期对应的前瞻收益列（与 _backtest_single 同口径：
-            # 分组出场参数列优先，再回退默认 dyn_ret / ret）
+            # 分组出场参数列优先，再回退默认 dyn_ret / ret；主口径 next_open
+            # 优先取 _no 后缀列，缺失时回退 close 口径列）
             fwd_col = None
             if best_p:
-                params = STRATEGY_EXIT_PARAMS.get(strategy_name)
-                use_alt = (params is not None and tuple(params) != DEFAULT_EXIT_PARAMS)
-                key = _exit_param_key(*params) if use_alt else ""
-                if use_alt:
-                    cand = f"dyn_ret_{best_p}d__{key}"
-                    if cand in df_full.columns:
-                        fwd_col = cand
-                if fwd_col is None:
-                    for cand in (f"dyn_ret_{best_p}d", f"ret_{best_p}d"):
-                        if cand in df_full.columns:
-                            fwd_col = cand
-                            break
+                fwd_col = _signal_return_col(df_full.columns, strategy_name, best_p,
+                                             _PRIMARY_ENTRY_TIMING)
             rec_cols = ["code", "name", "open", "close"] + (["atr20"] if "atr20" in df_full.columns else [])
             if fwd_col:
                 rec_cols.append(fwd_col)
@@ -3226,6 +3982,7 @@ def get_top_stocks_by_win_rate(df_full, df_week, results, top_n=10, signals=None
                     "best_periods": [],
                     "best_period_weights": [],
                     "total_trades_list": [],
+                    "strategy_rets": [],
                     "buy_date": buy_date,
                     "buy_price": buy_price,
                     "sell_date": sell_date,
@@ -3243,6 +4000,7 @@ def get_top_stocks_by_win_rate(df_full, df_week, results, top_n=10, signals=None
 
             stock_info[code]["strategies"].append(strategy_name)
             stock_info[code]["win_rates"].append(win_rate)
+            stock_info[code]["strategy_rets"].append(ret_this)
             if best_p:
                 stock_info[code]["best_periods"].append(best_p)
                 stock_info[code]["best_period_weights"].append(win_rate)
@@ -3277,46 +4035,81 @@ def get_top_stocks_by_win_rate(df_full, df_week, results, top_n=10, signals=None
             "sell_price": info["sell_price"],
             "sell_return": info["sell_return"],
             "recommended_hold_days": recommended_hold_days,
+            "total_trades_list": info["total_trades_list"],
             "position_pct": compute_position_size(
                 atr20=info.get("atr20"), close=info["buy_price"], kelly=info["max_kelly"]),
         })
 
     stock_list.sort(key=lambda x: (x["sell_return"] if x["sell_return"] is not None else -999), reverse=True)
 
-    # handoff 实盘门槛：仅把"验证期收益为正 + 足够共振 + 命中策略有统计意义"的股票
-    # 自动送入主程序实盘分析，避免把验证期已亏损（如 -2.81%）或仅 1~2 个小样本策略
-    # 命中的股票自动实盘化。
-    #   - sell_return > 0：验证窗口内实际收益为正
-    #   - robust_strategy_count >= HANDOFF_MIN_STRATEGIES：由历史样本充足
-    #     （>= HANDOFF_MIN_STRATEGY_TRADES 笔）的策略命中数达到共振门槛
-    qualified = []
-    filtered_out = []
     for s in stock_list:
-        ret_ok = s["sell_return"] is not None and pd.notna(s["sell_return"]) and s["sell_return"] > 0
         robust_count = sum(
             1 for t in s.get("total_trades_list", [])
             if t is not None and t >= HANDOFF_MIN_STRATEGY_TRADES
         )
         s["robust_strategy_count"] = robust_count
-        if ret_ok and robust_count >= HANDOFF_MIN_STRATEGIES:
-            qualified.append(s)
-        else:
-            reasons = []
-            if not ret_ok:
-                reasons.append(f"验证期收益{s['sell_return']}<=0")
-            if robust_count < HANDOFF_MIN_STRATEGIES:
-                reasons.append(f"有效共振策略{robust_count}<{HANDOFF_MIN_STRATEGIES}")
-            filtered_out.append((s["code"], s["name"], "; ".join(reasons)))
 
-    if filtered_out:
-        logger.info(
-            f"handoff 门槛过滤：{len(filtered_out)} 只股票未达实盘标准"
-            f"（收益>0 且 有效策略数≥{HANDOFF_MIN_STRATEGIES}），不送入主程序："
-        )
-        for code, name, reason in filtered_out[:top_n]:
-            logger.info(f"  - {code} {name}: {reason}")
+    if _HANDOFF_MODE == "gate":
+        # 旧硬门槛（--handoff-mode gate）：仅把"验证期收益为正 + 足够共振 +
+        # 命中策略有统计意义"的股票自动送入主程序实盘分析。
+        #   - sell_return > 0：验证窗口内实际收益为正
+        #   - robust_strategy_count >= HANDOFF_MIN_STRATEGIES：由历史样本充足
+        #     （>= HANDOFF_MIN_STRATEGY_TRADES 笔）的策略命中数达到共振门槛
+        qualified = []
+        filtered_out = []
+        for s in stock_list:
+            ret_ok = s["sell_return"] is not None and pd.notna(s["sell_return"]) and s["sell_return"] > 0
+            if ret_ok and s["robust_strategy_count"] >= HANDOFF_MIN_STRATEGIES:
+                qualified.append(s)
+            else:
+                reasons = []
+                if not ret_ok:
+                    reasons.append(f"验证期收益{s['sell_return']}<=0")
+                if s["robust_strategy_count"] < HANDOFF_MIN_STRATEGIES:
+                    reasons.append(f"有效共振策略{s['robust_strategy_count']}<{HANDOFF_MIN_STRATEGIES}")
+                filtered_out.append((s["code"], s["name"], "; ".join(reasons)))
 
-    return qualified[:top_n]
+        if filtered_out:
+            logger.info(
+                f"handoff 门槛过滤：{len(filtered_out)} 只股票未达实盘标准"
+                f"（收益>0 且 有效策略数≥{HANDOFF_MIN_STRATEGIES}），不送入主程序："
+            )
+            for code, name, reason in filtered_out[:top_n]:
+                logger.info(f"  - {code} {name}: {reason}")
+        return qualified[:top_n]
+
+    # 共振强度评分（默认，--handoff-mode score）：不再做 pass/fail 硬门槛，
+    # 每个命中策略按 sqrt(笔数/30)（封顶 1，小样本部分计分、永不为 0）
+    # ×（全样本期望>0 ? 1.0 : 0.3）×（该股验证窗收益>0 ? 1.0 : 0.5）贡献权重，
+    # 按总分降序取 top_n 且 score>0；旧门槛下被丢弃的股票现在以低分出现。
+    info_by_code = {info["code"]: info for info in stock_info.values()}
+    for s in stock_list:
+        info = info_by_code.get(s["code"])
+        score = 0.0
+        if info is not None:
+            for strat, trades, sret in zip(info["strategies"], info["total_trades_list"],
+                                          info["strategy_rets"]):
+                sample_w = float(np.sqrt(max(trades or 0, 0) / HANDOFF_MIN_STRATEGY_TRADES))
+                sample_w = min(sample_w, 1.0)
+                exp_w = 1.0 if strategy_expectancy.get(strat, 0.0) > 0 else 0.3
+                val_w = 1.0 if (sret is not None and pd.notna(sret) and sret > 0) else 0.5
+                score += sample_w * exp_w * val_w
+        s["resonance_score"] = round(score, 4)
+
+    ranked = [s for s in stock_list if s["resonance_score"] > 0]
+    ranked.sort(key=lambda x: x["resonance_score"], reverse=True)
+    logger.info(
+        f"handoff 共振强度评分（共 {len(ranked)} 只有信号股票，"
+        f"取 score>0 前 {top_n}；权重=√(笔数/{HANDOFF_MIN_STRATEGY_TRADES})"
+        f"×期望档(1.0/0.3)×验证档(1.0/0.5)）："
+    )
+    logger.info(f"  {'代码':<12}{'名称':<10}{'评分':>7}{'命中':>5}{'稳健':>5}{'验证收益%':>11}")
+    for s in ranked:
+        ret_pct = (s["sell_return"] * 100) if s["sell_return"] is not None and pd.notna(s["sell_return"]) else None
+        ret_str = f"{ret_pct:>10.2f}" if ret_pct is not None else f"{'N/A':>10}"
+        logger.info(f"  {s['code']:<12}{str(s['name'])[:8]:<10}{s['resonance_score']:>7.3f}"
+                    f"{s['strategy_count']:>5}{s['robust_strategy_count']:>5}{ret_str}")
+    return ranked[:top_n]
 
 
 def get_unique_strategies_from_results(results, top_n=10):
@@ -3532,6 +4325,18 @@ def main(argv=None):
     parser.add_argument("--force", action="store_true", help="强制运行（非交易日也执行）")
     parser.add_argument("--strict", action="store_true",
                         help="使用严格 regime（market_ok）替代默认的 enhanced regime（market_ok_enh，P0-1）")
+    parser.add_argument("--regime-mode", choices=["enh2", "enh", "strict"], default=None,
+                        help="市场环境口径（P1 批次2）：enh2=market_ok_enh2（默认，enh 再叠加市场广度≥0.45 "
+                             "与指数 20 日波动率分位≤0.85 双重确认）；enh=旧 market_ok_enh；"
+                             "strict=旧 market_ok。未显式指定时由 --strict 决定（strict 传参等价 strict）")
+    parser.add_argument("--bear-confirm", type=int, default=None,
+                        help="bear 日弱信号所需强势确认数（P1 批次2，默认 2；旧行为传 1）")
+    parser.add_argument("--handoff-mode", choices=["score", "gate"], default=None,
+                        help="handoff 口径（P1 批次2）：score=共振强度评分排序取 top_n（默认）；"
+                             "gate=旧硬门槛（验证收益>0 且 ≥3 个稳健策略命中才送入主程序）")
+    parser.add_argument("--ensemble-classic", action="store_true",
+                        help="组合策略回退旧 3 组件（ma_crossover/volume_surge_std/rsi_bullish_divergence）"
+                             "二值投票 + 0.5 阈值（P1 批次2，默认 6 组件连续强度 + 0.35 阈值）")
     parser.add_argument("--resonance", type=int, default=MIN_RESONANCE_STRATEGIES,
                         help="共振门槛：同一股票同日至少 N 个策略命中才保留（默认 2；传 1 关闭，P0-2）")
     parser.add_argument("--regime-filter", action="store_true",
@@ -3541,7 +4346,7 @@ def main(argv=None):
                              "不硬砍信号；与 --regime-filter 互斥，同时传入时软模式优先")
     parser.add_argument("--confluence-only", action="store_true",
                         help="基本面合流过滤（P1-3）：纯技术策略信号需当日有业绩预增/筹码集中/机构净买"
-                             "催化剂才保留（全市况硬过滤，信号量约 -31%、胜率 +1.8pct）")
+                             "催化剂才保留（全市况硬过滤，信号量约 -31%%、胜率 +1.8pct）")
     parser.add_argument("--confluence-regime", choices=["non_bull", "bear"], default=None,
                         help="市况感知合流（P1-3 软化）：non_bull=仅 range/bear 日要求催化剂、bull 日放行；"
                              "bear=仅 bear 日要求。比 --confluence-only 少砍强牛市动量信号")
@@ -3549,12 +4354,32 @@ def main(argv=None):
                         help="关闭行业动量过滤（默认开启仅保留动量前 3 行业信号，P2-7）")
     parser.add_argument("--per-strategy-exit", action="store_true",
                         help="按策略族差异化出场参数（P2-10，实测劣于统一 (2.5,0.95)，默认关闭）")
-    parser.add_argument("--entry-timing", choices=["close", "next_open"], default="close",
-                        help="入场时点：close=信号日收盘（默认）；next_open=次日开盘（P3-13）")
+    parser.add_argument("--entry-timing", choices=["next_open", "close"], default="next_open",
+                        help="入场时点：next_open=次日开盘（默认，消除信号日收盘入场的前视偏差，P3-13）；"
+                             "close=信号日收盘（旧口径，用于复现历史数字）")
+    parser.add_argument("--no-cache", action="store_true",
+                        help="跳过已加载数据的 parquet 缓存（data/cache/），强制从 PG 重新加载")
     parser.add_argument("--portfolio-opt", action="store_true",
                         help="推荐列表组合优化：行业分散(≤2/行业)+持仓上限(≤10)（P3-12）")
     parser.add_argument("--ml-filter", action="store_true",
                         help="按 ML 置信度阈值过滤信号（P3-11，需先运行 train_signal_filter.py 生成工件）")
+    parser.add_argument("--trail-activate-r", type=float, default=0.0,
+                        help="移动止盈激活门槛（R 倍数）：浮盈达到 R×初始风险(atr_mult*atr20) 后移动止盈才武装；"
+                             "武装前仅 ATR 止损/时间止损可出场。默认 0.0=入场即武装（旧行为）")
+    parser.add_argument("--take-profit-r", type=float, default=0.0,
+                        help="固定止盈（R 倍数）：>0 时 bar 最高价触及 entry+R×初始风险 即按止盈价成交；"
+                             "同 bar 优先级 ATR止损>固定止盈>移动止盈。默认 0.0=关闭（旧行为）")
+    parser.add_argument("--target-vol", type=float, default=0.0,
+                        help="组合级年化波动率目标（如 0.15=15%%）：>0 时按 20 日已实现波动缩放每日总敞口，"
+                             "仅影响组合级总收益/年化/回撤/夏普。默认 0.0=等权旧口径")
+    parser.add_argument("--max-leverage", type=float, default=1.0,
+                        help="波动率目标下每日总敞口上限，默认 1.0（不加杠杆）")
+    parser.add_argument("--wfo-sweep", action="store_true",
+                        help="WFO 阈值扫描脚手架：对 6 个高流动性策略的打分阈值做 ±1 点 walk-forward "
+                             "扫描并按年度桶报告胜率/期望/稳定性，复用暖缓存分钟级完成，不跑全量回测")
+    parser.add_argument("--no-handoff", action="store_true",
+                        help="回测结果表输出后即退出，跳过 5 日验证选股/handoff 评分与 main.py "
+                             "子进程（批量 A/B 回测用，默认仍执行 handoff）")
     args = parser.parse_args(argv)
 
     # 环境变量开关（供 GitHub Actions / 定时任务在不改命令的情况下启用质量门槛）：
@@ -3567,8 +4392,23 @@ def main(argv=None):
 
     # P0 默认启用 enhanced regime + 共振≥2；P2 默认启用行业动量（P2-7 实测最优）。
     # 旧行为分别通过 --strict / --resonance 1 / --no-industry-momentum 显式回退。
-    enhanced = not args.strict
+    global _REGIME_MODE, _BEAR_CONFIRM_MIN, _HANDOFF_MODE, _ENSEMBLE_CLASSIC
+    _REGIME_MODE = args.regime_mode or ("strict" if args.strict else "enh2")
+    if args.bear_confirm is not None:
+        _BEAR_CONFIRM_MIN = max(1, args.bear_confirm)
+    _HANDOFF_MODE = args.handoff_mode or "score"
+    _ENSEMBLE_CLASSIC = bool(args.ensemble_classic)
+    enhanced = _REGIME_MODE != "strict"
     industry_on = not args.no_industry_momentum
+
+    global _PRIMARY_ENTRY_TIMING
+    _PRIMARY_ENTRY_TIMING = args.entry_timing
+
+    global _TRAIL_ACTIVATE_R, _TAKE_PROFIT_R, _TARGET_VOL_ANNUAL, _MAX_LEVERAGE
+    _TRAIL_ACTIVATE_R = float(args.trail_activate_r)
+    _TAKE_PROFIT_R = float(args.take_profit_r)
+    _TARGET_VOL_ANNUAL = float(args.target_vol)
+    _MAX_LEVERAGE = float(args.max_leverage)
 
     if not args.force and not is_trading_day(datetime.now()):
         logger.error("非交易日，程序退出（使用 --force 可强制运行）")
@@ -3612,49 +4452,72 @@ def main(argv=None):
         regime_label = "硬分族(hard)"
     else:
         regime_label = "未启用"
-    logger.info(f"市场环境: {'enhanced regime (market_ok_enh)' if enhanced else 'strict regime (market_ok)'}"
+    logger.info(f"市场环境: regime-mode={_REGIME_MODE} ({_regime_col()})"
                 f" | 共振门槛: {'同股同日≥' + str(args.resonance) + '策略' if args.resonance > 1 else '未启用'}"
                 f" | 市况分族: {regime_label}"
                 f" | 行业动量: {'启用' if industry_on else '未启用'}"
-                f" | 分组止损: {'启用' if args.per_strategy_exit else '未启用'}")
+                f" | 分组止损: {'启用' if args.per_strategy_exit else '未启用'}"
+                f" | 入场口径: {args.entry_timing}（双口径对比已启用）"
+                f" | bear确认数: {_BEAR_CONFIRM_MIN}"
+                f" | handoff: {_HANDOFF_MODE}"
+                f" | ensemble: {'classic(3组件二值)' if _ENSEMBLE_CLASSIC else '6组件连续强度'}"
+                f" | 数据缓存: {'关闭(--no-cache)' if args.no_cache else '启用'}")
     logger.info("=" * 60)
 
     log_memory_usage("开始")
 
-    df_market = load_data(anchored_start, today_str)
+    # 准备态数据缓存（复权 + 增强信号合并后、指标计算前）：命中则跳过 PG 加载
+    # （~464s）+ 复权因子（~50s）+ 增强信号合并（~89s）；--no-cache 强制重算。
+    df_adjusted = None if args.no_cache else load_prepared_cache(anchored_start, today_str)
+    if df_adjusted is not None:
+        logger.info(f"缓存命中：{len(df_adjusted):,} 行 x {df_adjusted['code'].nunique()} 只股票")
+    else:
+        if args.no_cache:
+            logger.info("--no-cache：跳过缓存读取，从 PG 全量加载")
+        t_prep = time.time()
+        df_market = load_data(anchored_start, today_str)
 
-    logger.info("从数据库加载复权因子并计算前复权价格...")
-    df_factor = load_adj_factors_from_db(anchored_start, today_str)
-    logger.info(f"获取到 {len(df_factor)} 条复权因子记录")
-    df_adjusted = apply_forward_adjustment(df_market, df_factor)
-    del df_market, df_factor
-    gc.collect()
-    log_memory_usage("复权计算后")
+        logger.info("从数据库加载复权因子并计算前复权价格...")
+        df_factor = load_adj_factors_from_db(anchored_start, today_str)
+        logger.info(f"获取到 {len(df_factor)} 条复权因子记录")
+        df_adjusted = apply_forward_adjustment(df_market, df_factor)
+        del df_market, df_factor
+        gc.collect()
+        log_memory_usage("复权计算后")
 
-    logger.info("加载增强信号数据（股东人数/业绩预告/质押/机构龙虎榜）...")
-    df_adjusted = load_signal_aux(df_adjusted)
-    gc.collect()
-    log_memory_usage("增强信号合并后")
+        logger.info("加载增强信号数据（股东人数/业绩预告/质押/机构龙虎榜）...")
+        df_adjusted = load_signal_aux(df_adjusted)
+        gc.collect()
+        log_memory_usage("增强信号合并后")
+        logger.info(f"准备态数据就绪，耗时 {time.time()-t_prep:.1f}s")
+        if not args.no_cache:
+            write_prepared_cache(df_adjusted, anchored_start, today_str)
 
     df_all = compute_indicators(df_adjusted)
     del df_adjusted
     gc.collect()
     log_memory_usage("指标计算后")
 
-    # 市场环境过滤:加载上证指数日线 -> 计算 regime -> 合并到 df_all
+    # 市场环境过滤:加载上证指数日线 -> 计算 regime（含 enh2 广度/波动率确认）-> 合并到 df_all
     try:
         df_index = load_index_daily(anchored_start, today_str)
-        regime_df = compute_market_ok(df_index)
-        ok_days = regime_df.loc[regime_df["market_ok"], "date"]
-        ok_ratio = len(ok_days) / len(regime_df) if len(regime_df) > 0 else 0
-        logger.info(f"市场环境: {len(ok_days)}/{len(regime_df)} 个交易日可开仓 ({ok_ratio*100:.1f}%)")
+        regime_df = compute_market_ok(df_index, stock_df=df_all)
+        for col in ("market_ok", "market_ok_enh", "market_ok_enh2"):
+            if col in regime_df.columns:
+                n_ok = int(regime_df[col].sum())
+                logger.info(f"市场环境 {col}: {n_ok}/{len(regime_df)} 个交易日可开仓 "
+                            f"({n_ok/len(regime_df)*100:.1f}%)")
         df_all = df_all.merge(regime_df, on="date", how="left")
-        df_all["market_ok"] = df_all["market_ok"].fillna(False).astype(bool)
+        for col in ("market_ok", "market_ok_enh", "market_ok_enh2"):
+            if col in df_all.columns:
+                df_all[col] = df_all[col].fillna(False).astype(bool)
         del df_index, regime_df
         gc.collect()
     except Exception as e:
         logger.warning(f"市场环境数据加载失败，跳过 regime 过滤: {e}")
         df_all["market_ok"] = True
+        df_all["market_ok_enh"] = True
+        df_all["market_ok_enh2"] = True
 
     # 财务质量过滤:按 ann_date 对齐(防前视偏差)
     try:
@@ -3679,32 +4542,49 @@ def main(argv=None):
         except Exception as e:
             logger.warning(f"行业动量上下文加载失败，ind_rank 缺失将全量放行: {e}")
 
-    # 动态退出收益(ATR止损 + 移动止盈 + 时间止损)；P2-10 分组模式追加非默认参数组列
-    logger.info("计算动态退出收益(ATR止损/移动止盈)...")
+    # 动态退出收益(ATR止损 + 移动止盈 + 时间止损)；一次扫描同时产出 close 与
+    # next_open 两种入场口径列（dual_timing），主口径由 --entry-timing 决定，
+    # 另一口径供双口径对比；P2-10 分组模式追加非默认参数组列（同样双口径）。
+    logger.info("计算动态退出收益(ATR止损/移动止盈, 双入场口径 + 跌停顺延)...")
     t_dyn = time.time()
-    dyn_ret = compute_dynamic_exit_returns(df_all)
+    dyn_ret = compute_dynamic_exit_returns(
+        df_all, dual_timing=True,
+        trail_activate_r=_TRAIL_ACTIVATE_R, take_profit_r=_TAKE_PROFIT_R)
     df_all = pd.concat([df_all, dyn_ret], axis=1)
     del dyn_ret
     gc.collect()
-    if args.entry_timing == "next_open":
-        logger.info("计算次日开盘入场动态退出收益 (next_open, P3-13) ...")
-        dyn_no = compute_dynamic_exit_returns(df_all, entry_timing="next_open")
-        dyn_no.columns = [f"{c}_no" for c in dyn_no.columns]
-        df_all = pd.concat([df_all, dyn_no], axis=1)
-        del dyn_no
-        gc.collect()
     if args.per_strategy_exit:
         alt_groups = sorted({tuple(v) for v in STRATEGY_EXIT_PARAMS.values()}
                             - {DEFAULT_EXIT_PARAMS})
         for a_mult, t_rate in alt_groups:
             key = _exit_param_key(a_mult, t_rate)
-            logger.info(f"计算分组动态退出收益 {key} ...")
-            extra = compute_dynamic_exit_returns(df_all, atr_mult=a_mult, trail=t_rate)
-            extra.columns = [f"{c}__{key}" for c in extra.columns]
+            logger.info(f"计算分组动态退出收益 {key} (双口径) ...")
+            extra = compute_dynamic_exit_returns(
+                df_all, atr_mult=a_mult, trail=t_rate, dual_timing=True,
+                trail_activate_r=_TRAIL_ACTIVATE_R, take_profit_r=_TAKE_PROFIT_R)
+            extra.columns = [f"{c}__{key}" if not c.endswith("_no")
+                             else f"{c[:-3]}__{key}_no" for c in extra.columns]
             df_all = pd.concat([df_all, extra], axis=1)
             del extra
             gc.collect()
     logger.info(f"动态退出收益计算完成，耗时 {time.time()-t_dyn:.1f}s")
+
+    # WFO 阈值扫描脚手架：不跑全量 23 策略回测/验证/handoff，仅对 6 个高流动性
+    # 策略的打分阈值做 ±1 点 walk-forward 扫描（复用已算好的指标/出场列，分钟级）。
+    if args.wfo_sweep:
+        logger.info("--wfo-sweep：跳过全量回测/验证/handoff，执行阈值 walk-forward 扫描")
+        t_sweep = time.time()
+        rows = sweep_strategy_thresholds(df_all, entry_timing=args.entry_timing,
+                                         enhanced=enhanced)
+        # 神奇九转现行阈值 8，默认 ±1 只覆盖 7/8/9；显式 0/+1/+2 补齐阈值 10
+        rows += sweep_strategy_thresholds(
+            df_all, strategy_names=["wonderful_9_turn"], deltas=(0.0, 1.0, 2.0),
+            entry_timing=args.entry_timing, enhanced=enhanced)
+        rows += sweep_ensemble_thresholds(df_all, entry_timing=args.entry_timing,
+                                          enhanced=enhanced)
+        report_wfo_sweep(rows)
+        logger.info(f"WFO 阈值扫描完成，耗时 {time.time()-t_sweep:.1f}s")
+        return
 
     # 按最近交易日划分回测 / 验证区间：最后 5 个交易日留给验证，其余用于回测
     all_dates = sorted(df_all["date"].unique())
@@ -3723,7 +4603,9 @@ def main(argv=None):
     # 市况统计：验证窗口 regime 天数（按日去重），用于区分空仓市况与策略无信号
     week_mask = df_all["date"] >= pd.Timestamp(validate_start_date)
     week_market_ok = None
-    regime_col = "market_ok_enh" if enhanced else "market_ok"
+    regime_col = _regime_col()
+    if regime_col not in df_all.columns:
+        regime_col = "market_ok_enh" if "market_ok_enh" in df_all.columns else "market_ok"
     if regime_col in df_all.columns:
         week_market_ok = df_all.loc[week_mask, ["date", regime_col]].drop_duplicates("date")[regime_col]
         market_ok_in_week = int(week_market_ok.sum())
@@ -3769,7 +4651,8 @@ def main(argv=None):
                                       regime_filter=hard_regime,
                                       industry_filter=industry_on)
                for name in STRATEGIES}
-    signals = {name: _apply_cooldown(df_all, sig, enhanced=enhanced) for name, sig in signals.items()}
+    signals = {name: _apply_cooldown(df_all, sig, enhanced=enhanced, name=name)
+               for name, sig in signals.items()}
     if args.regime_soft:
         signals = _apply_regime_soft_filter(df_all, signals)
     if args.confluence_regime:
@@ -3785,13 +4668,17 @@ def main(argv=None):
             logger.info("ML 信号过滤已应用 (P3-11)")
         except Exception as e:
             logger.warning(f"ML 过滤失败，使用未过滤信号: {e}")
-    val_results = validate_week(df_all, df_week, results, TOP_N_VALIDATE, signals=signals)
+    val_results = validate_week(df_all, df_week, results, VALIDATE_CANDIDATES, signals=signals)
     # 绩效表格经 print 输出，双写到控制台与回测日志文件
     with open(_LOG_FILE, "a", encoding="utf-8") as log_fp:
         with contextlib.redirect_stdout(_Tee(sys.stdout, log_fp)):
             print_results(results, val_results, backtest_start_date, backtest_end_date,
                           market_ok_days=(market_ok_in_week, len(week_market_ok))
                           if market_ok_in_week is not None else None)
+
+    if args.no_handoff:
+        logger.info("--no-handoff：跳过 handoff 评分与主程序子进程，回测结束")
+        return
 
     # 汇总本周验证胜率前 10 股票，作为主程序个股决策的输入
     top_stocks = get_top_stocks_by_win_rate(df_all, df_week, results, top_n=10, signals=signals)
@@ -3837,10 +4724,12 @@ def main(argv=None):
     elif market_ok_in_week == 0:
         logger.warning(
             f"验证区间 {validate_start_date.date()} ~ {validate_end_date.date()} "
-            "全部处于空仓市况（market_ok=False），按策略纪律跳过主程序执行"
+            f"全部处于空仓市况（{_regime_col()}=False），按策略纪律跳过主程序执行"
         )
     else:
-        logger.warning("没有找到符合条件的股票，跳过主程序执行")
+        logger.warning(
+            f"验证区间无任何策略信号（handoff 口径: {_HANDOFF_MODE}），跳过主程序执行"
+        )
 
     logger.info("完成")
 
