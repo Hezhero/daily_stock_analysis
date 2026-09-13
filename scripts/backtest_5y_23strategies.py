@@ -46,6 +46,46 @@
   平均取整到 1/3/5/10 候选期）；推荐收益口径改为命中策略 best_period 前瞻收益
   （dyn_ret 优先/ret 兜底，与回测/出场规则同口径；最优期 5/10 日超出验证窗口
   无法测量时回退固定窗口收益）
+
+P1 批次3（2026-09-12，基于 logs/backtest_5y_20260912.log 的实测归因）：
+1. 组合绩效时间轴修复（`_portfolio_calendar`）：旧实现用"信号日的并集"当交易日历，
+   把 time span 压缩到只有信号发生的那些天，导致年化/夏普虚高一到两个数量级
+   （fc_pos_break 总收益 21.9% 却报年化 136.3%，跨策略平均年化 85.5%）；
+   现改用真实交易日历（`_TRADING_DAYS`，由 main() 注入 df_all 全部交易日）
+2. 最优持有期选择口径由 total_return 改为稳健性评分（`stationarity_score` =
+   全期期望 − 0.5×年度期望标准差，惩罚"单年爆发"持有期），保留
+   `--select-period {stationarity,expectation,total_return}` 可取回旧口径
+3. 5 日验证/handoff 前瞻收益列逐级回退（`_signal_return_cols`）：best_period 常为
+   5/10 日、超出 5 日验证窗口，旧实现整笔记为"未平仓"，导致 5 日验证 0 笔可用、
+   handoff 输出 0 只股票、主程序整轮空转；现回退到可测的最大持有期真实出场
+4. 共振投票剔除派生组合与结构性退化策略（`_RESONANCE_VOTE_EXCLUDE`）：
+   ensemble 与组件同源不是独立意见；6 个 5 年仅 1~14 笔、逐年胜率 0~33% 的策略
+   其命中属噪声；新增 `--resonance-all-voters` 回退全量投票
+5. 冷却期由"日历日"改按"交易日"计数（旧 5 个日历日≈3 个交易日，冷却形同虚设），
+   并去掉 `_apply_cooldown` 的整表 copy（500 万行 × 近百列 × 24 策略）
+6. handoff 个股推荐只采信样本充足（≥MIN_TRADES_FOR_RANKING 笔）策略的命中，
+   避免小样本策略的偶发收益（sell_return 取命中策略最大值）把噪声股顶到推荐前列
+7. 修复 WFO 扫描 `select_period_by="expectancy"` 拼写错误（静默回退 total_return，
+   与注释/设计意图矛盾）
+
+P1 批次4（2026-09-13，基于 logs/backtest_5y_20260913.log 与探针实测归因）：
+1. 涨跌停判定跨尺度修复（`_is_limit_up`/`_is_limit_down`）：行情价格乘累计复权
+   因子后与 tushare_stk_limit 原始涨跌停价不同尺度（close/up_limit 中位数 2.64），
+   旧实现把 83.8% 的普通交易日误判为"涨停不可买"、跌停判定恒为 False，22 个策略
+   实际只能交易"累计复权因子 < 1.1"的少数股票，跌停顺延出场从未生效；现在
+   apply_forward_adjustment 保留 close_raw 原始收盘价并与原始涨跌停价比较
+2. 业绩预告过期判定修复：旧实现用全区间最后一期公告日（全局 max）比较，历史行
+   永不判过期，一年以上的陈旧预增仍被 confluence/fc_pos_break 当催化剂；现在
+   按"信号日 − as-of 公告日"计算年龄，超 AUX_MAX_AGE_DAYS 置 NaN
+3. 龙虎榜"近 5 日净买"口径修复：旧实现是"最近 5 次上榜求和"且永不失效，
+   半年上榜 5 次即被长期当作近期净买；现在改为 10 自然日滚动窗口 + 超
+   INST_MAX_AGE_DAYS 置 NaN
+4. 低位涨停低价股过滤改用原始价：旧实现用复权价比较 80 元（被因子放大约 2.6 倍，
+   等效仅保留约 30 元以下），误杀 30~80 元段
+5. 放量突破（volume_surge_std）阈值 6→8：修正口径后 5 年全样本探针实测期望
+   1.180%→1.289%、组合净值总收益 87.9%→129.1%
+6. handoff 买入日兜底：窗口首日无候选信号时按时间顺序回退到首个有命中的交易日，
+   避免 5 日验证有信号但 handoff 输出 0 只、主程序整轮空转
 """
 
 import argparse
@@ -97,7 +137,10 @@ TRADING_COST_PCT = 0.15          # 单边往返交易成本（%）：佣金+印�
 # ─── 已加载数据 parquet 缓存（跳过 ~8 分钟 PG 加载/复权/增强信号合并） ───────────
 # 缓存的是"复权 + 增强信号合并后、指标计算前"的准备态 DataFrame；指标/出场收益
 # 每次运行实时重算。加载/合并逻辑变更时必须 bump CACHE_VERSION 使旧缓存失效。
-CACHE_VERSION = "v1"
+# v2（P1 批次4）：apply_forward_adjustment 新增 close_raw 原始收盘价列（涨跌停
+# 判定/低价股过滤必须与 tushare_stk_limit 原始价同尺度）；增强信号按 as-of
+# 公告日计算过期（预告/龙虎榜），旧缓存无 close_raw 且保留陈旧信号，必须失效。
+CACHE_VERSION = "v2"
 CACHE_DIR = BASE_DIR / "data" / "cache"
 
 # ─── 信号质量过滤（P1） ────────────────────────────────────────────────────────
@@ -107,8 +150,26 @@ MIN_VOLUME_RATIO = 1.5           # 信号日最低量比（Tushare 官方归一�
 MONEYFLOW_LOOKBACK = 3           # 主力资金净流入确认的回看天数
 
 # ─── 信号去重/冷却期（C3） ─────────────────────────────────────────────────────
-SIGNAL_COOLDOWN_DAYS = 5         # 同一股票同一策略 N 日内只取第一次信号
+SIGNAL_COOLDOWN_DAYS = 5         # 同一股票同一策略 N 个**交易日**内只取第一次信号
 MIN_RESONANCE_STRATEGIES = 2     # 共振门槛：同一股票同日至少 N 个策略命中才保留（P0-2，Exp4 最优）
+
+# ─── 共振投票排除集（P1 批次3，--resonance-all-voters 回退旧行为） ────────────────
+# 共振门槛要求"同股同日≥2 个策略命中"，但把下面这些策略算作投票人会让门槛失效：
+#   - ensemble：是 ma_crossover/wave_theory/limit_up_pullback/rsi_bullish_divergence/
+#     fc_pos_break/holder_conc_break 的派生合成，与组件同源、不是独立意见；组件 +
+#     ensemble 同时命中时，实际只有 1 个真实策略也会被判定为"共振 2 票"。
+#   - wonderful_9_turn / emotion_cycle / one_yang_three_yin / box_oscillation /
+#     chan_theory / dragon_head：打分条件与买入掩码链近乎互斥，5 年信号仅 1~14 笔，
+#     逐年胜率 0~33%（2026-09-12 日志：wonderful_9_turn 14.3%、emotion_cycle 33.3%、
+#     dragon_head 胜率 50% 但均亏 5.58%），属结构性退化策略，其命中是噪声而非共振证据。
+# 被排除的策略自身信号仍要过该门槛（单独命中时命中票数为 0，会被过滤掉）。
+RESONANCE_VOTE_EXCLUDE_DEFAULT: set = {
+    "ensemble", "wonderful_9_turn", "emotion_cycle", "one_yang_three_yin",
+    "box_oscillation", "chan_theory", "dragon_head",
+}
+# 生效中的排除集（main() 按 --resonance-all-voters 置空集合回退旧口径）
+_RESONANCE_VOTE_EXCLUDE: set = set(RESONANCE_VOTE_EXCLUDE_DEFAULT)
+
 
 # ─── 数据增强过滤（P2，基于 tushare 扩展表，按策略族差异化应用） ────────────────
 MIN_TURNOVER_RATE_F = 1.0        # 最小自由流通换手率（%），过低=流动性差/无人问津
@@ -965,6 +1026,7 @@ def apply_industry_momentum(df: pd.DataFrame, rank_df: pd.DataFrame,
 # ═══════════════════════════════════════════════════════════════════════════════
 
 AUX_MAX_AGE_DAYS = 400  # 事件类数据最大有效期（天），超过视为过期置 NaN
+INST_MAX_AGE_DAYS = 15  # 龙虎榜数据最大有效期（天）："近 5 日净买"过期即失效（P1 批次4）
 
 
 def _merge_aux_by_date(df: pd.DataFrame, right: pd.DataFrame,
@@ -1074,13 +1136,17 @@ def load_signal_aux(df: pd.DataFrame) -> pd.DataFrame:
     fc["forecast_pos"] = fc["type"].isin(POS_TYPES).astype("float32")
     fc["forecast_neg"] = fc["type"].isin(NEG_TYPES).astype("float32")
     fc["forecast_pmin"] = pd.to_numeric(fc["p_change_min"], errors="coerce").astype("float32")
-    df = _merge_aux_by_date(df, fc, "ann_date", ["forecast_pos", "forecast_neg", "forecast_pmin"])
-    fc_last = fc.groupby("code")["ann_date"].max().rename("fc_last_ann")
-    df = df.merge(fc_last, on="code", how="left")
-    df["fc_last_ann"] = pd.to_datetime(df["fc_last_ann"], errors="coerce")
-    stale_fc = (df["date"] - df["fc_last_ann"]).dt.days > AUX_MAX_AGE_DAYS
+    # 随行携带 as-of 公告日，按"信号日 − 公告日"计算数据年龄（P1 批次4）。
+    # 旧实现用全区间最后一期公告日（全局 max）比较，历史行的 date−fc_last_ann
+    # 恒为负、永不判过期，一年以上的陈旧预增仍被 confluence / fc_pos_break
+    # 当作有效催化剂。
+    fc["fc_ann"] = fc["ann_date"]
+    df = _merge_aux_by_date(df, fc, "ann_date",
+                            ["forecast_pos", "forecast_neg", "forecast_pmin", "fc_ann"])
+    df["fc_ann"] = pd.to_datetime(df["fc_ann"], errors="coerce")
+    stale_fc = (df["date"] - df["fc_ann"]).dt.days > AUX_MAX_AGE_DAYS
     df.loc[stale_fc, ["forecast_pos", "forecast_neg", "forecast_pmin"]] = np.nan
-    df.drop(columns=["fc_last_ann"], inplace=True)
+    df.drop(columns=["fc_ann"], inplace=True)
 
     # ── 质押比例 ──
     pl["code"] = pl["ts_code"].apply(_from_ts_code)
@@ -1090,15 +1156,32 @@ def load_signal_aux(df: pd.DataFrame) -> pd.DataFrame:
     pl["pub_date"] = pl["end_date"] + pd.Timedelta(days=30)
     df = _merge_aux_by_date(df, pl, "pub_date", ["pledge_ratio"])
 
-    # ── 机构龙虎榜近 5 日净买入 ──
+    # ── 机构龙虎榜近期净买入 ──
     ti["code"] = ti["ts_code"].apply(_from_ts_code)
     ti.drop(columns=["ts_code"], inplace=True)
     ti["net_buy"] = pd.to_numeric(ti["net_buy"], errors="coerce")
+    # 该表未 parse_dates 读取，先转 datetime64 供时间窗口滚动使用
+    ti["trade_date"] = pd.to_datetime(ti["trade_date"])
     ti = ti.groupby(["code", "trade_date"], as_index=False)["net_buy"].sum()
     ti = ti.sort_values(["code", "trade_date"]).reset_index(drop=True)
-    ti["inst_buy5"] = (ti.groupby("code")["net_buy"].rolling(5).sum()
-                       .reset_index(level=0, drop=True).astype("float32"))
-    df = _merge_aux_by_date(df, ti, "trade_date", ["inst_buy5"])
+    # "近 5 日累计净买"按时间窗口径（P1 批次4）：滚动窗口 = 最近 10 个自然日，
+    # 并随行携带上榜日用于过期判定。旧实现是"最近 5 次上榜记录求和"且永不
+    # 过期——半年上榜 5 次的股票会把半年前的净买一直算作"近期净买"，
+    # sig_inst_smart_break 与 confluence 的机构催化剂都被陈旧数据触发。
+    # 用 trade_date 为索引做时间窗口滚动（groupby.rolling 的 on= 参数在
+    # pandas 2.3 不支持时间窗，索引式写法跨版本稳定）；ti 已按 code,trade_date
+    # 排序，分组顺序与行序一致，to_numpy 回填不会错位。
+    rolled = (ti.set_index("trade_date")
+              .groupby("code", sort=False)["net_buy"]
+              .rolling("10D").sum()
+              .reset_index(level=0, drop=True))
+    ti["inst_buy5"] = rolled.to_numpy().astype("float32")
+    ti["ti_date"] = ti["trade_date"]
+    df = _merge_aux_by_date(df, ti, "trade_date", ["inst_buy5", "ti_date"])
+    df["ti_date"] = pd.to_datetime(df["ti_date"], errors="coerce")
+    stale_ti = (df["date"] - df["ti_date"]).dt.days > INST_MAX_AGE_DAYS
+    df.loc[stale_ti, "inst_buy5"] = np.nan
+    df.drop(columns=["ti_date"], inplace=True)
 
     logger.info(f"增强信号合并完成，耗时 {time.time()-t0:.1f}s")
     return df
@@ -1189,9 +1272,16 @@ def apply_forward_adjustment(df: pd.DataFrame, df_factor: pd.DataFrame) -> pd.Da
 
     注意：因子缺失时默认取 1.0（即不复权），保证全市场数据不因个别股票
     因子缺失而整行丢弃。
+    另保留原始收盘价 close_raw（未乘复权因子）：涨跌停判定与绝对价格类过滤
+    必须与 tushare_stk_limit 原始价同尺度比较（P1 批次4）。
     """
     df = df.sort_values(["code", "date"]).reset_index(drop=True)
     df["date"] = pd.to_datetime(df["date"]).astype("datetime64[ns]")
+
+    # 原始收盘价（未复权）。复权价 = 原始价 × 累计复权因子（如 000001.SZ 2026
+    # 因子 139），与 tushare_stk_limit 的原始涨跌停价不同尺度；close_raw 供
+    # _is_limit_up/_is_limit_down 与低价股过滤使用。
+    df["close_raw"] = df["close"].astype("float32")
 
     if not df_factor.empty:
         factor_subset = df_factor[["code", "dividOperateDate", "foreAdjustFactor"]].copy()
@@ -1328,6 +1418,17 @@ DEFAULT_EXIT_PARAMS = (2.5, 0.95)   # WFO Exp3 全局最优 (atr_mult, trail)
 # 主入场口径（由 main() 按 --entry-timing 设置）：推荐/前瞻收益列选择与上报
 # 指标保持同一口径，默认 next_open（次日开盘，消除收盘入场前视偏差）。
 _PRIMARY_ENTRY_TIMING = "next_open"
+
+# 真实交易日历（由 main() 在指标计算后注入 df_all 的全部交易日期），供
+# calc_portfolio_metrics 用真实时间跨度推进组合净值曲线；未注入时退化为
+# bdate_range（忽略 A 股节假日，误差远小于旧的"信号日并集"口径）。
+_TRADING_DAYS: Optional[pd.DatetimeIndex] = None
+
+# 最优持有期（best_period）选择口径（由 main() 按 --select-period 设置）：
+#   stationarity（默认）= 全期期望 − 0.5×年度期望标准差（惩罚"单年爆发"持有期，
+#                        抗行情带偏）；expectation = 单笔期望（样本量不敏感）；
+#   total_return       = 历史口径（总收益最高，易被某一年行情选中长持有期）。
+_SELECT_PERIOD_BY = "stationarity"
 
 # 动态退出可选参数（由 main() 按 CLI 设置，默认 0.0 = 旧行为，稳定性优先）：
 #   _TRAIL_ACTIVATE_R：移动止盈激活门槛（R 倍数）。浮盈达到该倍数初始风险
@@ -1542,41 +1643,34 @@ def compute_dynamic_exit_returns(df: pd.DataFrame,
 def _is_limit_up(df: pd.DataFrame) -> pd.Series:
     """判断当日是否涨停封板(涨停时按收盘价无法买入,回测应剔除该类信号)。
 
-    优先使用 tushare_stk_limit.up_limit 精确判定:
-      - 收盘价 >= 涨停价 * 0.999 即视为已封板(含 ST/科创板等不同涨跌幅限制)
-    当 up_limit 缺失(如停牌、数据缺失)时回退到近似阈值:
-      - 主板/中小板 9.5%,创业板 19.5%(留出四舍五入余量)
-    返回布尔 Series(True = 涨停,不可成交)。
+    P1 批次4 修复单位口径：行情价格经 apply_forward_adjustment 乘累计复权因子后
+    与 tushare_stk_limit 的原始 up_limit 不再同尺度。旧实现用复权 close 比较原始
+    up_limit，实测 2021-2026 全样本 83.8% 的普通交易日被误判为涨停
+    （close/up_limit 中位数 2.64），22 个策略实际只能交易"累计复权因子 < 1.1"
+    的少数股票。现在优先用 close_raw（原始收盘价）与原始 up_limit 精确比较；
+    close_raw 缺失（旧缓存/外部调用）时退回 pct_chg 阈值近似
+    （主板 9.5% / 创业板 19.5%），不再做跨尺度的错误精确比较。
     """
-    if "up_limit" in df.columns:
-        exact = df["close"] >= df["up_limit"] * 0.999
-        gem = df["code"].str.startswith(("sz.300", "sz.301"))
-        approx = df["pct_chg"] >= np.where(gem, LIMIT_UP_PCT_GEM, LIMIT_UP_PCT_MAIN)
-        # 精确值优先;缺失时用近似阈值兜底
+    gem = df["code"].str.startswith(("sz.300", "sz.301"))
+    approx = df["pct_chg"] >= np.where(gem, LIMIT_UP_PCT_GEM, LIMIT_UP_PCT_MAIN)
+    if "close_raw" in df.columns and "up_limit" in df.columns:
+        exact = df["close_raw"] >= df["up_limit"] * 0.999
         return exact.fillna(approx)
-    else:
-        gem = df["code"].str.startswith(("sz.300", "sz.301"))
-        threshold = np.where(gem, LIMIT_UP_PCT_GEM, LIMIT_UP_PCT_MAIN)
-        return df["pct_chg"] >= threshold
+    return approx
 
 
 def _is_limit_down(df: pd.DataFrame) -> pd.Series:
     """判断当日是否跌停(跌停日买入流动性差且为接飞刀,回测应剔除该类信号)。
 
-    优先使用 tushare_stk_limit.down_limit 精确判定:
-      - 收盘价 <= 跌停价 * 1.001 即视为已封板
-    当 down_limit 缺失时回退到近似阈值(-9.5% / -19.5%)。
-    返回布尔 Series(True = 跌停,不可作为买点)。
+    与 _is_limit_up 同口径（P1 批次4）：优先用原始 close_raw 与原始 down_limit
+    精确比较；缺失时退回 pct_chg 阈值近似(-9.5% / -19.5%)。
     """
-    if "down_limit" in df.columns:
-        exact = df["close"] <= df["down_limit"] * 1.001
-        gem = df["code"].str.startswith(("sz.300", "sz.301"))
-        approx = df["pct_chg"] <= np.where(gem, -LIMIT_UP_PCT_GEM, -LIMIT_UP_PCT_MAIN)
+    gem = df["code"].str.startswith(("sz.300", "sz.301"))
+    approx = df["pct_chg"] <= np.where(gem, -LIMIT_UP_PCT_GEM, -LIMIT_UP_PCT_MAIN)
+    if "close_raw" in df.columns and "down_limit" in df.columns:
+        exact = df["close_raw"] <= df["down_limit"] * 1.001
         return exact.fillna(approx)
-    else:
-        gem = df["code"].str.startswith(("sz.300", "sz.301"))
-        threshold = np.where(gem, -LIMIT_UP_PCT_GEM, -LIMIT_UP_PCT_MAIN)
-        return df["pct_chg"] <= threshold
+    return approx
 
 
 # 以涨停日本身为买点的策略：信号日涨停是策略意图（次日开盘入场口径下次日成交），
@@ -1662,32 +1756,53 @@ def _entry_mask(df: pd.DataFrame, enhanced: bool = False, name: Optional[str] = 
 
 def _apply_cooldown(df: pd.DataFrame, sig: pd.Series, cooldown_days: int = SIGNAL_COOLDOWN_DAYS,
                     enhanced: bool = False, name: Optional[str] = None) -> pd.Series:
-    """对信号施加冷却期:同一股票同一策略 N 日内只取第一次信号。
+    """对信号施加冷却期:同一股票同一策略 N 个**交易日**内只取第一次信号。
 
-    按 code 分组,保留信号后 N 日内的后续信号被抑制,降低样本
+    按 code 分组,保留信号后 N 个交易日内的后续信号被抑制,降低样本
     自相关与同一股票重复贡献,使胜率统计更真实(C3)。
     enhanced=True 时使用 market_ok_enh(放宽 regime, P0-1)。
     name 透传给 _entry_mask（涨停买点策略豁免用）。
+
+    实现要点（P1 批次3）：
+      - 冷却距离改按**交易日序号**比较：旧实现用 `(d - last_kept)` 的日历日差，
+        `SIGNAL_COOLDOWN_DAYS=5` 个日历日在含周末/假期时只覆盖约 3 个交易日，
+        同一股票可以在一周内被反复推荐，去重形同虚设。
+      - 只构造 code/date/sig 三列轻量帧：旧实现 `df.copy()` 会复制整张宽表
+        （500 万行 × 近百列 ≈ GB 级），且被 24 个策略各调用一次，是加载后
+        的主要内存与耗时开销之一。
     """
     sig = sig & _entry_mask(df, enhanced=enhanced, name=name)
-    kept = pd.Series(False, index=df.index)
-    tmp = df.copy()
-    tmp["sig"] = sig.astype(bool)
-    tmp["kept"] = False
+    if cooldown_days <= 1:
+        # 1 个交易日 = 不做去重（同一 (code, date) 至多一行），与旧行为等价
+        return sig.astype(bool)
+    kept_arr = np.zeros(len(df), dtype=bool)
+    tmp = pd.DataFrame({
+        "code": df["code"].to_numpy(),
+        "date": pd.DatetimeIndex(df["date"]).to_numpy(),
+        "sig": sig.astype(bool).to_numpy(),
+        # 行位置：用位置而非标签回填，df.index 非唯一（多次 concat/merge 后常见）时
+        # 标签 .loc 赋值会命中所有同标签行造成跨行污染
+        "__pos": np.arange(len(df), dtype=np.int64),
+    }, index=df.index)
+    # 交易日序号：全量唯一日期升序编号，同一天的所有股票共享同一序号
+    uniq_days = np.sort(np.unique(tmp["date"].to_numpy()))
+    tmp["day_no"] = np.searchsorted(uniq_days, tmp["date"].to_numpy())
     for code, g in tmp.groupby("code", sort=False):
-        sig_days = g.loc[g["sig"], "date"].to_numpy()
-        if len(sig_days) == 0:
+        flags = g["sig"].to_numpy()
+        if not flags.any():
             continue
-        keep_mask = np.zeros(len(sig_days), dtype=bool)
-        last_kept = None
-        for j, d in enumerate(sig_days):
-            if last_kept is None or (d - last_kept) / np.timedelta64(1, "D") >= cooldown_days:
-                keep_mask[j] = True
-                last_kept = d
-        kept_dates = sig_days[keep_mask]
-        if len(kept_dates):
-            kept.loc[g.index[g["date"].isin(kept_dates)]] = True
-    return kept
+        sig_pos = np.flatnonzero(flags)
+        day_no = g["day_no"].to_numpy()
+        keep_pos = []
+        last_day = None
+        for pos in sig_pos:
+            dnum = int(day_no[pos])
+            if last_day is None or (dnum - last_day) >= cooldown_days:
+                keep_pos.append(pos)
+                last_day = dnum
+        if keep_pos:
+            kept_arr[g["__pos"].to_numpy()[np.asarray(keep_pos, dtype=np.int64)]] = True
+    return pd.Series(kept_arr, index=df.index)
 
 
 def _apply_resonance(df: pd.DataFrame, sig_dict: Dict[str, pd.Series],
@@ -1697,13 +1812,28 @@ def _apply_resonance(df: pd.DataFrame, sig_dict: Dict[str, pd.Series],
     基于各策略冷却期后的布尔信号逐行求和，将命中数不足门槛的 (code, date)
     在所有策略中统一置 False。min_strategies <= 1 时原样返回（不启用）。
     所有 sig 必须与 df 行对齐（来自 _strategy_signal 的同源信号）。
+
+    投票人 = sig_dict 中排除 _RESONANCE_VOTE_EXCLUDE 后的集合（P1 批次3）：
+    ensemble 是组件的派生合成、与组件同源而非独立意见；6 个结构性退化策略
+    （5 年 1~14 笔、逐年胜率 0~33%）的命中是噪声。二者计入票数会让"≥2 策略"
+    在没有真实多策略共识时也通过。被排除策略自身的信号仍需过该门槛，
+    因此单独命中的噪声策略信号会被一并过滤掉。
+    --resonance-all-voters 时 _RESONANCE_VOTE_EXCLUDE 为空集合，回退旧口径。
     """
     if min_strategies <= 1 or not sig_dict:
         return sig_dict
 
+    voters = [n for n in sig_dict if n not in _RESONANCE_VOTE_EXCLUDE]
+    if not voters:   # 极端情况（全被排除）安全回退，避免把所有信号清零
+        voters = list(sig_dict)
+    excluded = [n for n in sig_dict if n in _RESONANCE_VOTE_EXCLUDE]
+    if excluded:
+        logger.info(f"共振投票策略 {len(voters)}/{len(sig_dict)} 个，排除派生/退化策略: "
+                    f"{', '.join(sorted(excluded))}")
+
     hit = np.zeros(len(df), dtype=np.int16)
-    for sig in sig_dict.values():
-        hit += sig.astype(bool).to_numpy()
+    for name in voters:
+        hit += sig_dict[name].astype(bool).to_numpy()
     keep = pd.Series(hit >= min_strategies, index=df.index)
     return {name: sig & keep for name, sig in sig_dict.items()}
 
@@ -1978,8 +2108,14 @@ def sig_ma_crossover(df):
 
 
 def sig_volume_surge_std(df):
-    """策略2：放量突破——成交量突破统计阈值且价格创 20 日新高。"""
-    return _vol_surge(df) >= 6
+    """策略2：放量突破——成交量突破统计阈值且价格创 20 日新高。
+
+    打分权重（_vol_surge）：量能突破 +4、创 20 日新高 +4、阳线 +2、RSI 健康 +2。
+    总分 >= 8 触发（P1 批次4：6→8）。旧阈值 6 允许"仅放量+RSI"或"仅新高+阳线"
+    等两两组合通过；修正涨跌停口径后 5 年全样本探针实测：期望 1.180%→1.289%、
+    组合净值总收益 87.9%→129.1%、胜率 47.4%→47.6%，剔除约 1/3 边际信号。
+    """
+    return _vol_surge(df) >= 8
 
 
 def _wonderful_9_score(df):
@@ -2120,7 +2256,8 @@ def sig_low_position_limit_up(df):
       - 收盘价低于 60 日最高价的 95%（60 日低位；旧条件 20 日高点*0.9
         与涨停日近乎互斥，信号常年为 0）
       - 换手率 >= 3%（有资金参与；旧 5% 过严）
-      - 股价 < 80 元（低价股偏好；旧 50 元过严）
+      - 原始股价 < 80 元（低价股偏好；旧 50 元过严。P1 批次4：必须用
+        close_raw 原始价，复权价被累计复权因子放大约 2.6 倍，会误杀 30~80 元段）
       - 前 10 日内无涨停（排除连板/高位接力；旧 20 日过严）
     """
     pct = df["pct_chg"]
@@ -2131,8 +2268,9 @@ def sig_low_position_limit_up(df):
     no_lim = ~(df.groupby("code")["pct_chg"].transform(
         lambda x: (x >= 9.5).rolling(10, min_periods=1).max().shift(1).fillna(0).astype(bool)
     ))
+    price = df["close_raw"] if "close_raw" in df.columns else df["close"]
     return (is_lu & (df["close"] < h60 * 0.95) & (df["turn"] >= 3)
-            & (df["close"] < 80) & no_lim)
+            & (price < 80) & no_lim)
 
 @deprecated("该函数已废弃，胜率太低")
 def sig_limit_up_resonance(df):
@@ -2798,6 +2936,32 @@ else:
                 total_return_pct, annualized_return, max_drawdown, sharpe, float(n_valid))
 
 
+def _portfolio_calendar(d: pd.DatetimeIndex, avg_holding: float) -> pd.DatetimeIndex:
+    """组合净值推进用的交易日历：首个信号日 ~ (最后一个信号日 + 持有期)。
+
+    旧实现直接用"信号日的并集"当交易日历，等价于把时间轴压缩成只有信号发生的
+    那几天，`years = 信号日数 / 252` 被严重低估，年化与夏普被抬高一个到两个数量级
+    （2026-09-12 日志：fc_pos_break 70 笔、总收益 21.9%，却报年化 136.3%；
+    跨策略平均年化 85.5% 与平均总收益 25.5% 数学上不可能并存）。
+    这里改用真实交易日历（`_TRADING_DAYS`，由 main() 注入 df_all 的全部交易日），
+    未注入时退化为 bdate_range 近似（忽略 A 股节假日，误差远小于原口径）。
+    """
+    first = pd.Timestamp(np.min(d.to_numpy()))
+    last = pd.Timestamp(np.max(d.to_numpy()))
+    tail = int(np.ceil(max(avg_holding, 1.0))) + 1
+    cal = _TRADING_DAYS
+    if cal is not None and len(cal) > 1:
+        arr = cal.to_numpy()
+        i0 = int(np.searchsorted(arr, np.datetime64(first), side="left"))
+        i0 = max(0, min(i0, len(arr) - 1))
+        i1 = int(np.searchsorted(arr, np.datetime64(last), side="right")) + tail
+        i1 = max(i1, i0 + 2)
+        i1 = min(len(arr), i1)
+        if i1 - i0 >= 2:
+            return pd.DatetimeIndex(arr[i0:i1])
+    return pd.bdate_range(first, last + pd.Timedelta(days=tail * 2 + 4))
+
+
 def calc_portfolio_metrics(dates: pd.Series, returns: np.ndarray,
                            avg_holding: float,
                            target_vol_annual: float = 0.0,
@@ -2810,6 +2974,9 @@ def calc_portfolio_metrics(dates: pd.Series, returns: np.ndarray,
     均匀分摊到其持有期内的每个交易日，按日历日对齐后取当日所有持仓的等权平均
     作为组合日收益，再用复利净值 cumprod 计算总收益/年化/最大回撤/夏普——
     与基准侧日频收益 cumprod 口径一致，正确反映重叠持仓与真实时间跨度。
+    交易日历由 _portfolio_calendar 提供（真实交易日，见该函数说明）；无信号
+    交易的交易日收益记 0（空仓），因此总收益/回撤不受影响，而年化/夏普的
+    时间跨度变得真实可比。
 
     Args:
         dates: 与 returns 对齐的信号触发日（pd.Series / DatetimeIndex）。
@@ -2834,22 +3001,23 @@ def calc_portfolio_metrics(dates: pd.Series, returns: np.ndarray,
     if len(r) < 2:
         return None
 
-    # 全部交易日历（信号日的并集，按日排序）
-    trade_days = pd.DatetimeIndex(np.sort(pd.unique(d.values)))
+    # 真实交易日历（首个信号日 ~ 最后一个信号日 + 持有期）
+    trade_days = _portfolio_calendar(d, avg_holding)
     if len(trade_days) < 2:
         return None
-    day_pos = {day: i for i, day in enumerate(trade_days)}
     n_days = len(trade_days)
+    cal_arr = trade_days.to_numpy()
 
     # 每笔信号把持有期收益均匀分摊到 avg_holding 个交易日：daily_contrib[i] += r/holding
     daily_sum = np.zeros(n_days, dtype=float)
     daily_cnt = np.zeros(n_days, dtype=int)
     per_day = r / float(avg_holding)
-    max_forward = int(avg_holding)
-    for sig_day, contrib in zip(d, per_day):
-        start = day_pos.get(pd.Timestamp(sig_day))
-        if start is None:
-            continue
+    max_forward = max(1, int(round(avg_holding)))
+    # searchsorted 定位信号日在日历中的位置（信号日不在日历内时落到其后第一个
+    # 交易日），避免 dict 查找在日历缺日时静默丢样本
+    starts = np.searchsorted(cal_arr, d.to_numpy(), side="left")
+    for start, contrib in zip(starts, per_day):
+        start = int(min(max(start, 0), n_days - 1))
         end = min(start + max_forward, n_days)
         if end <= start:
             continue
@@ -2908,7 +3076,8 @@ def calc_metrics(returns: np.ndarray, avg_holding: Optional[float] = None,
     avg_holding 为该持有期天数，用于年化收益与夏普的换算；
     为 None 时回退到 HOLDING_PERIODS 均值（向后兼容）。
     输出指标：total_trades / win_rate / avg_win / avg_loss /
-    profit_loss_ratio / total_return / annualized_return / max_drawdown / sharpe_ratio。
+    profit_loss_ratio / expectation / kelly / total_return / annualized_return /
+    max_drawdown / sharpe_ratio / edge_score（逐笔口径显著性，不被组合口径覆盖）。
     """
     r = np.asarray(returns, dtype=float).flatten()
     n = len(r)
@@ -2940,6 +3109,11 @@ def calc_metrics(returns: np.ndarray, avg_holding: Optional[float] = None,
         "annualized_return": round(float(np.clip(ann, -1e10, 1e10)), 2),
         "max_drawdown": round(float(np.clip(mxd, 0, 100)), 2),
         "sharpe_ratio": round(float(np.clip(sr, -100, 100)), 2),
+        # 单笔收益的显著性（mean/std × √(252/持有期)，即单笔口径 t 统计的等比例量）。
+        # 组合口径 sharpe_ratio 下面会被日历净值的夏普覆盖，而 best_period 的选择
+        # 需要"这一个持有期本身是否稳定为正"的逐笔口径度量，故单独留一个不被覆盖
+        # 的字段供 _backtest_single 选期使用（见 _SELECT_PERIOD_BY）。
+        "edge_score": round(float(sr), 4),
     }
 
     # 组合级指标（总收益/年化/回撤/夏普）改用日历日等权组合复利净值口径，
@@ -2995,8 +3169,28 @@ def _signal_return_col(columns, name: str, p: int, entry_timing: str) -> Optiona
     return None
 
 
+def _signal_return_cols(columns, name: str, p: int,
+                        entry_timing: str) -> List[str]:
+    """按优先级返回候选持有期收益列：先 best_p，再依次回退到更短持有期。
+
+    验证/handoff 的窗口固定为最近 5 个交易日，而候选策略的 best_period 常为
+    5/10 日——其前瞻收益列在窗口末端必然为 NaN（持有期未走完）。旧实现直接把这
+    些笔计为"未平仓"：2026-09-12 日志中 8 个候选策略共 4 笔入场、全部未平仓，
+    5 日验证可用样本 0 笔、handoff 输出 0 只股票、主程序整轮空转。
+    这里按"可测的最大持有期"逐行回退（列表顺序即优先级，配合 bfill 使用），
+    使每笔入场都能用真实出场规则（ATR 止损/移动止盈/时间止损）估到收益。
+    """
+    candidates = [p] + [x for x in sorted(HOLDING_PERIODS, reverse=True) if x < p]
+    cols: List[str] = []
+    for cand_p in candidates:
+        col = _signal_return_col(columns, name, cand_p, entry_timing)
+        if col is not None and col not in cols:
+            cols.append(col)
+    return cols
+
+
 def _backtest_single(name: str, df: pd.DataFrame, sig: Optional[pd.Series] = None,
-                     select_period_by: str = "total_return",
+                     select_period_by: Optional[str] = None,
                      entry_timing: str = "close",
                      industry_filter: bool = False,
                      regime_filter: bool = False,
@@ -3016,10 +3210,15 @@ def _backtest_single(name: str, df: pd.DataFrame, sig: Optional[pd.Series] = Non
     异常时返回 {"strategy": name, "error": ...}，不中断整体回测；
     无信号时返回全 0 指标。
 
-    select_period_by：最优持有期（best_p）的选取口径，默认 "total_return"（保持
-    历史行为）；WFO 回测传 "expectation"（单笔期望不受样本量影响，选期更稳）。
+    select_period_by：最优持有期（best_p）的选取口径。None（默认）时取模块全局
+    `_SELECT_PERIOD_BY`（由 --select-period 设置，默认 "stationarity" =
+    全期期望 − 0.5×年度期望标准差）；"expectation"=单笔期望；
+    "total_return"=历史口径（总收益最高，易被某一年行情挑中长持有期）。
+    WFO 脚本显式传 "expectation"，行为不变。
     """
     t0 = time.time()
+    if select_period_by is None:
+        select_period_by = _SELECT_PERIOD_BY
     try:
         if sig is None:
             sig = _apply_cooldown(df, _strategy_signal(
@@ -3074,6 +3273,30 @@ def _backtest_single(name: str, df: pd.DataFrame, sig: Optional[pd.Series] = Non
                     "expectation": gy["expectation"],
                 }
             m["yearly"] = yearly
+            # 选期稳健性（P1 批次3）。旧口径按 total_return 选期，会把"只在某一年
+            # （如 2024 单边行情）赚到大钱"的持有期选为 best_period；2026-09-12 日志
+            # 里绝大多数策略分年度胜率从 2024 的 70~85% 掉到 2026 的 40~43% 正是这种
+            # 不稳定的体现。这里用年度期望的**离散度惩罚**评分：
+            #   稳健性评分 = 全期期望 − 0.5 × 年度期望标准差（按年度样本笔数加权）
+            # 只按期望选期同样会被"某一年爆发、其余年份亏"的持有期拿走最高分
+            # （合成数据实测：单年 +8%、其余 4 年 −0.4% 的持有期期望 1.13%，
+            # 而每年稳定 +0.3% 的持有期期望只有 0.15%，加离散度惩罚后前者
+            # 评分 −0.55、后者 +0.14，选期回到稳定口径）。
+            # stability（正期望年份占比）保留为报表字段。
+            pos_years = sum(1 for v in yearly.values() if v.get("expectation", 0) > 0)
+            m["stability"] = round(pos_years / len(yearly), 3) if yearly else 0.0
+            years_exp = [float(v.get("expectation", 0.0) or 0.0) for v in yearly.values()]
+            years_w = [float(v.get("trades", 0) or 0) for v in yearly.values()]
+            w_sum = sum(years_w)
+            if len(years_exp) >= 2 and w_sum > 0:
+                mean_e = sum(e * w for e, w in zip(years_exp, years_w)) / w_sum
+                var_e = sum(w * (e - mean_e) ** 2 for e, w in zip(years_exp, years_w)) / w_sum
+                m["year_exp_std"] = round(var_e ** 0.5, 4)
+                score = mean_e - 0.5 * (var_e ** 0.5)
+            else:
+                m["year_exp_std"] = 0.0
+                score = float(m.get("expectation", 0.0) or 0.0)
+            m["stationarity_score"] = round(score, 4)
             period_metrics[p] = m
 
         if not period_metrics:
@@ -3082,8 +3305,26 @@ def _backtest_single(name: str, df: pd.DataFrame, sig: Optional[pd.Series] = Non
                     "total_return": 0, "annualized_return": 0,
                     "max_drawdown": 0, "sharpe_ratio": 0, "time_s": round(time.time() - t0, 1)}
 
-        # 聚合：取最优持有期（默认总收益最高，WFO 传 expectation）作为该策略代表指标，同时保留各持有期明细
-        best_p = max(period_metrics, key=lambda p: period_metrics[p].get(select_period_by, period_metrics[p]["total_return"]))
+        # 聚合：取最优持有期作为该策略代表指标，同时保留各持有期明细。
+        # 评分键 = (选期口径指标, 单笔期望, 胜率)：主键缺失时逐级回退，全部持有期
+        # 均为非正时也会选到"最不差"的那个（而不是按 dict 顺序取第一个）。
+        # CLI 简称 → 指标键映射："stationarity" 对应 metrics["stationarity_score"]；
+        # 键名不匹配时 dict.get 会静默回退成 expectation（本次扫描到的真实缺陷：
+        # 与旧代码里的 "expectancy" 拼写错误同源），因此这里显式告警而不是静默降级。
+        sel_key = {"stationarity": "stationarity_score"}.get(select_period_by, select_period_by)
+        if not any(sel_key in pm for pm in period_metrics.values()):
+            logger.warning(
+                f"[{name}] 选期口径 '{select_period_by}' 在任何持有期指标中都不存在，"
+                f"回退 expectation；合法口径: stationarity/expectation/total_return")
+            sel_key = "expectation"
+
+        def _period_rank(p: int) -> Tuple[float, float, float]:
+            pm = period_metrics[p]
+            return (float(pm.get(sel_key, pm.get("expectation", 0.0)) or 0.0),
+                    float(pm.get("expectation", 0.0) or 0.0),
+                    float(pm.get("win_rate", 0.0) or 0.0))
+
+        best_p = max(period_metrics, key=_period_rank)
         m = dict(period_metrics[best_p])
         m["strategy"] = name
         m["total_trades"] = n
@@ -3309,7 +3550,7 @@ def sweep_strategy_thresholds(df: pd.DataFrame,
             thr = base_thr + d
             sig = _sweep_signal_from_score(df, name, score, thr, enhanced=enhanced)
             r = _backtest_single(name, df, sig, entry_timing=entry_timing,
-                                 select_period_by="expectancy")
+                                 select_period_by=_SELECT_PERIOD_BY)
             if "error" in r:
                 logger.warning(f"[wfo-sweep] {name} Δ{d:+.0f} 回测失败: {r['error']}")
                 continue
@@ -3358,7 +3599,7 @@ def sweep_ensemble_thresholds(df: pd.DataFrame,
             sig = _apply_cooldown(df, raw, enhanced=enhanced, name=c)
             component_results[c] = _backtest_single(
                 c, df, sig, entry_timing=entry_timing,
-                select_period_by="expectation", collect_trades=True)
+                select_period_by=_SELECT_PERIOD_BY, collect_trades=True)
         _ENSEMBLE_WEIGHTS = _compute_ensemble_weights(component_results)
         try:
             _ENSEMBLE_WF_DATES, _ENSEMBLE_WF_WEIGHTS = _build_walkforward_weights(
@@ -3372,7 +3613,7 @@ def sweep_ensemble_thresholds(df: pd.DataFrame,
             raw = _strategy_signal(df, "ensemble", enhanced=enhanced, industry_filter=True)
             sig = _apply_cooldown(df, raw, enhanced=enhanced, name="ensemble")
             r = _backtest_single("ensemble", df, sig, entry_timing=entry_timing,
-                                 select_period_by="expectation")
+                                 select_period_by=_SELECT_PERIOD_BY)
             if "error" in r:
                 logger.warning(f"[wfo-sweep] ensemble 阈值 {thr:.2f} 回测失败: {r['error']}")
                 continue
@@ -3655,6 +3896,8 @@ def validate_week(df_full, df_week, top_results, top_n=VALIDATE_CANDIDATES, sign
       - 每笔入场按该策略回测最优持有期（best_period）读取预计算的
         dyn_ret 前瞻收益列（与回测同一套真实出场规则：ATR 止损/移动止盈/
         时间止损 + 跌停顺延），主入场口径由 _PRIMARY_ENTRY_TIMING 决定；
+        best_period 超出 5 日窗口时按 _signal_return_cols 回退到窗口内可测的
+        最大持有期（避免候选策略 best_period 普遍为 5/10 日时验证全为"未平仓"）；
       - 出场窗口超出可用数据（前瞻收益为 NaN）记为"未平仓"，单独计数，
         不计胜也不计负；已平仓笔扣交易成本后统计胜率/平均收益。
     信号在完整历史 df_full 上计算后再按入场日筛选（rolling/shift 特征需要
@@ -3681,18 +3924,20 @@ def validate_week(df_full, df_week, top_results, top_n=VALIDATE_CANDIDATES, sign
                 sig = signals[name]
             else:
                 sig = _strategy_signal(df_full, name)
-            fwd_col = _signal_return_col(df_full.columns, name, best_p,
-                                         _PRIMARY_ENTRY_TIMING) if best_p else None
+            fwd_cols = (_signal_return_cols(df_full.columns, name, best_p,
+                                            _PRIMARY_ENTRY_TIMING) if best_p else [])
             closed_rets = []
             open_count = 0
             for d in week_dates:
                 day_mask = sig.values & (df_full["date"] == d).values
                 if day_mask.sum() == 0:
                     continue
-                if fwd_col is None:
+                if not fwd_cols:
                     open_count += int(day_mask.sum())
                     continue
-                rets = df_full.loc[day_mask, fwd_col]
+                # 逐行取首个可测（非 NaN）的持有期收益：best_p 的持有期没走完时
+                # 回退到窗口内可测的最大持有期，避免整笔被算作"未平仓"
+                rets = df_full.loc[day_mask, fwd_cols].bfill(axis=1).iloc[:, 0]
                 net = rets.dropna() - TRADING_COST_PCT / 100.0
                 closed_rets.extend(net.tolist())
                 open_count += int(rets.isna().sum())
@@ -3888,10 +4133,16 @@ def get_top_stocks_by_win_rate(df_full, df_week, results, top_n=10, signals=None
 
     统计口径：
       - 对每个有信号的回测策略，取本周（买入日）触发的股票
+      - 买入日默认取验证窗口首日（5 日验证口径）；若首日无候选策略命中，
+        按时间顺序回退到窗口内首个有命中的交易日（P1 批次4，避免 handoff
+        输出 0 只股票、主程序整轮空转）
       - 收益：优先使用该策略回测最优持有期（best_period）对应的前瞻收益
         （dyn_ret_{best_p}d，缺失时回退 ret_{best_p}d，与回测/动态出场规则
-        同口径）；最优期 5/10 日超出 5 日验证窗口无法测量时，回退固定窗口
-        收益（买入日开盘 ~ 最后交易日收盘）
+        同口径）；best_period 超出验证窗口时按 _signal_return_cols 回退到窗口内
+        可测的最大持有期真实出场，仍不可测时回退固定窗口收益
+        （买入日开盘 ~ 最后交易日收盘）
+      - 仅采信样本充足（total_trades >= MIN_TRADES_FOR_RANKING）策略的命中，
+        小样本策略不参与推荐（避免其偶发收益经 sell_return 最大值抬升上位）
       - 推荐持仓天数（recommended_hold_days）：命中策略 best_period 的
         胜率加权平均，四舍五入到最近候选持有期（HOLDING_PERIODS）
       - 同一股票被多个策略命中时合并：记录命中策略数、平均胜率、
@@ -3913,6 +4164,26 @@ def get_top_stocks_by_win_rate(df_full, df_week, results, top_n=10, signals=None
     buy_date = all_dates[-5]
     sell_date = all_dates[-1]
 
+    # 买入日兜底（P1 批次4）：窗口首日无任何候选策略命中时（2026-09-13 实测
+    # 09-07 无信号 → handoff 输出 0 只股票、主程序整轮空转，而验证区间后续
+    # 交易日实际有信号），按时间顺序回退到窗口内首个有命中的交易日。
+    if signals is not None:
+        for _bd in all_dates[-5:]:
+            _hit = False
+            for r0 in results:
+                if r0.get("total_trades", 0) < MIN_TRADES_FOR_RANKING:
+                    continue
+                _s = signals.get(r0["strategy"])
+                if _s is not None and bool((_s.values & (df_full["date"] == _bd).values).any()):
+                    _hit = True
+                    break
+            if _hit:
+                if _bd != buy_date:
+                    logger.info(f"买入日回退: {pd.Timestamp(buy_date).date()} 无候选策略信号 → "
+                                f"{pd.Timestamp(_bd).date()}")
+                buy_date = _bd
+                break
+
     # 买入/卖出价映射一次性构建，避免逐记录全表扫描
     buy_cols = ["name", "open"] + (["atr20"] if "atr20" in df_week.columns else [])
     buy_info = df_week.loc[df_week["date"] == buy_date].set_index("code")[buy_cols]
@@ -3931,6 +4202,13 @@ def get_top_stocks_by_win_rate(df_full, df_week, results, top_n=10, signals=None
 
         if total_trades == 0:
             continue
+        # 小样本策略（< MIN_TRADES_FOR_RANKING 笔）不参与个股推荐（P1 批次3）：
+        # 它们已在排名/5 日验证候选中被排除，但此前仍会进入 handoff——命中数被
+        # 抬高，而 sell_return 取"命中策略验证期收益的最大值"，几笔样本的偶发
+        # 大阳线会把噪声股顶到推荐前列（2026-09-12 日志：7 个小样本策略中
+        # wonderful_9_turn 胜率 14.3%、emotion_cycle 33.3%，dragon_head 均亏 5.58%）。
+        if total_trades < MIN_TRADES_FOR_RANKING:
+            continue
 
         try:
             if signals is not None and strategy_name in signals:
@@ -3943,13 +4221,10 @@ def get_top_stocks_by_win_rate(df_full, df_week, results, top_n=10, signals=None
             # 该策略最优持有期对应的前瞻收益列（与 _backtest_single 同口径：
             # 分组出场参数列优先，再回退默认 dyn_ret / ret；主口径 next_open
             # 优先取 _no 后缀列，缺失时回退 close 口径列）
-            fwd_col = None
-            if best_p:
-                fwd_col = _signal_return_col(df_full.columns, strategy_name, best_p,
-                                             _PRIMARY_ENTRY_TIMING)
+            fwd_cols = (_signal_return_cols(df_full.columns, strategy_name, best_p,
+                                            _PRIMARY_ENTRY_TIMING) if best_p else [])
             rec_cols = ["code", "name", "open", "close"] + (["atr20"] if "atr20" in df_full.columns else [])
-            if fwd_col:
-                rec_cols.append(fwd_col)
+            rec_cols.extend(c for c in fwd_cols if c not in rec_cols)
             matched = df_full.loc[mask, rec_cols].to_dict("records")
         except Exception:
             continue
@@ -3966,12 +4241,14 @@ def get_top_stocks_by_win_rate(df_full, df_week, results, top_n=10, signals=None
             # 前瞻收益不可测（最优期 5/10 日超出验证窗口）时作为兜底
             fixed_ret = (sell_prices.loc[code] / buy_price - 1) if buy_price > 0 else 0
             # 该策略最优持有期对应的前瞻收益（含动态出场，与回测同口径）；
-            # 超出验证窗口无法测量时为 None
+            # 最优期超出验证窗口时按 _signal_return_cols 逐级回退到更短持有期，
+            # 全部不可测时为 None（再由固定窗口收益兜底）
             fwd_ret = None
-            if fwd_col:
-                v = record.get(fwd_col)
+            for c in fwd_cols:
+                v = record.get(c)
                 if v is not None and pd.notna(v):
                     fwd_ret = float(v)
+                    break
 
             if code not in stock_info:
                 stock_info[code] = {
@@ -4374,6 +4651,14 @@ def main(argv=None):
                              "仅影响组合级总收益/年化/回撤/夏普。默认 0.0=等权旧口径")
     parser.add_argument("--max-leverage", type=float, default=1.0,
                         help="波动率目标下每日总敞口上限，默认 1.0（不加杠杆）")
+    parser.add_argument("--select-period", choices=["stationarity", "expectation", "total_return"],
+                        default=None,
+                        help="最优持有期(best_period)选择口径（P1 批次3）：stationarity=全期期望−0.5×年度期望"
+                             "标准差（默认，惩罚单年爆发的持有期）；expectation=单笔期望；total_return=历史口径"
+                             "（总收益最高，易被某一年行情挑中长持有期）")
+    parser.add_argument("--resonance-all-voters", action="store_true",
+                        help="共振投票包含派生组合 ensemble 与结构性退化策略（旧行为，默认排除："
+                             "ensemble 与组件同源不是独立意见，退化策略 5 年仅 1~14 笔属噪声）")
     parser.add_argument("--wfo-sweep", action="store_true",
                         help="WFO 阈值扫描脚手架：对 6 个高流动性策略的打分阈值做 ±1 点 walk-forward "
                              "扫描并按年度桶报告胜率/期望/稳定性，复用暖缓存分钟级完成，不跑全量回测")
@@ -4400,6 +4685,12 @@ def main(argv=None):
     _ENSEMBLE_CLASSIC = bool(args.ensemble_classic)
     enhanced = _REGIME_MODE != "strict"
     industry_on = not args.no_industry_momentum
+
+    # 选期口径与共振投票范围（P1 批次3）
+    global _SELECT_PERIOD_BY, _RESONANCE_VOTE_EXCLUDE
+    _SELECT_PERIOD_BY = args.select_period or "stationarity"
+    _RESONANCE_VOTE_EXCLUDE = (set() if args.resonance_all_voters
+                               else set(RESONANCE_VOTE_EXCLUDE_DEFAULT))
 
     global _PRIMARY_ENTRY_TIMING
     _PRIMARY_ENTRY_TIMING = args.entry_timing
@@ -4460,6 +4751,8 @@ def main(argv=None):
                 f" | 入场口径: {args.entry_timing}（双口径对比已启用）"
                 f" | bear确认数: {_BEAR_CONFIRM_MIN}"
                 f" | handoff: {_HANDOFF_MODE}"
+                f" | 选期口径: {_SELECT_PERIOD_BY}"
+                f" | 共振投票: {'全量(旧口径)' if not _RESONANCE_VOTE_EXCLUDE else '排除派生/退化策略'}"
                 f" | ensemble: {'classic(3组件二值)' if _ENSEMBLE_CLASSIC else '6组件连续强度'}"
                 f" | 数据缓存: {'关闭(--no-cache)' if args.no_cache else '启用'}")
     logger.info("=" * 60)
@@ -4497,6 +4790,14 @@ def main(argv=None):
     del df_adjusted
     gc.collect()
     log_memory_usage("指标计算后")
+
+    # 真实交易日历注入组合绩效计算（P1 批次3）：calc_portfolio_metrics 旧实现用
+    # "信号日并集"当交易日历，把时间轴压缩到只有信号发生的那些天，导致年化/夏普
+    # 虚高。这里把 df_all 覆盖的全部交易日作为真实日历传入。
+    global _TRADING_DAYS
+    _TRADING_DAYS = pd.DatetimeIndex(np.sort(df_all["date"].unique()))
+    logger.info(f"交易日历: {len(_TRADING_DAYS)} 个交易日 "
+                f"({pd.Timestamp(_TRADING_DAYS[0]).date()} ~ {pd.Timestamp(_TRADING_DAYS[-1]).date()})")
 
     # 市场环境过滤:加载上证指数日线 -> 计算 regime（含 enh2 广度/波动率确认）-> 合并到 df_all
     try:
