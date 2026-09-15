@@ -86,6 +86,29 @@ P1 批次4（2026-09-13，基于 logs/backtest_5y_20260913.log 与探针实测�
    1.180%→1.289%、组合净值总收益 87.9%→129.1%
 6. handoff 买入日兜底：窗口首日无候选信号时按时间顺序回退到首个有命中的交易日，
    避免 5 日验证有信号但 handoff 输出 0 只、主程序整轮空转
+
+P1 批次5（2026-09-14，探针复现 logs/backtest_5y_20260913.log 的全样本 A/B 归因）：
+1. 出场参数默认值 (2.5, 0.95) → (3.0, 0.97)（DEFAULT_EXIT_PARAMS）：Exp3 网格
+   （ATR∈{1.5,2.0,2.5} × trail∈{0.90,0.92,0.95}）在两个维度都在网格边界处单调
+   最优，且该网格是在涨跌停口径修复前的偏样本上扫出的；修正口径后全样本 A/B：
+   交易加权胜率 48.4%→50.0%、平均总收益 80.1%→132.1%、平均年化 10.9%→16.6%，
+   逐年胜率 5/6 年改善、回撤普遍收窄（ma_crossover 9.5%→4.4%、rsi 8.1%→3.7%）。
+   更紧 trail（0.98/0.99）实测收益更高，但平均亏损塌缩到 1.27%/0.70%（正常 ATR
+   止损应远大于此），高度依赖"按止损价精确成交"的回测假设，疑为执行乐观偏差，
+   不采用；新增 --exit-atr-mult/--exit-trail 支持回退（旧值 2.5/0.95）与 A/B。
+2. 启动头补打"合流过滤"状态、(env) 来源与"出场参数"：BACKTEST_CONFLUENCE=1 /
+   BACKTEST_REGIME_SOFT=1 由 .env 注入时此前完全不出现在日志里，同一命令在不同
+   .env 下口径不同却无法从日志分辨（本次复现即依赖该口径，日志计数差 2.4 倍）。
+3. run_backtests 结果排序修复：small_sample 标记此前因 key+reverse=True 组合被排到
+   最前（与注释/设计相反），下游 print_results/validate_week 各自重排才未暴露，
+   外部调用 get_unique_strategies_from_results(results[:n]) 会误取小样本策略；
+   改为小样本统一排在样本充足策略之后。
+4. （观察项，未改默认）共振门槛 --resonance 1 的 A/B：平均胜率 49.4%→50.4%、
+   平均总收益 132.1%→145.7%，但 washout_break（exp 2.15→1.40）等策略反而退化，
+   增量主要来自被门槛压制的策略与交易量放大；该门槛属 P0 产品口径，建议先经
+   WFO OOS 验证再决定是否翻转默认，当前保持默认 2，可用 --resonance 1 试用。
+5. （观察项，未改默认）合流过滤 A/B：关闭后平均胜率 47.6%→47.5%、平均总收益
+   80.1%→75.5%，保持开启（生产 .env 已启用 BACKTEST_CONFLUENCE=1）。
 """
 
 import argparse
@@ -1413,7 +1436,15 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
 # 动态退出收益（ATR 止损 + 移动止盈 + 时间止损，C2；P2-10 分组参数化）
 # ═══════════════════════════════════════════════════════════════════════════════
 
-DEFAULT_EXIT_PARAMS = (2.5, 0.95)   # WFO Exp3 全局最优 (atr_mult, trail)
+# 全局默认出场参数 (atr_mult, trail)。P1 批次5：旧值 (2.5, 0.95) 来自 Exp3 3x3 网格
+# （ATR∈{1.5,2.0,2.5} × trail∈{0.90,0.92,0.95}），两个维度都在网格边界处单调最优，
+# 且该网格是在涨跌停口径修复（P1 批次4）前的偏样本上扫出的。修正口径后以探针复现
+# logs/backtest_5y_20260913.log 做全样本 A/B：(3.0, 0.97) 使交易加权胜率 48.4%→50.0%、
+# 平均总收益 80.1%→132.1%、平均年化 10.9%→16.6%，逐年胜率 5/6 年改善、回撤普遍收窄
+# （ma_crossover 9.5%→4.4%）；更紧的 trail（0.98/0.99）实测收益更高，但平均亏损塌缩到
+# 1.27%/0.70%（正常 ATR 止损应远大于此），高度依赖"按止损价精确成交"的回测假设，
+# 疑为执行乐观偏差，故不采用。--exit-atr-mult/--exit-trail 可回退或另行 A/B。
+DEFAULT_EXIT_PARAMS = (3.0, 0.97)
 
 # 主入场口径（由 main() 按 --entry-timing 设置）：推荐/前瞻收益列选择与上报
 # 指标保持同一口径，默认 next_open（次日开盘，消除收盘入场前视偏差）。
@@ -1498,9 +1529,10 @@ def compute_dynamic_exit_returns(df: pd.DataFrame,
     按 code 分组,组内对每个交易日一次性计算 max(HOLDING_PERIODS)
     天的窗口并复用,避免逐持有期重复扫描。
 
-    默认参数 (2.5, 0.95) 来自 WFO 实验 result/wfo_experiments_20260820.md
-    Exp3 sweep（3x3 网格中胜率 53.1% 最高）；P2-10 起支持按策略族传入
-    不同参数，非默认组的输出列由调用方追加 __a{atr}_t{trail} 后缀区分。
+    默认参数 (3.0, 0.97) 见 DEFAULT_EXIT_PARAMS 注释（P1 批次5 全样本 A/B 更新；
+    旧值 (2.5, 0.95) 来自 WFO 实验 result/wfo_experiments_20260820.md Exp3 sweep）。
+    P2-10 起支持按策略族传入不同参数，非默认组的输出列由调用方追加
+    __a{atr}_t{trail} 后缀区分。
 
     entry_timing（P3-13）："close"=信号日收盘入场（旧口径，默认，保持外部
     调用兼容）；"next_open"=次日开盘入场——仅替换入场价为 open[t+1]（止损
@@ -3869,11 +3901,15 @@ def run_backtests(df_bt: pd.DataFrame, index_df: Optional[pd.DataFrame] = None,
     # 按期望值(每笔平均收益)降序排序,兼顾胜率与盈亏比(风险提示3)。
     # 小样本策略（< MIN_TRADES_FOR_RANKING 笔）统计意义不足，标记 small_sample 并
     # 统一排在样本充足策略之后，不参与头部排名/Top-N 验证与跨策略汇总平均。
-    valid = sorted(
-        [r for r in results if "error" not in r],
-        key=lambda x: (1 if x.get("small_sample") else 0, x.get("expectation", -999)),
-        reverse=True,
-    )
+    # 修复：旧 key=(small?, expectation)+reverse=True 实际把 small_sample=1 排在最前，
+    # 与注释/设计相反（下游 print_results/validate_week 各自重排才未暴露；外部调用
+    # get_unique_strategies_from_results(results[:n]) 会误取小样本策略）。P1 批次5。
+    def _rank_key(x: Dict) -> Tuple[int, float]:
+        exp = x.get("expectation")
+        return (1 if x.get("small_sample") else 0,
+                -float(exp) if exp is not None else 999.0)
+
+    valid = sorted([r for r in results if "error" not in r], key=_rank_key)
     n_small = sum(1 for r in valid if r.get("small_sample"))
     logger.info(
         f"回测完成，耗时 {time.time()-t0:.1f}s（样本充足 {len(valid)-n_small} 个，"
@@ -4630,7 +4666,11 @@ def main(argv=None):
     parser.add_argument("--no-industry-momentum", action="store_true",
                         help="关闭行业动量过滤（默认开启仅保留动量前 3 行业信号，P2-7）")
     parser.add_argument("--per-strategy-exit", action="store_true",
-                        help="按策略族差异化出场参数（P2-10，实测劣于统一 (2.5,0.95)，默认关闭）")
+                        help="按策略族差异化出场参数（P2-10，实测劣于统一默认参数，默认关闭）")
+    parser.add_argument("--exit-atr-mult", type=float, default=None,
+                        help="全局 ATR 止损倍数覆盖（默认取 DEFAULT_EXIT_PARAMS；传旧值 2.5 可回退，P1 批次5）")
+    parser.add_argument("--exit-trail", type=float, default=None,
+                        help="全局移动止盈回撤系数覆盖（默认取 DEFAULT_EXIT_PARAMS；传旧值 0.95 可回退，P1 批次5）")
     parser.add_argument("--entry-timing", choices=["next_open", "close"], default="next_open",
                         help="入场时点：next_open=次日开盘（默认，消除信号日收盘入场的前视偏差，P3-13）；"
                              "close=信号日收盘（旧口径，用于复现历史数字）")
@@ -4670,9 +4710,15 @@ def main(argv=None):
     # 环境变量开关（供 GitHub Actions / 定时任务在不改命令的情况下启用质量门槛）：
     #   BACKTEST_CONFLUENCE=1 等价 --confluence-only（基本面合流，实盘推荐质量门槛）；
     #   BACKTEST_REGIME_SOFT=1 等价 --regime-soft。CLI 显式参数优先于环境变量。
-    if os.environ.get("BACKTEST_CONFLUENCE", "").strip().lower() in ("1", "true", "yes", "on"):
+    # 记录来源（env/CLI），并在启动头打印——此前合流开关不出现在日志里，
+    # 导致"同一命令不同 .env 得到不同回测口径"无法从日志分辨（P1 批次5）。
+    _confluence_from_env = os.environ.get(
+        "BACKTEST_CONFLUENCE", "").strip().lower() in ("1", "true", "yes", "on")
+    _regime_soft_from_env = os.environ.get(
+        "BACKTEST_REGIME_SOFT", "").strip().lower() in ("1", "true", "yes", "on")
+    if _confluence_from_env:
         args.confluence_only = True
-    if os.environ.get("BACKTEST_REGIME_SOFT", "").strip().lower() in ("1", "true", "yes", "on"):
+    if _regime_soft_from_env:
         args.regime_soft = True
 
     # P0 默认启用 enhanced regime + 共振≥2；P2 默认启用行业动量（P2-7 实测最优）。
@@ -4700,6 +4746,15 @@ def main(argv=None):
     _TAKE_PROFIT_R = float(args.take_profit_r)
     _TARGET_VOL_ANNUAL = float(args.target_vol)
     _MAX_LEVERAGE = float(args.max_leverage)
+
+    # 全局出场参数覆盖（P1 批次5）：只覆盖显式传入的一维，另一维沿用默认，
+    # 供 A/B 回测与旧值回退（如 --exit-atr-mult 2.5 --exit-trail 0.95）。
+    global DEFAULT_EXIT_PARAMS
+    if args.exit_atr_mult is not None or args.exit_trail is not None:
+        DEFAULT_EXIT_PARAMS = (
+            float(args.exit_atr_mult) if args.exit_atr_mult is not None else DEFAULT_EXIT_PARAMS[0],
+            float(args.exit_trail) if args.exit_trail is not None else DEFAULT_EXIT_PARAMS[1],
+        )
 
     if not args.force and not is_trading_day(datetime.now()):
         logger.error("非交易日，程序退出（使用 --force 可强制运行）")
@@ -4738,16 +4793,24 @@ def main(argv=None):
                     f"并行需显式设 BACKTEST_ENABLE_PARALLEL=true）")
     logger.info(f"回测起始: {anchored_start} ~ {today_str}")
     if args.regime_soft:
-        regime_label = "软加权(soft)"
+        regime_label = "软加权(soft)" + ("(env)" if _regime_soft_from_env else "")
     elif args.regime_filter:
         regime_label = "硬分族(hard)"
     else:
         regime_label = "未启用"
+    if args.confluence_regime:
+        confluence_label = f"市况感知({args.confluence_regime})"
+    elif args.confluence_only:
+        confluence_label = "全量(all)" + ("(env)" if _confluence_from_env else "")
+    else:
+        confluence_label = "未启用"
     logger.info(f"市场环境: regime-mode={_REGIME_MODE} ({_regime_col()})"
                 f" | 共振门槛: {'同股同日≥' + str(args.resonance) + '策略' if args.resonance > 1 else '未启用'}"
                 f" | 市况分族: {regime_label}"
+                f" | 合流过滤: {confluence_label}"
                 f" | 行业动量: {'启用' if industry_on else '未启用'}"
                 f" | 分组止损: {'启用' if args.per_strategy_exit else '未启用'}"
+                f" | 出场参数: ATR×{DEFAULT_EXIT_PARAMS[0]:g}/trail {DEFAULT_EXIT_PARAMS[1]:g}"
                 f" | 入场口径: {args.entry_timing}（双口径对比已启用）"
                 f" | bear确认数: {_BEAR_CONFIRM_MIN}"
                 f" | handoff: {_HANDOFF_MODE}"
@@ -4846,10 +4909,12 @@ def main(argv=None):
     # 动态退出收益(ATR止损 + 移动止盈 + 时间止损)；一次扫描同时产出 close 与
     # next_open 两种入场口径列（dual_timing），主口径由 --entry-timing 决定，
     # 另一口径供双口径对比；P2-10 分组模式追加非默认参数组列（同样双口径）。
+    # 显式传全局出场参数（函数签名默认值在导入期固化，CLI 覆盖后必须显式传入）。
     logger.info("计算动态退出收益(ATR止损/移动止盈, 双入场口径 + 跌停顺延)...")
     t_dyn = time.time()
     dyn_ret = compute_dynamic_exit_returns(
-        df_all, dual_timing=True,
+        df_all, atr_mult=DEFAULT_EXIT_PARAMS[0], trail=DEFAULT_EXIT_PARAMS[1],
+        dual_timing=True,
         trail_activate_r=_TRAIL_ACTIVATE_R, take_profit_r=_TAKE_PROFIT_R)
     df_all = pd.concat([df_all, dyn_ret], axis=1)
     del dyn_ret
