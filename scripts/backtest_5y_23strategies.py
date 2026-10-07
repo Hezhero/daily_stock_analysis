@@ -155,7 +155,63 @@ LIMIT_UP_PCT_MAIN = 9.5          # 主板/中小板涨停判定阈值（%）
 LIMIT_UP_PCT_GEM = 19.5          # 创业板涨停判定阈值（%），2020-08 起涨跌幅扩至 20%
 
 # ─── 交易成本 ──────────────────────────────────────────────────────────────────
+# P1-1 成本校准：0.15% 只覆盖显性费用（佣金+印花税+过户费），忽略了 next_open 口径
+# 的开盘滑点（小盘股可达 0.1~0.3%）。当前主口径是 next_open，滑点恰恰是最需要
+# 计价的一项。新增 --trading-cost CLI 便于敏感性分析。
 TRADING_COST_PCT = 0.15          # 单边往返交易成本（%）：佣金+印花税+滑点合计约 0.15%
+
+# ─── 入场跳空过滤（P0-4/B1，无前视：次日竞价可观察） ───────────────────────────
+# 针对涨停族 close→next_open 胜率塌 20.8/23.9pct 的入场价分位问题而设计。
+# 2026-09-27 全样本 A/B 实测（0927 数据，旧口径基线 vs 5%/3% 过滤）：
+#   全池平均胜率 49.1%→48.2%（-0.9pct）、平均期望 -0.096、平均总收益 -10.4pct，
+#   22 个策略中 20 个劣化；涨停族未见预期修复（stable_then_limit_up 48.6%→45.2%、
+#   limit_up_pullback 49.0%→48.4%），对称带砍掉的样本（|gap|>3% 占 3.3%）平均质量不差。
+# 结论：5%/3% 默认值被证伪，默认关闭保持旧行为；开关保留供阈值扫描
+# （--max-gap-pct {3,7} / --gap-band-pct {2,5} 或仅涨停族上界）。
+MAX_GAP_PCT = 0.0                # 涨停族次日开盘跳空上限（%）；0=关闭（2026-09-27 A/B 后回退）
+GAP_BAND_PCT = 0.0               # 非涨停族对称跳空带宽（%）；0=关闭（2026-09-27 A/B 后回退）
+
+# ─── 共振门槛按策略分层（P1-1/B2） ─────────────────────────────────────────────
+# 全局 ≥2 门槛实际只砍了 limit_up_pullback 的 75.6% 信号（胜率反降 1.3pct），
+# 对其余主力策略只削减 <1% 交易（几乎空转）。批次4 全局降 1 的 A/B 平均胜率
+# +1.0pct、总收益 +13.6pct，但 washout_break 退化（期望 2.15→1.40）。
+# 分层 = 对共振为负贡献或高期望自证策略降为 1，对已验证退化的策略保持 2。
+# 未配置策略回落 --resonance 全局值（默认 2）。--resonance-layered 启用。
+RESONANCE_MIN_BY_STRATEGY: Dict[str, int] = {
+    "limit_up_pullback": 1,        # 削减 75.6%、胜率 -1.3pct（共振为其负贡献）
+    "rsi_bullish_divergence": 1,   # 削减 5.5%、胜率 -0.5pct（共振为其负贡献）
+    "holder_conc_break": 1,        # 高期望自证（期望 1.727%，共振削减小）
+    "volume_surge_std": 1,         # 高期望自证（期望 1.648%）
+    "ma_crossover": 1,             # 高期望自证（期望 1.626%）
+    "washout_break": 2,            # 批次4 A/B：降为 1 时期望 2.15→1.40 退化
+    "low_profit_hold": 2,          # 同族最高期望，保守保持
+}
+
+# ─── 验证窗口自适应（P1-4/C1，解决 0/5 空转） ──────────────────────────────────
+# enh2 仅 30.2% 天数可开仓且日度高度自相关，固定 5 日窗口空转概率结构性偏高。
+# VALIDATE_ADAPTIVE_DAYS>0 时，取最近 N 个交易日中最后 VALIDATE_DAYS 个
+# market_ok=True 的日子作为验证窗口；不足时按实际数量执行并标注窗口长度。
+VALIDATE_ADAPTIVE_DAYS = 20      # 自适应验证回看天数（0=固定 5 日旧行为）
+
+# ─── 防守族半仓激活（P3-1/C2，市场过滤器保守放宽） ─────────────────────────────
+# minimax 主张"全市场软化到 enh2_soft"，但双向风险大。更保守的方案：只对已被
+# 证明在弱市有效的防守族做半仓例外，而不是全面放宽门槛。
+# DEFENSIVE_HALF_POS_BREADTH_LO/HI：enh2=False 但广度在 [LO, HI) 时放行防守族。
+DEFENSIVE_HALF_POS_BREADTH_LO = 0.35   # 防守族半仓激活的广度下限
+DEFENSIVE_HALF_POS_BREADTH_HI = 0.45   # 防守族半仓激活的广度上限（enh2 阈值）
+
+# ─── inst_smart_break 松绑扩容（P1-2/C3） ─────────────────────────────────────
+# 9 笔 88.9% 胜率、期望 6.288%——全系统唯一实测 >65% 胜率的信号源被三重紧条件
+# 饿死。三个旋钮逐个放宽 A/B：MIN_INST_NET_BUY 500→300→200 万；龙虎榜窗口
+# 10→20 自然日；质量掩码 standard→base。目标样本 ≥100 笔且胜率仍 >60%。
+INST_SMART_BREAK_NET_BUY = 500.0  # 机构龙虎榜净买阈值（万元），--inst-net-buy 可调
+INST_SMART_BREAK_WINDOW = 10      # 龙虎榜滚动窗口（自然日，约 7 交易日），--inst-window 可调
+
+# ─── 观测基建（P0-2/A1，分持有期明细 + 出场原因分布） ─────────────────────────
+# 当前日志只展示 best_period 聚合行，1/3/5/10 日各自表现不可见——"1~10 日如何
+# 提高胜率"这个问题本身没有观测基础。PRINT_PERIOD_DETAIL=True 时在 print_results
+# 中输出策略×持有期明细表与出场原因分布表。
+PRINT_PERIOD_DETAIL = True       # 打印分持有期明细表与出场原因分布（观测前提）
 
 # ─── 已加载数据 parquet 缓存（跳过 ~8 分钟 PG 加载/复权/增强信号合并） ───────────
 # 缓存的是"复权 + 增强信号合并后、指标计算前"的准备态 DataFrame；指标/出场收益
@@ -202,7 +258,7 @@ MAX_PROFIT_RATIO = 0.8           # 最大获利盘比例（0~1），过高=高�
 MAX_PLEDGE_RATIO = 40.0          # 最大累计质押占总股本比例（%），过高=股权质押爆仓风险
 MIN_DIV_YIELD = 1.0              # 最低股息率（%），基本面安全垫（剔除纯炒作无分红股）
 MAX_CONC_90_LIMITUP = 0.15       # 涨停族策略的 90% 筹码集中度上限（0~1），涨停日筹码需集中
-MIN_INST_NET_BUY = 500.0         # 机构龙虎榜近 5 日累计净买入阈值（万元）
+MIN_INST_NET_BUY = 500.0         # 机构龙虎榜净买入阈值（万元），合流过滤器催化剂判定用
 MAX_HOLDER_CHG_PCT = -3.0        # 股东人数环比下降阈值（%），负值=筹码集中
 MAX_DRAGON_PROFIT_RATIO = 0.9    # 龙头策略获利盘上限，剔除纯高位接力的涨停
 WASHOUT_PROFIT_RATIO = 0.35      # 超跌族策略的获利盘上限（P1：0.2→0.35，放宽深度套牢约束以捕捉突破时刻）
@@ -782,13 +838,16 @@ def compute_market_ok(index_df: pd.DataFrame, stock_df: Optional[pd.DataFrame] =
     #   breadth = 当日 close > ma20 的股票占比（全市场向量化按日聚合）；
     #   vol_pct = 指数 20 日年化波动率的扩展分位（当前值在历史中的相对位置，
     #             >0.85 表示处于历史高波动区间，恐慌/见顶阶段不开新仓）。
+    # breadth 原始值随结果返回（C2 防守族半仓激活需要判断广度区间）。
     breadth_ok = pd.Series(True, index=df.index)
     vol_ok = pd.Series(True, index=df.index)
+    breadth_vals = pd.Series(1.0, index=df.index)
     if stock_df is not None and not stock_df.empty and {"date", "close", "ma20"} <= set(stock_df.columns):
         b = (stock_df["close"] > stock_df["ma20"]).groupby(stock_df["date"]).mean()
         breadth = pd.Series(b.values, index=pd.to_datetime(b.index))
         mapped = pd.to_datetime(df["date"]).map(breadth)
-        breadth_ok = mapped.fillna(1.0).ge(0.45).reset_index(drop=True)
+        breadth_vals = mapped.fillna(1.0).reset_index(drop=True)
+        breadth_ok = breadth_vals.ge(0.45)
         logger.info(f"市场广度(close>ma20 占比) 均值 {mapped.mean():.2f}, "
                     f"≥0.45 的交易日占比 {breadth_ok.mean()*100:.1f}%")
     idx_ret = close.pct_change()
@@ -796,6 +855,7 @@ def compute_market_ok(index_df: pd.DataFrame, stock_df: Optional[pd.DataFrame] =
     vol_pct = vol20.expanding(min_periods=20).rank(pct=True)
     vol_ok = vol_pct.fillna(0.0).le(0.85)
     df["market_ok_enh2"] = df["market_ok_enh"] & breadth_ok & vol_ok
+    df["breadth"] = breadth_vals
     n_enh = int(df["market_ok_enh"].sum())
     n_enh2 = int(df["market_ok_enh2"].sum())
     logger.info(f"市场环境: enh 可开仓 {n_enh}/{len(df)} ({n_enh/len(df)*100:.1f}%), "
@@ -809,7 +869,7 @@ def compute_market_ok(index_df: pd.DataFrame, stock_df: Optional[pd.DataFrame] =
     regime[(close < df["idx_ma60"]) & (slope5 < 0)] = "bear"
     df["regime"] = regime
 
-    return df[["date", "market_ok", "market_ok_enh", "market_ok_enh2", "regime"]]
+    return df[["date", "market_ok", "market_ok_enh", "market_ok_enh2", "regime", "breadth"]]
 
 
 # ─── 财务质量过滤(ann_date 对齐防前视偏差,B3) ─────────────────────────────────
@@ -1187,16 +1247,17 @@ def load_signal_aux(df: pd.DataFrame) -> pd.DataFrame:
     ti["trade_date"] = pd.to_datetime(ti["trade_date"])
     ti = ti.groupby(["code", "trade_date"], as_index=False)["net_buy"].sum()
     ti = ti.sort_values(["code", "trade_date"]).reset_index(drop=True)
-    # "近 5 日累计净买"按时间窗口径（P1 批次4）：滚动窗口 = 最近 10 个自然日，
-    # 并随行携带上榜日用于过期判定。旧实现是"最近 5 次上榜记录求和"且永不
-    # 过期——半年上榜 5 次的股票会把半年前的净买一直算作"近期净买"，
-    # sig_inst_smart_break 与 confluence 的机构催化剂都被陈旧数据触发。
+    # "近 N 自然日累计净买"按时间窗口径（P1 批次4）：滚动窗口默认最近 10 个
+    # 自然日（约 7 交易日，等价旧"近 5 日"口径），C3 松绑时经 --inst-window
+    # 放宽（10→20/40 自然日）。并随行携带上榜日用于过期判定。旧实现是"最近 5
+    # 次上榜记录求和"且永不过期——半年上榜 5 次的股票会把半年前的净买一直算作
+    # "近期净买"，sig_inst_smart_break 与 confluence 的机构催化剂都被陈旧数据触发。
     # 用 trade_date 为索引做时间窗口滚动（groupby.rolling 的 on= 参数在
     # pandas 2.3 不支持时间窗，索引式写法跨版本稳定）；ti 已按 code,trade_date
     # 排序，分组顺序与行序一致，to_numpy 回填不会错位。
     rolled = (ti.set_index("trade_date")
               .groupby("code", sort=False)["net_buy"]
-              .rolling("10D").sum()
+              .rolling(f"{_INST_SMART_BREAK_WINDOW}D").sum()
               .reset_index(level=0, drop=True))
     ti["inst_buy5"] = rolled.to_numpy().astype("float32")
     ti["ti_date"] = ti["trade_date"]
@@ -1211,10 +1272,16 @@ def load_signal_aux(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _prepared_cache_path(start: str, end: str) -> Path:
-    """准备态数据缓存文件路径（日期紧凑格式，Windows 文件名安全）。"""
+    """准备态数据缓存文件路径（日期紧凑格式，Windows 文件名安全）。
+
+    inst_smart_break 滚动窗口非默认时（--inst-window，C3）追加独立版本后缀：
+    准备态数据中的 inst_buy5 值随窗口变化，与默认口径串用会得到错误信号。
+    """
     s = start.replace("-", "")
     e = end.replace("-", "")
-    return CACHE_DIR / f"backtest_{s}_{e}_{CACHE_VERSION}.parquet"
+    ver = (CACHE_VERSION if _INST_SMART_BREAK_WINDOW == INST_SMART_BREAK_WINDOW
+           else f"{CACHE_VERSION}w{_INST_SMART_BREAK_WINDOW}")
+    return CACHE_DIR / f"backtest_{s}_{e}_{ver}.parquet"
 
 
 def load_prepared_cache(start: str, end: str):
@@ -1470,12 +1537,39 @@ _SELECT_PERIOD_BY = "stationarity"
 _TRAIL_ACTIVATE_R = 0.0
 _TAKE_PROFIT_R = 0.0
 
+# 时间阶梯 trail（2026-09-28 改造，由 main() 按 CLI 设置）：
+#   [(from_bar, trail_value), ...]，如 [(0, 0.95), (2, 0.97)] = 入场后前 2 根
+#   bar 用 0.95、之后 0.97。
+# 2026-10-05 五轮 A/B 前沿扫描后 4d_085 收敛（总收益 136%→322%，见 design §9.9），
+# 固化为默认；--trail-schedule off 可回退统一 0.97。
+TRAIL_SCHEDULE_DEFAULT = [(0, 0.85), (4, 0.97)]
+_TRAIL_SCHEDULE: Optional[list] = None
+# 武装前 ATR 止损倍数（默认 None=atr_mult 旧行为）：trail 武装前用更紧止损。
+_PRE_ARM_ATR_MULT: Optional[float] = None
+
 # 组合级波动率目标仓位（由 main() 按 CLI 设置，默认 0.0 = 旧等权口径）：
 #   _TARGET_VOL_ANNUAL：年化目标波动率（如 0.15=15%）；>0 时按 20 日已实现组合
 #     波动率缩放每日总敞口 g_t=clip(目标/已实现, 0, _MAX_LEVERAGE)，日收益×g_t。
 #   _MAX_LEVERAGE：g_t 上限，默认 1.0（不加杠杆）。
 _TARGET_VOL_ANNUAL = 0.0
 _MAX_LEVERAGE = 1.0
+
+# 批次 A/B/C 全局开关（由 main() 按 CLI 设置，默认值与旧行为一致）：
+#   _TRADING_COST_PCT：单边往返交易成本（%），--trading-cost 覆盖，用于成本敏感性 A/B；
+#   _MAX_GAP_PCT：次日开盘跳空上限（%），--max-gap-pct 覆盖，<=0 关闭（旧行为）；
+#   _RESONANCE_LAYERED：共振门槛按策略分层（--resonance-layered），False=全局标量；
+#   _VALIDATE_ADAPTIVE_DAYS：验证窗口自适应回看天数（--validate-adaptive），0=固定 5 日；
+#   _DEFENSIVE_HALF_POS：防守族半仓激活（--defensive-half-pos）；
+#   _INST_SMART_BREAK_NET_BUY / _INST_SMART_BREAK_WINDOW：inst_smart_break 松绑参数。
+_TRADING_COST_PCT = TRADING_COST_PCT
+_MAX_GAP_PCT = MAX_GAP_PCT
+_GAP_BAND_PCT = GAP_BAND_PCT
+_RESONANCE_LAYERED = False
+_VALIDATE_ADAPTIVE_DAYS = VALIDATE_ADAPTIVE_DAYS
+_DEFENSIVE_HALF_POS = False
+_INST_SMART_BREAK_NET_BUY = INST_SMART_BREAK_NET_BUY
+_INST_SMART_BREAK_WINDOW = INST_SMART_BREAK_WINDOW
+_EXIT_DIAGNOSTICS = True
 
 # 策略族差异化出场参数（P2-10）：趋势族宽止损防震出、反转族紧止损快认错、
 # 涨停族超紧防回撤；未列出的策略用 DEFAULT_EXIT_PARAMS。
@@ -1518,7 +1612,10 @@ def compute_dynamic_exit_returns(df: pd.DataFrame,
                                  entry_timing: str = "close",
                                  dual_timing: bool = False,
                                  trail_activate_r: float = 0.0,
-                                 take_profit_r: float = 0.0) -> pd.DataFrame:
+                                 take_profit_r: float = 0.0,
+                                 diagnostics: bool = False,
+                                 trail_schedule: Optional[list] = None,
+                                 pre_arm_atr_mult: Optional[float] = None) -> pd.DataFrame:
     """按股票分组计算各持有期的动态退出收益,替换固定持有期收益。
 
     对每个持有期 p,入场日在持有期内逐日检查:
@@ -1548,6 +1645,21 @@ def compute_dynamic_exit_returns(df: pd.DataFrame,
     take_profit_r（固定止盈，R 倍数，默认 0.0=关闭）：>0 时，bar 最高价触及
     entry + take_profit_r × 初始风险 即按该止盈价成交。同 bar 触发优先级
     （保守口径）：ATR 止损 > 固定止盈 > 移动止盈。
+
+    diagnostics（A1/A2 观测基建，默认 False）：True 时额外输出每个持有期的
+    dyn_reason_{p}d（int8 出场原因：1=ATR止损, 2=固定止盈, 3=移动止盈,
+    4=时间止损）、dyn_mae_{p}d（最大不利偏移，相对 entry 的负收益率）、
+    dyn_mfe_{p}d（最大有利偏移，正收益率），后缀规则与 dyn_ret 一致。
+    未触发任何出场的行保持 NaN 收益/诊断（未平仓）。该选项只应作用于默认
+    出场参数组：分组调用（per-strategy-exit）会令列数成倍增长。
+
+    trail_schedule（时间阶梯，2026-09-28 改造）：[(from_bar, trail_value), ...]
+    按窗口内 bar 序号切换回撤比例——如 [(0, 0.95), (2, 0.97)] = 入场后前 2 根
+    bar 用宽 trail 0.95、第 3 根起 0.97。信号始终有 trail 保护，规避固定 R
+    门槛"武装前裸奔"的回撤问题。None = 全窗口统一用 trail（旧行为）。
+    pre_arm_atr_mult（武装前止损倍数，默认 None=atr_mult 旧行为）：trail 武装
+    前用更紧的 ATR 止损（如 1.5），武装后恢复 atr_mult（3.0），限制延迟武装
+    期间单笔亏损幅度；仅在 trail_activate_r>0 时生效。
 
     跌停不可卖（sellability）：止损/移动止盈/固定止盈/时间止损若触发在跌停 bar
     （_is_limit_down，复用入场侧精确 down_limit + 板块阈值兜底逻辑），当日
@@ -1579,6 +1691,13 @@ def compute_dynamic_exit_returns(df: pd.DataFrame,
         limit_down = ld_all[sl:sl + n]
         rets = {t: {p: np.full(n, np.nan, dtype=np.float32) for p in HOLDING_PERIODS}
                 for t in timings}
+        if diagnostics:
+            reasons = {t: {p: np.zeros(n, dtype=np.int8) for p in HOLDING_PERIODS}
+                       for t in timings}
+            maes = {t: {p: np.full(n, np.nan, dtype=np.float32) for p in HOLDING_PERIODS}
+                    for t in timings}
+            mfes = {t: {p: np.full(n, np.nan, dtype=np.float32) for p in HOLDING_PERIODS}
+                    for t in timings}
 
         for i in range(n - 1):
             w = min(max_p, n - 1 - i)
@@ -1596,7 +1715,6 @@ def compute_dynamic_exit_returns(df: pd.DataFrame,
                 stop = entry - risk0
                 if not np.isfinite(stop) or not np.isfinite(entry) or entry <= 0:
                     continue
-                atr_hit_t = win_low <= stop
 
                 # 移动止盈激活门槛（R 倍数）：浮盈（最高价相对入场）首次达到
                 # trail_activate_r*risk0 的 bar 起武装；武装前移动止盈不触发。
@@ -1604,9 +1722,31 @@ def compute_dynamic_exit_returns(df: pd.DataFrame,
                 if trail_activate_r and trail_activate_r > 0:
                     arm_level = entry + trail_activate_r * risk0
                     armed = np.maximum.accumulate(win_high >= arm_level)
-                    trail_hit = armed & (win_close <= peaks * trail)
                 else:
-                    trail_hit = win_close <= peaks * trail
+                    armed = np.ones(w, dtype=bool)
+
+                # 武装前 ATR 止损可收紧（pre_arm_atr_mult < atr_mult 时）：
+                # 武装前的 bar 用紧止损、武装后用正常止损，限制延迟武装期间亏损。
+                if pre_arm_atr_mult is not None and pre_arm_atr_mult < atr_mult:
+                    stop_tight = entry - pre_arm_atr_mult * atr[i]
+                    atr_hit_t = np.where(armed, win_low <= stop,
+                                        win_low <= stop_tight)
+                else:
+                    atr_hit_t = win_low <= stop
+
+                # 时间阶梯 trail：per-bar 回撤比例（前 N 根宽、之后正常）；
+                # 无 schedule 时全窗口统一 trail（旧行为）。
+                if trail_schedule:
+                    trail_arr = np.full(w, trail, dtype=np.float64)
+                    for from_k, v in trail_schedule:
+                        if from_k < w:
+                            trail_arr[from_k:] = v
+                else:
+                    trail_arr = None
+                if trail_arr is not None:
+                    trail_hit = armed & (win_close <= peaks * trail_arr)
+                else:
+                    trail_hit = armed & (win_close <= peaks * trail)
 
                 # 固定止盈（R 倍数）：bar 最高价触及 entry+take_profit_r*risk0
                 # 即按止盈价成交；take_profit_r<=0 关闭（旧行为）。
@@ -1625,6 +1765,7 @@ def compute_dynamic_exit_returns(df: pd.DataFrame,
                     if p > w:
                         continue
                     hit_p = any_hit[:p]
+                    reason = 0
                     if hit_p.any():
                         k = int(np.argmax(hit_p))
                         if win_ld[k]:
@@ -1633,38 +1774,72 @@ def compute_dynamic_exit_returns(df: pd.DataFrame,
                             non_ld = np.flatnonzero(~win_ld[k:])
                             j = (k + int(non_ld[0])) if non_ld.size else (w - 1)
                             exit_price = win_close[j]
-                        elif atr_hit_t[k]:
-                            exit_price = stop
-                        elif tp_hit_t[k]:
-                            exit_price = tp_price
                         else:
-                            # 移动止盈触发日按 peak*trail 退出（修复：原硬编码 0.95，
-                            # 导致 per-strategy trail 参数 0.97/0.92 在该分支失效）
-                            exit_price = peaks[k] * trail
+                            j = k
+                            if atr_hit_t[k]:
+                                exit_price = stop
+                            elif tp_hit_t[k]:
+                                exit_price = tp_price
+                            else:
+                                # 移动止盈触发日按当日 trail 档位退出（时间阶梯
+                                # 用 trail_arr，否则统一 trail；修复：原硬编码 0.95）
+                                exit_price = peaks[k] * (trail_arr[k]
+                                                        if trail_arr is not None
+                                                        else trail)
+                        # 出场原因按触发类型归类（跌停顺延不改变原因）
+                        if atr_hit_t[k]:
+                            reason = 1
+                        elif tp_hit_t[k]:
+                            reason = 2
+                        else:
+                            reason = 3
                     else:
                         # 时间止损：第 p 日收盘退出；该日跌停同样顺延
+                        reason = 4
                         if win_ld[p - 1]:
                             non_ld = np.flatnonzero(~win_ld[p - 1:])
                             j = ((p - 1) + int(non_ld[0])) if non_ld.size else (w - 1)
                             exit_price = win_close[j]
                         else:
+                            j = p - 1
                             exit_price = win_close[p - 1]
                     if entry > 0:
                         rets[t][p][i] = (exit_price / entry - 1.0)
+                        if diagnostics:
+                            reasons[t][p][i] = reason
+                            seg_low = win_low[:j + 1]
+                            seg_high = win_high[:j + 1]
+                            if seg_low.size:
+                                maes[t][p][i] = seg_low.min() / entry - 1.0
+                                mfes[t][p][i] = seg_high.max() / entry - 1.0
 
         for t in timings:
             sfx = "_no" if t == "next_open" else ""
             for p, arr in rets[t].items():
                 out.loc[g.index, f"dyn_ret_{p}d{sfx}"] = arr
+            if diagnostics:
+                for p in HOLDING_PERIODS:
+                    out.loc[g.index, f"dyn_reason_{p}d{sfx}"] = reasons[t][p]
+                    out.loc[g.index, f"dyn_mae_{p}d{sfx}"] = maes[t][p]
+                    out.loc[g.index, f"dyn_mfe_{p}d{sfx}"] = mfes[t][p]
 
     # 按逆置换还原到原 df 行序（位置对齐，规避非唯一 index 的 reindex 错位）
     out = out.iloc[inv_order].reset_index(drop=True)
     out.index = df.index
+
+    def _diag_suffix(diag: bool):
+        sfx_cols = [f"dyn_ret_{p}d" for p in HOLDING_PERIODS]
+        if diag:
+            sfx_cols += [f"dyn_reason_{p}d" for p in HOLDING_PERIODS]
+            sfx_cols += [f"dyn_mae_{p}d" for p in HOLDING_PERIODS]
+            sfx_cols += [f"dyn_mfe_{p}d" for p in HOLDING_PERIODS]
+        return sfx_cols
+
     if not dual_timing and entry_timing == "close":
-        out = out[[f"dyn_ret_{p}d" for p in HOLDING_PERIODS]]
+        out = out[_diag_suffix(diagnostics)]
     elif not dual_timing and entry_timing == "next_open":
-        out = out[[f"dyn_ret_{p}d_no" for p in HOLDING_PERIODS]]
-        out.columns = [f"dyn_ret_{p}d" for p in HOLDING_PERIODS]
+        out = out[[f"{c}_no" for c in _diag_suffix(diagnostics)]]
+        out.columns = [c[:-3] for c in out.columns]
     return out
 
 
@@ -1771,18 +1946,39 @@ def _entry_mask(df: pd.DataFrame, enhanced: bool = False, name: Optional[str] = 
     涨停日信号次日成交），剔除涨停日会与策略意图直接矛盾（实测 13k+ 原始信号
     仅 7 行通过），故这些策略豁免涨停买入掩码；跌停掩码（接飞刀防护）对所有
     策略保留。
+
+    入场跳空过滤（B1）：gap_pct 列存在且门槛 >0 时，涨停族（LIMIT_UP_ENTRY_
+    STRATEGIES + limit_up_pullback）按 _MAX_GAP_PCT 上界过滤过高开盘；
+    其余策略按 _GAP_BAND_PCT 对称带过滤。gap 缺失（窗口末端）放行，保持旧行为。
     """
     regime_col = _regime_col("strict" if not enhanced else None)
     mask = ~_is_limit_down(df)
     if name not in LIMIT_UP_ENTRY_STRATEGIES:
         mask &= ~_is_limit_up(df)
     if regime_col in df.columns:
-        mask &= df[regime_col].fillna(True).astype(bool)
+        regime_ok = df[regime_col].fillna(True).astype(bool)
+        # 防守族半仓激活（C2）：enh2=False 但广度 ∈ [0.35,0.45) 时放行防守族，
+        # 其余策略维持硬过滤；仓位系数由 handoff 侧按同一条件 ×0.5。
+        if (_DEFENSIVE_HALF_POS and name in DEFENSIVE_HALF_POS_STRATEGIES
+                and "breadth" in df.columns):
+            half_ok = df["breadth"].between(DEFENSIVE_HALF_POS_BREADTH_LO,
+                                            DEFENSIVE_HALF_POS_BREADTH_HI,
+                                            inclusive="left").fillna(False)
+            mask &= regime_ok | half_ok
+        else:
+            mask &= regime_ok
     elif enhanced and "market_ok_enh" in df.columns:
         mask &= df["market_ok_enh"].fillna(True).astype(bool)
     elif "market_ok" in df.columns:
         mask &= df["market_ok"].fillna(True).astype(bool)
     mask &= _moneyflow_ok(df) & _size_ok(df) & _volume_ratio_ok(df) & _financial_ok(df)
+    if "gap_pct" in df.columns and name is not None:
+        gap = df["gap_pct"]
+        if name in LIMIT_UP_ENTRY_STRATEGIES or name == "limit_up_pullback":
+            if _MAX_GAP_PCT > 0:
+                mask &= gap.isna() | (gap <= _MAX_GAP_PCT / 100.0)
+        elif _GAP_BAND_PCT > 0:
+            mask &= gap.isna() | (gap.abs() <= _GAP_BAND_PCT / 100.0)
     return mask
 
 
@@ -1851,8 +2047,13 @@ def _apply_resonance(df: pd.DataFrame, sig_dict: Dict[str, pd.Series],
     在没有真实多策略共识时也通过。被排除策略自身的信号仍需过该门槛，
     因此单独命中的噪声策略信号会被一并过滤掉。
     --resonance-all-voters 时 _RESONANCE_VOTE_EXCLUDE 为空集合，回退旧口径。
+
+    分层模式（_RESONANCE_LAYERED，B2）：每个策略按
+    RESONANCE_MIN_BY_STRATEGY.get(name, min_strategies) 查各自门槛，
+    未配置策略回落全局 min_strategies。对共振为负贡献的策略（如
+    limit_up_pullback）降为 1 恢复被误砍信号，对已验证退化的策略保持 2。
     """
-    if min_strategies <= 1 or not sig_dict:
+    if (min_strategies <= 1 and not _RESONANCE_LAYERED) or not sig_dict:
         return sig_dict
 
     voters = [n for n in sig_dict if n not in _RESONANCE_VOTE_EXCLUDE]
@@ -1866,6 +2067,14 @@ def _apply_resonance(df: pd.DataFrame, sig_dict: Dict[str, pd.Series],
     hit = np.zeros(len(df), dtype=np.int16)
     for name in voters:
         hit += sig_dict[name].astype(bool).to_numpy()
+    if _RESONANCE_LAYERED:
+        layered = {n: int(RESONANCE_MIN_BY_STRATEGY.get(n, min_strategies)) for n in sig_dict}
+        logger.info(f"共振门槛分层: {', '.join(f'{n}={t}' for n, t in sorted(layered.items()))}")
+        out = {}
+        for name, sig in sig_dict.items():
+            thr = layered[name]
+            out[name] = sig if thr <= 1 else (sig & pd.Series(hit >= thr, index=df.index))
+        return out
     keep = pd.Series(hit >= min_strategies, index=df.index)
     return {name: sig & keep for name, sig in sig_dict.items()}
 
@@ -1968,6 +2177,12 @@ for _regime, _names in REGIME_STRATEGIES.items():
 # 全市场强势锚（P1-1 软加权）：基本面/资金面确定性策略，业绩预增/机构净买/筹码集中
 # 在任何市况下都是避风港，不随 regime 被降级，且在弱势市况充当弱信号的确认锚。
 REGIME_ALL_WEATHER: set = {"fc_pos_break", "inst_smart_break", "holder_conc_break"}
+
+# 防守族半仓激活（C2）放行集合：基本面锚 + 超跌/反转族（族胜率 52.6% 且抗衰减，
+# washout_break/low_profit_hold/rsi_bullish_divergence）。仅 --defensive-half-pos 启用。
+DEFENSIVE_HALF_POS_STRATEGIES: set = (set(REGIME_ALL_WEATHER)
+                                       | {"washout_break", "low_profit_hold",
+                                          "rsi_bullish_divergence"})
 
 
 def _apply_regime_soft_filter(df: pd.DataFrame, sig_dict: Dict[str, pd.Series]
@@ -2701,14 +2916,15 @@ def sig_holder_conc_break(df):
 
 
 def sig_inst_smart_break(df):
-    """策略27：机构龙虎榜净买——机构席位近 5 日累计净买入超 500 万，阳线站上 MA20。
+    """策略27：机构龙虎榜净买——机构席位近 N 日累计净买入超阈值，阳线站上 MA20。
 
     逻辑（全部满足）：
-      - 机构龙虎榜近 5 日累计净买入 > 500 万元
+      - 机构龙虎榜滚动窗口（--inst-window，默认 10 自然日）累计净买入 >
+        --inst-net-buy（默认 500 万元）
       - 收盘站上 MA20
       - 阳线（收 > 开）
     """
-    return ((df["inst_buy5"] > MIN_INST_NET_BUY) & (df["close"] > df["ma20"])
+    return ((df["inst_buy5"] > _INST_SMART_BREAK_NET_BUY) & (df["close"] > df["ma20"])
             & (df["close"] > df["open"]))
 
 
@@ -3201,6 +3417,27 @@ def _signal_return_col(columns, name: str, p: int, entry_timing: str) -> Optiona
     return None
 
 
+def _diag_col_name(columns, name: str, base: str, p: int,
+                   entry_timing: str) -> Optional[str]:
+    """出场诊断列名（A1/A2）：base ∈ {dyn_reason, dyn_mae, dyn_mfe}。
+
+    优先分组出场参数列（__{key}），再回退默认参数组列；next_open 口径取
+    _no 后缀。仅默认参数组会产出诊断列（--no-exit-diagnostics 时全部缺失），
+    分组列不存在时回退默认组，保证 per-strategy-exit 下诊断仍可读。
+    """
+    params = STRATEGY_EXIT_PARAMS.get(name)
+    use_alt = params is not None and tuple(params) != DEFAULT_EXIT_PARAMS
+    sfx = "_no" if entry_timing == "next_open" else ""
+    if use_alt:
+        cand = f"{base}_{p}d__{_exit_param_key(*params)}{sfx}"
+        if cand in columns:
+            return cand
+    for cand in (f"{base}_{p}d{sfx}", f"{base}_{p}d"):
+        if cand in columns:
+            return cand
+    return None
+
+
 def _signal_return_cols(columns, name: str, p: int,
                         entry_timing: str) -> List[str]:
     """按优先级返回候选持有期收益列：先 best_p，再依次回退到更短持有期。
@@ -3289,7 +3526,7 @@ def _backtest_single(name: str, df: pd.DataFrame, sig: Optional[pd.Series] = Non
                 continue
             sub = sub.sort_values("date")
             # 扣减往返交易成本后再统计绩效
-            net_ret = sub[col].values - TRADING_COST_PCT / 100.0
+            net_ret = sub[col].values - _TRADING_COST_PCT / 100.0
             m = calc_metrics(net_ret, avg_holding=p, dates=sub["date"])
             m["total_trades"] = int(len(sub))
             # 分年度评估（D1）：按信号年份拆分胜率/收益,识别过拟合或牛市 beta
@@ -3297,7 +3534,7 @@ def _backtest_single(name: str, df: pd.DataFrame, sig: Optional[pd.Series] = Non
             sub_y = sub.copy()
             sub_y["year"] = sub_y["date"].dt.year
             for yr, g in sub_y.groupby("year"):
-                gy = calc_metrics(g[col].values - TRADING_COST_PCT / 100.0, avg_holding=p)
+                gy = calc_metrics(g[col].values - _TRADING_COST_PCT / 100.0, avg_holding=p)
                 yearly[int(yr)] = {
                     "trades": gy["total_trades"],
                     "win_rate": gy["win_rate"],
@@ -3363,6 +3600,22 @@ def _backtest_single(name: str, df: pd.DataFrame, sig: Optional[pd.Series] = Non
         m["best_period"] = best_p
         m["periods"] = period_metrics
         m["time_s"] = round(time.time() - t0, 1)
+        # 出场诊断（A1/A2）：best_period 的出场原因分布与 MAE/MFE 分位数。
+        # 诊断列由 compute_dynamic_exit_returns(diagnostics=True) 产出，缺失时跳过。
+        rc_col = _diag_col_name(signals.columns, name, "dyn_reason", best_p, entry_timing)
+        if rc_col is not None:
+            sub_d = signals[["date", rc_col]].dropna()
+            if len(sub_d):
+                counts = sub_d[rc_col].astype(int).value_counts()
+                m["exit_reasons"] = {int(k): int(v) for k, v in counts.items()}
+            for base, out_key in (("dyn_mae", "mae_quantiles"), ("dyn_mfe", "mfe_quantiles")):
+                qc = _diag_col_name(signals.columns, name, base, best_p, entry_timing)
+                if qc is None:
+                    continue
+                vals = signals[qc].dropna()
+                if len(vals):
+                    m[out_key] = {f"p{int(q * 100)}": round(float(vals.quantile(q)) * 100, 2)
+                                  for q in (0.25, 0.5, 0.75, 0.9)}
         if collect_trades:
             # 供 walk-forward 权重：最优持有期的逐笔（信号日, 净收益）。平仓日按
             # best_p 个交易日保守近似（信号日 + best_p*2 日历日），只晚不早。
@@ -3371,7 +3624,7 @@ def _backtest_single(name: str, df: pd.DataFrame, sig: Optional[pd.Series] = Non
                 sub_t = signals[["date", col]].dropna()
                 exit_dates = pd.to_datetime(sub_t["date"]) + pd.Timedelta(days=int(best_p) * 2)
                 m["_trades"] = list(zip(exit_dates.to_numpy(),
-                                        (sub_t[col].values - TRADING_COST_PCT / 100.0)))
+                                        (sub_t[col].values - _TRADING_COST_PCT / 100.0)))
             else:
                 m["_trades"] = []
         return m
@@ -3703,11 +3956,13 @@ def run_backtests(df_bt: pd.DataFrame, index_df: Optional[pd.DataFrame] = None,
                   entry_timing: str = "close",
                   regime_soft: bool = False,
                   confluence_only: bool = False,
-                  confluence_regime: Optional[str] = None) -> List[Dict]:
+                  confluence_regime: Optional[str] = None,
+                  resonance_layered: bool = False) -> List[Dict]:
     """对全部 23 个策略执行回测，返回按期望值降序的有效结果列表。
 
     enhanced_regime=True 时使用 market_ok_enh（放宽 regime, P0-1）；
     resonance_min>1 时启用同股同日多策略共振过滤（P0-2）；
+    resonance_layered=True 时共振门槛按 RESONANCE_MIN_BY_STRATEGY 分层（B2）；
     regime_filter=True 时按市况分族硬调度策略（P1-4，需 df_bt 含 regime 列）；
     regime_soft=True 时启用市况软加权（P1-1，弱信号需强势信号确认，与 regime_filter 互斥）；
     industry_filter=True 时仅保留行业动量前 N 行业的信号（P2-7，需 ind_rank 列）；
@@ -3804,8 +4059,8 @@ def run_backtests(df_bt: pd.DataFrame, index_df: Optional[pd.DataFrame] = None,
             cooled_signals = _apply_regime_soft_filter(df_bt, cooled_signals)
         logger.info(f"组合策略 ensemble 信号数（冷却后/共振前）: {int(cooled_signals['ensemble'].sum())}")
 
-    # 同股同日多策略共振过滤（P0-2）
-    if resonance_min > 1:
+    # 同股同日多策略共振过滤（P0-2）；分层模式（B2）按策略门槛查表
+    if resonance_min > 1 or resonance_layered:
         cooled_signals = _apply_resonance(df_bt, cooled_signals, min_strategies=resonance_min)
         # 修复：ensemble 组件在共振前已回测并写入 results（用于算权重），共振后其
         # 信号被大幅削减（如 limit_up_pullback 冷却后 1244 -> 共振后 ~270），但 results
@@ -3944,13 +4199,20 @@ def validate_week(df_full, df_week, top_results, top_n=VALIDATE_CANDIDATES, sign
                   if r.get("total_trades", 0) >= MIN_TRADES_FOR_RANKING][:top_n]
     val = []
     week_dates = sorted(df_week["date"].unique())
+    if not week_dates:
+        logger.warning("验证区间无交易日")
+        return val
     logger.info(f"5日验证 {pd.Timestamp(week_dates[0]).date()} ~ "
                 f"{pd.Timestamp(week_dates[-1]).date()}（候选策略 {len(candidates)} 个，"
-                f"5 个入场日 × 策略最优持有期真实出场）")
+                f"{len(week_dates)} 个入场日 × 策略最优持有期真实出场）")
 
-    if len(week_dates) < 5:
-        logger.warning("验证区间不足5个交易日")
-        return val
+    if len(week_dates) < VALIDATE_DAYS:
+        if _VALIDATE_ADAPTIVE_DAYS >= 1:
+            logger.warning(f"验证窗口自适应：实际 {len(week_dates)} 个交易日"
+                           f"（不足 {VALIDATE_DAYS}），按实际数量执行")
+        else:
+            logger.warning("验证区间不足5个交易日")
+            return val
 
     for name in candidates:
         try:
@@ -3974,7 +4236,7 @@ def validate_week(df_full, df_week, top_results, top_n=VALIDATE_CANDIDATES, sign
                 # 逐行取首个可测（非 NaN）的持有期收益：best_p 的持有期没走完时
                 # 回退到窗口内可测的最大持有期，避免整笔被算作"未平仓"
                 rets = df_full.loc[day_mask, fwd_cols].bfill(axis=1).iloc[:, 0]
-                net = rets.dropna() - TRADING_COST_PCT / 100.0
+                net = rets.dropna() - _TRADING_COST_PCT / 100.0
                 closed_rets.extend(net.tolist())
                 open_count += int(rets.isna().sum())
 
@@ -4087,6 +4349,56 @@ def print_results(results, val_results, backtest_start, backtest_end, market_ok_
                 print(row)
             print("=" * 140)
 
+        # 分持有期明细（A1a）：策略 × 持有期（1/3/5/10）的笔数/胜率/期望，
+        # √ 标记该策略当前选定的最优持有期。回答"1~10 日内哪个持有期最优"，
+        # 是后续持有期与出场改造的观测前提。
+        if PRINT_PERIOD_DETAIL and any(r.get("periods") for r in valid_results):
+            print("\n" + "=" * 140)
+            print("分持有期明细 (笔数/胜率%/期望% ; 单元格尾√=该策略 best_period)")
+            print(f"{'策略':<28}" + "".join(f"{str(p) + '日':>20}" for p in HOLDING_PERIODS))
+            print("-" * 140)
+            for r in valid_results:
+                periods = r.get("periods") or {}
+                if not periods:
+                    continue
+                row = f"  {r['strategy']:<26}"
+                for p in HOLDING_PERIODS:
+                    pm = periods.get(p)
+                    if pm and pm.get("total_trades"):
+                        mark = "√" if r.get("best_period") == p else " "
+                        row += f"{pm['total_trades']:>7}/{pm['win_rate']:>5.1f}/{pm.get('expectation', 0):>5.2f}{mark}"
+                    else:
+                        row += f"{'-':>20}"
+                print(row)
+            print("=" * 140)
+
+        # 出场诊断（A1b/A2）：best_period 的出场原因占比 + MAE/MFE 分位数。
+        # 判读：MAE P75 远小于 ATR 止损位 → 亏损主要由 trail 提前扫出（R1 推断）；
+        # MFE P50 显著大于均盈 → 右尾被浪费（止盈过早）。--no-exit-diagnostics 时无数据。
+        diag_rows = [r for r in valid_results if r.get("exit_reasons")]
+        if PRINT_PERIOD_DETAIL and diag_rows:
+            print("\n" + "=" * 140)
+            print("出场诊断 (best_period 口径: 出场原因占比% + MAE/MFE 分位数%; MAE 负=不利偏移)")
+            print(f"{'策略':<28}{'ATR止损':>8}{'固定止盈':>9}{'移动止盈':>9}{'时间止损':>9}"
+                  f"  {'MAE_P50':>8}{'MAE_P75':>8}  {'MFE_P50':>8}{'MFE_P75':>8}{'MFE_P90':>8}")
+            print("-" * 140)
+            for r in diag_rows:
+                rs = r["exit_reasons"]
+                total = sum(rs.values()) or 1
+                pcts = {k: rs.get(k, 0) / total * 100 for k in (1, 2, 3, 4)}
+                mae = r.get("mae_quantiles") or {}
+                mfe = r.get("mfe_quantiles") or {}
+                row = f"  {r['strategy']:<26}"
+                for k in (1, 2, 3, 4):
+                    row += f"{pcts[k]:>8.1f}" if k == 1 else f"{pcts[k]:>9.1f}"
+                row += "  "
+                row += f"{mae.get('p50', float('nan')):>8.1f}{mae.get('p75', float('nan')):>8.1f}  "
+                row += (f"{mfe.get('p50', float('nan')):>8.1f}"
+                        f"{mfe.get('p75', float('nan')):>8.1f}"
+                        f"{mfe.get('p90', float('nan')):>8.1f}")
+                print(row)
+            print("=" * 140)
+
     if val_results:
         print("\n" + "=" * 85)
         print(f"{'5日验证（5 入场日 × 最优持有期真实出场）':^85}")
@@ -4193,18 +4505,22 @@ def get_top_stocks_by_win_rate(df_full, df_week, results, top_n=10, signals=None
     stock_info: Dict[str, dict] = {}
 
     all_dates = sorted(df_week["date"].unique())
-    if len(all_dates) < 5:
+    if not all_dates:
+        logger.warning("验证区间无交易日")
+        return []
+    if len(all_dates) < VALIDATE_DAYS and _VALIDATE_ADAPTIVE_DAYS < 1:
         logger.warning("验证区间不足5个交易日")
         return []
 
-    buy_date = all_dates[-5]
+    _win = min(VALIDATE_DAYS, len(all_dates))
+    buy_date = all_dates[-_win]
     sell_date = all_dates[-1]
 
     # 买入日兜底（P1 批次4）：窗口首日无任何候选策略命中时（2026-09-13 实测
     # 09-07 无信号 → handoff 输出 0 只股票、主程序整轮空转，而验证区间后续
     # 交易日实际有信号），按时间顺序回退到窗口内首个有命中的交易日。
     if signals is not None:
-        for _bd in all_dates[-5:]:
+        for _bd in all_dates[-_win:]:
             _hit = False
             for r0 in results:
                 if r0.get("total_trades", 0) < MIN_TRADES_FOR_RANKING:
@@ -4219,6 +4535,20 @@ def get_top_stocks_by_win_rate(df_full, df_week, results, top_n=10, signals=None
                                 f"{pd.Timestamp(_bd).date()}")
                 buy_date = _bd
                 break
+
+    # 防守族半仓标记（C2）：买入日 enh2=False 说明信号只能来自 _entry_mask 的
+    # 防守族半仓通道，建议仓位系数 ×0.5（与放行条件同一口径，避免超配弱市）。
+    half_pos = False
+    if _DEFENSIVE_HALF_POS:
+        _rc = _regime_col()
+        if _rc not in df_week.columns:
+            _rc = "market_ok_enh" if "market_ok_enh" in df_week.columns else "market_ok"
+        if _rc in df_week.columns:
+            _bd_ok = df_week.loc[df_week["date"] == buy_date, _rc]
+            half_pos = len(_bd_ok) > 0 and not bool(_bd_ok.iloc[0])
+            if half_pos:
+                logger.info(f"防守族半仓激活: 买入日 {pd.Timestamp(buy_date).date()} "
+                            f"{_rc}=False，建议仓位 ×0.5")
 
     # 买入/卖出价映射一次性构建，避免逐记录全表扫描
     buy_cols = ["name", "open"] + (["atr20"] if "atr20" in df_week.columns else [])
@@ -4349,8 +4679,9 @@ def get_top_stocks_by_win_rate(df_full, df_week, results, top_n=10, signals=None
             "sell_return": info["sell_return"],
             "recommended_hold_days": recommended_hold_days,
             "total_trades_list": info["total_trades_list"],
-            "position_pct": compute_position_size(
-                atr20=info.get("atr20"), close=info["buy_price"], kelly=info["max_kelly"]),
+            "position_pct": round(compute_position_size(
+                atr20=info.get("atr20"), close=info["buy_price"], kelly=info["max_kelly"])
+                * (0.5 if half_pos else 1.0), 4),
         })
 
     stock_list.sort(key=lambda x: (x["sell_return"] if x["sell_return"] is not None else -999), reverse=True)
@@ -4686,6 +5017,14 @@ def main(argv=None):
     parser.add_argument("--take-profit-r", type=float, default=0.0,
                         help="固定止盈（R 倍数）：>0 时 bar 最高价触及 entry+R×初始风险 即按止盈价成交；"
                              "同 bar 优先级 ATR止损>固定止盈>移动止盈。默认 0.0=关闭（旧行为）")
+    parser.add_argument("--trail-schedule", type=str, default=None,
+                        help="时间阶梯 trail：'N:value' 表示入场后前 N 根 bar 用 value（宽 trail）、"
+                             "之后用 --exit-trail（0.97）；默认（不传）启用固化值 4d_085（前4日0.85，"
+                             "2026-10-05 A/B 收敛，总收益+137%）；传 'off' 回退统一 trail（旧行为）")
+    parser.add_argument("--pre-arm-atr", type=float, default=None,
+                        help="trail 武装前 ATR 止损倍数（默认 None=3.0 旧行为）：如 1.5；"
+                             "武装后恢复 --exit-atr-mult，限制延迟武装期间单笔亏损。"
+                             "仅在 --trail-activate-r>0 时生效")
     parser.add_argument("--target-vol", type=float, default=0.0,
                         help="组合级年化波动率目标（如 0.15=15%%）：>0 时按 20 日已实现波动缩放每日总敞口，"
                              "仅影响组合级总收益/年化/回撤/夏普。默认 0.0=等权旧口径")
@@ -4693,7 +5032,7 @@ def main(argv=None):
                         help="波动率目标下每日总敞口上限，默认 1.0（不加杠杆）")
     parser.add_argument("--select-period", choices=["stationarity", "expectation", "total_return"],
                         default=None,
-                        help="最优持有期(best_period)选择口径（P1 批次3）：stationarity=全期期望−0.5×年度期望"
+                        help="最优持有期(best_period)选择口径（P1 批次3）：stationarity=全期期望-0.5×年度期望"
                              "标准差（默认，惩罚单年爆发的持有期）；expectation=单笔期望；total_return=历史口径"
                              "（总收益最高，易被某一年行情挑中长持有期）")
     parser.add_argument("--resonance-all-voters", action="store_true",
@@ -4705,6 +5044,37 @@ def main(argv=None):
     parser.add_argument("--no-handoff", action="store_true",
                         help="回测结果表输出后即退出，跳过 5 日验证选股/handoff 评分与 main.py "
                              "子进程（批量 A/B 回测用，默认仍执行 handoff）")
+    parser.add_argument("--trading-cost", type=float, default=None,
+                        help="单边往返交易成本（%%）覆盖（P1-1 成本校准）：默认取 TRADING_COST_PCT=0.15；"
+                             "建议 A/B 档位 0.15/0.25/0.35。next_open 口径的开盘滑点是最需要计价的一项")
+    parser.add_argument("--max-gap-pct", type=float, default=None,
+                        help="涨停族次日开盘价相对信号日收盘价的最大跳空幅度（%%，P0-4/B1）："
+                             "默认取 MAX_GAP_PCT=0（关闭；2026-09-27 实测 5%% 全池劣化后回退）；"
+                             "A/B 扫描建议档位 3/5/7。覆盖 LIMIT_UP_ENTRY_STRATEGIES + limit_up_pullback。"
+                             "无前视：次日竞价可观察")
+    parser.add_argument("--gap-band-pct", type=float, default=None,
+                        help="非涨停族对称跳空带宽（%%，P0-4/B1）：|次日开盘/信号日收盘-1| 超过该带宽的信号"
+                             "被过滤（默认取 GAP_BAND_PCT=0，关闭；2026-09-27 实测 3%% 全池劣化后回退）")
+    parser.add_argument("--resonance-layered", action="store_true",
+                        help="共振门槛按策略分层（P1-1/B2）：启用 RESONANCE_MIN_BY_STRATEGY 字典，"
+                             "未配置策略回落 --resonance 默认值。默认关闭=全局标量旧行为")
+    parser.add_argument("--validate-adaptive", type=int, default=None,
+                        help="验证窗口自适应回看天数（P1-4/C1）：>0 时取最近 N 个交易日中最后 5 个 "
+                             "market_ok=True 的日子作为验证窗口，解决固定 5 日窗口 0/5 空转。默认取 "
+                             "VALIDATE_ADAPTIVE_DAYS=20；传 0=固定 5 日旧行为")
+    parser.add_argument("--defensive-half-pos", action="store_true",
+                        help="防守族半仓激活（P3-1/C2）：enh2=False 但广度在 [0.35,0.45) 时放行防守族"
+                             "（REGIME_ALL_WEATHER + 超跌/反转族），仓位系数 ×0.5。比全市场软化更保守")
+    parser.add_argument("--inst-net-buy", type=float, default=None,
+                        help="inst_smart_break 机构龙虎榜净买阈值（万元，P1-2/C3）：默认取 "
+                             "INST_SMART_BREAK_NET_BUY=500；A/B 档位 500/300/200")
+    parser.add_argument("--inst-window", type=int, default=None,
+                        help="inst_smart_break 龙虎榜滚动窗口（自然日，P1-2/C3）：默认取 "
+                             "INST_SMART_BREAK_WINDOW=10（约 7 交易日）；A/B 档位 10/20/40。"
+                             "非默认窗口会使用独立的准备态缓存文件，避免与默认口径串用")
+    parser.add_argument("--no-exit-diagnostics", action="store_true",
+                        help="关闭出场诊断列（A1/A2，默认开启）：dyn_reason/dyn_mae/dyn_mfe 每"
+                             "持有期 3 列会增加内存占用（580 万行约 +400MB），低内存环境可关闭")
     args = parser.parse_args(argv)
 
     # 环境变量开关（供 GitHub Actions / 定时任务在不改命令的情况下启用质量门槛）：
@@ -4747,14 +5117,53 @@ def main(argv=None):
     _TARGET_VOL_ANNUAL = float(args.target_vol)
     _MAX_LEVERAGE = float(args.max_leverage)
 
+    # 时间阶梯 trail：
+    #   不传 → 固化默认 TRAIL_SCHEDULE_DEFAULT（4d_085，design §9.9）
+    #   'N:value' → [(0, value), (N, 正常 trail)]
+    #   'off' → 关闭，回退统一 trail（旧行为）
+    global _TRAIL_SCHEDULE, _PRE_ARM_ATR_MULT, DEFAULT_EXIT_PARAMS
+    if args.trail_schedule is None:
+        _TRAIL_SCHEDULE = list(TRAIL_SCHEDULE_DEFAULT)
+        logger.info(f"时间阶梯 trail（默认）: {_TRAIL_SCHEDULE}")
+    elif str(args.trail_schedule).lower() == "off":
+        _TRAIL_SCHEDULE = None
+        logger.info("时间阶梯 trail 关闭，使用统一 trail")
+    else:
+        try:
+            _n_s, _v_s = args.trail_schedule.split(":")
+            _n_i = int(_n_s)
+            _v_f = float(_v_s)
+            _TRAIL_SCHEDULE = [(0, _v_f), (_n_i, DEFAULT_EXIT_PARAMS[1])]
+            logger.info(f"时间阶梯 trail: 前 {_n_i} 根 bar 用 {_v_f}，"
+                        f"之后 {DEFAULT_EXIT_PARAMS[1]}")
+        except Exception as e:
+            logger.warning(f"--trail-schedule 解析失败（应为 N:value 或 off），用默认: {e}")
+            _TRAIL_SCHEDULE = list(TRAIL_SCHEDULE_DEFAULT)
+    if args.pre_arm_atr is not None:
+        _PRE_ARM_ATR_MULT = float(args.pre_arm_atr)
+        logger.info(f"武装前 ATR 止损: {_PRE_ARM_ATR_MULT}（武装后 "
+                    f"{DEFAULT_EXIT_PARAMS[0]}）")
+
     # 全局出场参数覆盖（P1 批次5）：只覆盖显式传入的一维，另一维沿用默认，
     # 供 A/B 回测与旧值回退（如 --exit-atr-mult 2.5 --exit-trail 0.95）。
-    global DEFAULT_EXIT_PARAMS
     if args.exit_atr_mult is not None or args.exit_trail is not None:
         DEFAULT_EXIT_PARAMS = (
             float(args.exit_atr_mult) if args.exit_atr_mult is not None else DEFAULT_EXIT_PARAMS[0],
             float(args.exit_trail) if args.exit_trail is not None else DEFAULT_EXIT_PARAMS[1],
         )
+
+    global _TRADING_COST_PCT, _MAX_GAP_PCT, _GAP_BAND_PCT, _RESONANCE_LAYERED
+    global _VALIDATE_ADAPTIVE_DAYS, _DEFENSIVE_HALF_POS
+    global _INST_SMART_BREAK_NET_BUY, _INST_SMART_BREAK_WINDOW, _EXIT_DIAGNOSTICS
+    _TRADING_COST_PCT = float(args.trading_cost) if args.trading_cost is not None else TRADING_COST_PCT
+    _MAX_GAP_PCT = float(args.max_gap_pct) if args.max_gap_pct is not None else MAX_GAP_PCT
+    _GAP_BAND_PCT = float(args.gap_band_pct) if args.gap_band_pct is not None else GAP_BAND_PCT
+    _RESONANCE_LAYERED = bool(args.resonance_layered)
+    _VALIDATE_ADAPTIVE_DAYS = int(args.validate_adaptive) if args.validate_adaptive is not None else VALIDATE_ADAPTIVE_DAYS
+    _DEFENSIVE_HALF_POS = bool(args.defensive_half_pos)
+    _INST_SMART_BREAK_NET_BUY = float(args.inst_net_buy) if args.inst_net_buy is not None else INST_SMART_BREAK_NET_BUY
+    _INST_SMART_BREAK_WINDOW = int(args.inst_window) if args.inst_window is not None else INST_SMART_BREAK_WINDOW
+    _EXIT_DIAGNOSTICS = not args.no_exit_diagnostics
 
     if not args.force and not is_trading_day(datetime.now()):
         logger.error("非交易日，程序退出（使用 --force 可强制运行）")
@@ -4806,12 +5215,16 @@ def main(argv=None):
         confluence_label = "未启用"
     logger.info(f"市场环境: regime-mode={_REGIME_MODE} ({_regime_col()})"
                 f" | 共振门槛: {'同股同日≥' + str(args.resonance) + '策略' if args.resonance > 1 else '未启用'}"
+                f"{'(分层)' if args.resonance_layered else ''}"
                 f" | 市况分族: {regime_label}"
                 f" | 合流过滤: {confluence_label}"
                 f" | 行业动量: {'启用' if industry_on else '未启用'}"
                 f" | 分组止损: {'启用' if args.per_strategy_exit else '未启用'}"
                 f" | 出场参数: ATR×{DEFAULT_EXIT_PARAMS[0]:g}/trail {DEFAULT_EXIT_PARAMS[1]:g}"
                 f" | 入场口径: {args.entry_timing}（双口径对比已启用）"
+                f" | 跳空过滤: 涨停≤{_MAX_GAP_PCT:g}%/通用±{_GAP_BAND_PCT:g}%"
+                f"{'(关闭)' if _MAX_GAP_PCT <= 0 and _GAP_BAND_PCT <= 0 else ''}"
+                f" | 交易成本: {_TRADING_COST_PCT:g}%"
                 f" | bear确认数: {_BEAR_CONFIRM_MIN}"
                 f" | handoff: {_HANDOFF_MODE}"
                 f" | 选期口径: {_SELECT_PERIOD_BY}"
@@ -4854,6 +5267,27 @@ def main(argv=None):
     gc.collect()
     log_memory_usage("指标计算后")
 
+    # 入场跳空过滤（B1）：预计算信号日次日开盘跳空 = open[t+1]/close[t]-1，与
+    # compute_dynamic_exit_returns 的 i+1 语义一致（组内下一行），无前视。按
+    # (code, date) 排序后计算再按位置逆置换还原，规避非唯一 index 的 reindex 错位。
+    _gap_order = np.lexsort((df_all["date"].to_numpy(), df_all["code"].to_numpy()))
+    _gap_inv = np.empty_like(_gap_order)
+    _gap_inv[_gap_order] = np.arange(len(_gap_order))
+    _gap_frame = pd.DataFrame({
+        "code": df_all["code"].to_numpy()[_gap_order],
+        "open": df_all["open"].to_numpy()[_gap_order],
+        "close": df_all["close"].to_numpy()[_gap_order],
+    })
+    _gap_next = _gap_frame.groupby("code")["open"].shift(-1).to_numpy()
+    df_all["gap_pct"] = (_gap_next / _gap_frame["close"].to_numpy() - 1.0)[_gap_inv]
+    if _MAX_GAP_PCT > 0 or _GAP_BAND_PCT > 0:
+        _gap_valid = df_all["gap_pct"].dropna()
+        logger.info(f"入场跳空: 有效样本 {len(_gap_valid):,}，"
+                    f"均值 {_gap_valid.mean()*100:+.2f}%，"
+                    f"|gap|>3% 占比 {( _gap_valid.abs() > 0.03).mean()*100:.1f}%")
+    del _gap_order, _gap_inv, _gap_frame, _gap_next
+    gc.collect()
+
     # 真实交易日历注入组合绩效计算（P1 批次3）：calc_portfolio_metrics 旧实现用
     # "信号日并集"当交易日历，把时间轴压缩到只有信号发生的那些天，导致年化/夏普
     # 虚高。这里把 df_all 覆盖的全部交易日作为真实日历传入。
@@ -4875,6 +5309,8 @@ def main(argv=None):
         for col in ("market_ok", "market_ok_enh", "market_ok_enh2"):
             if col in df_all.columns:
                 df_all[col] = df_all[col].fillna(False).astype(bool)
+        if "breadth" in df_all.columns:
+            df_all["breadth"] = df_all["breadth"].fillna(1.0)
         del df_index, regime_df
         gc.collect()
     except Exception as e:
@@ -4882,6 +5318,7 @@ def main(argv=None):
         df_all["market_ok"] = True
         df_all["market_ok_enh"] = True
         df_all["market_ok_enh2"] = True
+        df_all["breadth"] = 1.0
 
     # 财务质量过滤:按 ann_date 对齐(防前视偏差)
     try:
@@ -4911,11 +5348,17 @@ def main(argv=None):
     # 另一口径供双口径对比；P2-10 分组模式追加非默认参数组列（同样双口径）。
     # 显式传全局出场参数（函数签名默认值在导入期固化，CLI 覆盖后必须显式传入）。
     logger.info("计算动态退出收益(ATR止损/移动止盈, 双入场口径 + 跌停顺延)...")
+    if _EXIT_DIAGNOSTICS:
+        logger.info("出场诊断已启用（dyn_reason/dyn_mae/dyn_mfe，仅默认参数组）："
+                    "每持有期 +3 列，可用 --no-exit-diagnostics 关闭")
     t_dyn = time.time()
     dyn_ret = compute_dynamic_exit_returns(
         df_all, atr_mult=DEFAULT_EXIT_PARAMS[0], trail=DEFAULT_EXIT_PARAMS[1],
         dual_timing=True,
-        trail_activate_r=_TRAIL_ACTIVATE_R, take_profit_r=_TAKE_PROFIT_R)
+        trail_activate_r=_TRAIL_ACTIVATE_R, take_profit_r=_TAKE_PROFIT_R,
+        diagnostics=_EXIT_DIAGNOSTICS,
+        trail_schedule=_TRAIL_SCHEDULE,
+        pre_arm_atr_mult=_PRE_ARM_ATR_MULT)
     df_all = pd.concat([df_all, dyn_ret], axis=1)
     del dyn_ret
     gc.collect()
@@ -4952,26 +5395,56 @@ def main(argv=None):
         logger.info(f"WFO 阈值扫描完成，耗时 {time.time()-t_sweep:.1f}s")
         return
 
-    # 按最近交易日划分回测 / 验证区间：最后 5 个交易日留给验证，其余用于回测
+    # 按最近交易日划分回测 / 验证区间：最后 5 个交易日留给验证，其余用于回测。
+    # 验证窗口自适应（C1，--validate-adaptive）：enh2 仅 30.2% 天数可开仓且日度
+    # 高度自相关，固定 5 日窗口 0/5 空转概率结构性偏高（handoff 周期性输出 0
+    # 只股票）。开启时取最近 N 个交易日中最后 VALIDATE_DAYS 个可开仓日作为验证
+    # 窗口（跨期可能长达数周），回测区间同步截止到首个验证日之前保持样本洁净；
+    # 回看窗内无可开仓日时回退固定 5 日窗口（保持旧行为）。
     all_dates = sorted(df_all["date"].unique())
     if len(all_dates) < 6:
         logger.error(f"数据不足，最近交易日数量: {len(all_dates)}，需要至少6个")
         return
 
-    backtest_end_date = all_dates[-6]
     backtest_start_date = all_dates[0]
-    validate_start_date = all_dates[-5]
-    validate_end_date = all_dates[-1]
+    regime_col = _regime_col()
+    if regime_col not in df_all.columns:
+        regime_col = "market_ok_enh" if "market_ok_enh" in df_all.columns else "market_ok"
+
+    validate_dates = None
+    if _VALIDATE_ADAPTIVE_DAYS >= 1 and regime_col in df_all.columns:
+        _lookback = all_dates[-_VALIDATE_ADAPTIVE_DAYS:]
+        _ok = (df_all.loc[df_all["date"].isin(_lookback), ["date", regime_col]]
+               .drop_duplicates("date").sort_values("date"))
+        _ok_dates = list(_ok.loc[_ok[regime_col].astype(bool), "date"])
+        if _ok_dates:
+            validate_dates = _ok_dates[-VALIDATE_DAYS:]
+            if len(validate_dates) < VALIDATE_DAYS:
+                logger.warning(f"验证窗口自适应：最近 {_VALIDATE_ADAPTIVE_DAYS} 个交易日中仅 "
+                               f"{len(validate_dates)} 个可开仓日（<{VALIDATE_DAYS}），按实际数量执行")
+            _bt_idx = int(np.searchsorted(np.asarray(all_dates), validate_dates[0]))
+            backtest_end_date = all_dates[_bt_idx - 1] if _bt_idx >= 1 else all_dates[0]
+            validate_start_date = validate_dates[0]
+            validate_end_date = validate_dates[-1]
+            logger.info(f"验证窗口自适应: 回看 {_VALIDATE_ADAPTIVE_DAYS} 个交易日取最后 "
+                        f"{len(validate_dates)} 个可开仓日 "
+                        f"({pd.Timestamp(validate_start_date).date()} ~ "
+                        f"{pd.Timestamp(validate_end_date).date()})")
+        else:
+            logger.warning(f"验证窗口自适应：最近 {_VALIDATE_ADAPTIVE_DAYS} 个交易日内无可开仓日，"
+                           f"回退固定 {VALIDATE_DAYS} 日窗口")
+    if validate_dates is None:
+        backtest_end_date = all_dates[-6]
+        validate_start_date = all_dates[-5]
+        validate_end_date = all_dates[-1]
+        validate_dates = list(all_dates[-5:])
 
     logger.info(f"回测区间: {backtest_start_date.date()} ~ {backtest_end_date.date()}")
     logger.info(f"验证区间: {validate_start_date.date()} ~ {validate_end_date.date()}")
 
     # 市况统计：验证窗口 regime 天数（按日去重），用于区分空仓市况与策略无信号
-    week_mask = df_all["date"] >= pd.Timestamp(validate_start_date)
+    week_mask = df_all["date"].isin(pd.DatetimeIndex(validate_dates))
     week_market_ok = None
-    regime_col = _regime_col()
-    if regime_col not in df_all.columns:
-        regime_col = "market_ok_enh" if "market_ok_enh" in df_all.columns else "market_ok"
     if regime_col in df_all.columns:
         week_market_ok = df_all.loc[week_mask, ["date", regime_col]].drop_duplicates("date")[regime_col]
         market_ok_in_week = int(week_market_ok.sum())
@@ -5004,7 +5477,8 @@ def main(argv=None):
                             entry_timing=args.entry_timing,
                             regime_soft=args.regime_soft,
                             confluence_only=args.confluence_only,
-                            confluence_regime=args.confluence_regime)
+                            confluence_regime=args.confluence_regime,
+                            resonance_layered=args.resonance_layered)
     # 回测切片（580 万行级）回测后不再需要，立即释放，避免与后续验证信号计算
     # 叠加内存峰值，并降低 handoff 子进程 spawn 时父进程 RSS（0 可用内存 + swap 问题）。
     del df_bt
@@ -5025,7 +5499,7 @@ def main(argv=None):
         signals = _apply_confluence_filter(df_all, signals, regime_gate=args.confluence_regime)
     elif args.confluence_only:
         signals = _apply_confluence_filter(df_all, signals, regime_gate="all")
-    if args.resonance > 1:
+    if args.resonance > 1 or args.resonance_layered:
         signals = _apply_resonance(df_all, signals, min_strategies=args.resonance)
     if args.ml_filter:
         try:

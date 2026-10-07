@@ -110,3 +110,6 @@ result/wfo_experiments_*.md
 
 # 本机 pyright 类型检查配置（含本机绝对路径，不入库）
 pyrightconfig.json
+
+# WorkBuddy 本地记忆目录
+/.workbuddy/
