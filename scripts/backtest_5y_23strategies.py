@@ -270,6 +270,25 @@ _BEAR_CONFIRM_MIN = 2            # bear 日弱信号所需的强势确认数（�
 _HANDOFF_MODE = "score"          # handoff 口径：score=共振强度评分排序(默认)；gate=旧硬门槛
 _ENSEMBLE_CLASSIC = False        # True=旧 3 组件二值 ensemble；False=6 组件连续强度 ensemble
 
+# handoff 验证惩罚（P1-❶，2026-10-07）：验证收益为负时，旧口径固定 val_w=0.5，
+# 柳工验证 -5.77% 仍高分上位。改为与亏损幅度挂钩，并可选硬过滤深度亏损股。
+_HANDOFF_VAL_PENALTY_K = 5.0     # val_w = clip(0.5 + sret*K, floor, 0.5)
+_HANDOFF_VAL_FLOOR = 0.1
+_HANDOFF_HARD_FILTER_RET: Optional[float] = None  # 如 -0.02：验证收益低于此值不送入主程序
+
+# 近期表现自适应过滤（P1-❷，2026-10-07）：回测胜率是5年平均，实时决策应看
+# 近期胜率。策略近 60 交易日胜率低于阈值时降权/跳过，识别策略失效期。
+_RECENT_PERF_WINDOW = 60          # 近期胜率回看交易日数
+_RECENT_PERF_MIN_WIN = 45.0       # 近期胜率阈值（%）：低于此判失效
+_RECENT_PERF_MIN_SAMPLES = 10     # 窗口内最少已平仓样本（不足不惩罚）
+_RECENT_PERF_MODE = "off"         # off/disable(跳过)/downweight(降权)
+_RECENT_PERF_WEIGHT = 0.5         # downweight 模式下失效策略的信号权重
+
+# 死策略停用（P3-❺，2026-10-07）：5 年 0~12 笔、每轮仍全量计算信号与动态退出
+# 的白耗策略。默认停用（不生成信号/不回测），--retired-strategies 可覆盖。
+RETIRED_STRATEGIES_DEFAULT: set = {"chan_theory", "dragon_head", "box_oscillation"}
+_RETIRED_STRATEGIES: set = set(RETIRED_STRATEGIES_DEFAULT)
+
 # ─── 日志配置 ──────────────────────────────────────────────────────────────────
 _LOG_DIR = Path(os.environ.get("LOG_DIR") or "logs")
 if not _LOG_DIR.is_absolute():
@@ -3439,7 +3458,8 @@ def _diag_col_name(columns, name: str, base: str, p: int,
 
 
 def _signal_return_cols(columns, name: str, p: int,
-                        entry_timing: str) -> List[str]:
+                        entry_timing: str,
+                        min_period: int = 1) -> List[str]:
     """按优先级返回候选持有期收益列：先 best_p，再依次回退到更短持有期。
 
     验证/handoff 的窗口固定为最近 5 个交易日，而候选策略的 best_period 常为
@@ -3448,8 +3468,12 @@ def _signal_return_cols(columns, name: str, p: int,
     5 日验证可用样本 0 笔、handoff 输出 0 只股票、主程序整轮空转。
     这里按"可测的最大持有期"逐行回退（列表顺序即优先级，配合 bfill 使用），
     使每笔入场都能用真实出场规则（ATR 止损/移动止盈/时间止损）估到收益。
+
+    min_period（P2-❹）：回退列只包含 ≥min_period 的持有期。1 日期在全策略
+    期望全面为负（2026-10-05 分持有期明细），验证/近期胜率场景设 3 跳过它。
     """
-    candidates = [p] + [x for x in sorted(HOLDING_PERIODS, reverse=True) if x < p]
+    candidates = [p] + [x for x in sorted(HOLDING_PERIODS, reverse=True)
+                        if x < p and x >= min_period]
     cols: List[str] = []
     for cand_p in candidates:
         col = _signal_return_col(columns, name, cand_p, entry_timing)
@@ -3976,7 +4000,7 @@ def run_backtests(df_bt: pd.DataFrame, index_df: Optional[pd.DataFrame] = None,
       - excess_return：策略总收益 - 基准总收益（超额收益）
     """
     t0 = time.time()
-    n_strategies = len(STRATEGIES)
+    n_strategies = len([n for n in STRATEGIES if n not in _RETIRED_STRATEGIES])
 
     enable_parallel, max_workers = resolve_parallel_config()
     n_workers = min(max_workers, n_strategies)
@@ -3995,7 +4019,10 @@ def run_backtests(df_bt: pd.DataFrame, index_df: Optional[pd.DataFrame] = None,
     else:
         logger.warning("基准计算失败（数据不足），跳过超额收益对比")
 
-    strategy_names = list(STRATEGIES.keys())
+    strategy_names = [n for n in STRATEGIES.keys() if n not in _RETIRED_STRATEGIES]
+    if _RETIRED_STRATEGIES:
+        logger.info(f"停用策略 {len(_RETIRED_STRATEGIES)} 个（不生成信号/不回测）: "
+                    + ", ".join(sorted(_RETIRED_STRATEGIES)))
     results = []
 
     # 软加权（P1-1）与硬 gating（P1-4）互斥：软模式不做硬 regime 屏蔽，信号全量生成后
@@ -4025,6 +4052,12 @@ def run_backtests(df_bt: pd.DataFrame, index_df: Optional[pd.DataFrame] = None,
         confluence_gate = "all"
     if confluence_gate:
         cooled_signals = _apply_confluence_filter(df_bt, cooled_signals, regime_gate=confluence_gate)
+
+    # 近期表现过滤（P1-❷）：失效策略信号在组件回测前剔除/降权。
+    # 此时 results 未生成（best_period 未知），用信号+5日收益列直接评估，不依赖 results。
+    if _RECENT_PERF_MODE != "off":
+        cooled_signals = _apply_recent_filter_standalone(
+            df_bt, cooled_signals, entry_timing=entry_timing)
 
     # 先串行计算组合策略的组件,按其期望填充权重；组件交易明细用于 walk-forward
     ensemble_comps = _ensemble_components()
@@ -4177,6 +4210,181 @@ def run_backtests(df_bt: pd.DataFrame, index_df: Optional[pd.DataFrame] = None,
 # 最近5日验证
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def compute_recent_win_rates(df: pd.DataFrame, results: List[Dict],
+                             window: int = 60,
+                             entry_timing: str = "next_open"
+                             ) -> Dict[str, pd.DataFrame]:
+    """计算各策略在每个交易日的"近 window 日滚动胜率"（P1-❷）。
+
+    因果口径（causal）：信号日 S 的收益在 S+best_p 日后才确定，时点 T 的
+    近期胜率只包含"信号日 + best_p ≤ T"的已平仓信号。
+    返回 {strategy: DataFrame(date, win_rate, n)}，按日期升序。
+    """
+    trade_dates = np.sort(df["date"].unique())
+    n_dates = len(trade_dates)
+    date_pos = {pd.Timestamp(d): i for i, d in enumerate(trade_dates)}
+    out: Dict[str, pd.DataFrame] = {}
+
+    result_by_name = {r["strategy"]: r for r in results if "error" not in r}
+    for name in strategy_names_in_results(results):
+        r = result_by_name.get(name)
+        if r is None:
+            continue
+        best_p = r.get("best_period")
+        if not best_p:
+            continue
+        try:
+            sig = _strategy_signal(df, name, enhanced=True)
+            fwd_cols = _signal_return_cols(df.columns, name, best_p, entry_timing,
+                                      min_period=3)
+            if not fwd_cols:
+                continue
+            sub = df.loc[sig.values, ["date"] + fwd_cols]
+            # 每笔取首个可测收益（与 validate_week 同口径）
+            sub = sub.assign(_ret=sub[fwd_cols].bfill(axis=1).iloc[:, 0])
+            sub = sub[["date", "_ret"]].dropna()
+            if len(sub) < _RECENT_PERF_MIN_SAMPLES:
+                continue
+            # 信号收益要扣交易成本（与回测同口径）
+            sub["_win"] = (sub["_ret"].values - _TRADING_COST_PCT / 100.0) > 0
+            sub["_pos"] = sub["date"].map(date_pos)
+            # 收益在 (信号日+best_p) 后才可知：滚动时点要后移 best_p 个交易日
+            sub["_known_pos"] = sub["_pos"] + int(best_p)
+            sub = sub.sort_values("_known_pos")
+            known = sub["_known_pos"].to_numpy()
+            wins = sub["_win"].to_numpy()
+
+            wr = np.full(n_dates, np.nan)
+            ns = np.zeros(n_dates, dtype=int)
+            n_sub = len(sub)
+            start_k = 0
+            end_k = 0
+            for di in range(n_dates):
+                lo = di - window
+                while start_k < n_sub and known[start_k] <= lo:
+                    start_k += 1
+                while end_k < n_sub and known[end_k] <= di:
+                    end_k += 1
+                cnt = end_k - start_k
+                ns[di] = cnt
+                if cnt >= _RECENT_PERF_MIN_SAMPLES:
+                    wr[di] = wins[start_k:end_k].mean() * 100.0
+            out[name] = pd.DataFrame({
+                "date": trade_dates, "win_rate": wr, "n": ns})
+        except Exception as e:
+            logger.warning(f"近期胜率计算失败({name}): {e}")
+    return out
+
+
+def strategy_names_in_results(results) -> List[str]:
+    """按 results 顺序返回策略名（去重）。"""
+    seen = []
+    for r in results:
+        n = r.get("strategy")
+        if n and n not in seen:
+            seen.append(n)
+    return seen
+
+
+def apply_recent_performance_filter(df: pd.DataFrame, cooled_signals: Dict[str, pd.Series],
+                                    results: List[Dict],
+                                    entry_timing: str = "next_open"
+                                    ) -> Dict[str, pd.Series]:
+    """按近期胜率过滤失效策略信号（P1-❷）。
+
+    _RECENT_PERF_MODE：
+      disable = 失效策略信号置 False；
+      downweight = 信号布尔无法"降权"，实现为失效信号按比例随机保留（种子固定）；
+      off = 不过滤。
+    只作用于最新交易日（实时决策点），历史信号不变。
+    """
+    if _RECENT_PERF_MODE == "off":
+        return cooled_signals
+    recent = compute_recent_win_rates(
+        df, results, window=_RECENT_PERF_WINDOW, entry_timing=entry_timing)
+    if not recent:
+        return cooled_signals
+    latest_date = pd.Timestamp(df["date"].max())
+    disabled = []
+    for name, stat in recent:
+        row = stat.loc[stat["date"] == np.datetime64(latest_date)]
+        if row.empty or row["win_rate"].isna().iloc[0]:
+            continue
+        win = float(row["win_rate"].iloc[0])
+        if win < _RECENT_PERF_MIN_WIN:
+            sig = cooled_signals.get(name)
+            if sig is None:
+                continue
+            if _RECENT_PERF_MODE == "disable":
+                cooled_signals[name] = sig & False
+            else:
+                # downweight：固定种子的随机掩码（比例可复现）
+                rng = np.random.default_rng(20261007)
+                keep_mask = rng.random(len(sig)) < _RECENT_PERF_WEIGHT
+                cooled_signals[name] = sig & pd.Series(keep_mask, index=sig.index)
+            disabled.append(f"{name}({win:.0f}%)")
+    if disabled:
+        logger.info(f"近期表现过滤：{len(disabled)} 个策略近{_RECENT_PERF_WINDOW}日"
+                    f"胜率<{_RECENT_PERF_MIN_WIN:.0f}%，模式={_RECENT_PERF_MODE}："
+                    + ", ".join(disabled))
+    return cooled_signals
+
+
+def _apply_recent_filter_standalone(df: pd.DataFrame,
+                                    cooled_signals: Dict[str, pd.Series],
+                                    entry_timing: str = "next_open"
+                                    ) -> Dict[str, pd.Series]:
+    """近期过滤的独立版本（P1-❷）：不依赖 results（best_period 未知）。
+
+    用 5 日持有期的 dyn_ret 列评估各策略近期胜率（5 日是中间档，评估稳健），
+    在最新交易日判定失效并过滤/随机降权。因果口径：只纳入信号日+5日≤当日的信号。
+    """
+    trade_dates = np.sort(df["date"].unique())
+    n_dates = len(trade_dates)
+    date_pos = {pd.Timestamp(d): i for i, d in enumerate(trade_dates)}
+    latest_pos = n_dates - 1
+    window = _RECENT_PERF_WINDOW
+    disabled = []
+
+    for name in cooled_signals:
+        # 评估用 5 日收益列（与 _signal_return_cols 同口径选择）
+        fwd = _signal_return_cols(df.columns, name, 5, entry_timing,
+                                 min_period=3)
+        if not fwd:
+            continue
+        try:
+            eval_sig = _strategy_signal(df, name, enhanced=True)
+            sub = df.loc[eval_sig.values, ["date"] + fwd]
+            sub = sub.assign(_ret=sub[fwd].bfill(axis=1).iloc[:, 0])
+            sub = sub[["date", "_ret"]].dropna()
+            if len(sub) < _RECENT_PERF_MIN_SAMPLES:
+                continue
+            sub["_win"] = (sub["_ret"].values - _TRADING_COST_PCT / 100.0) > 0
+            sub["_known"] = sub["date"].map(date_pos) + 5
+            lo = latest_pos - window
+            in_win = sub[(sub["_known"] > lo) & (sub["_known"] <= latest_pos)]
+            if len(in_win) < _RECENT_PERF_MIN_SAMPLES:
+                continue
+            win_rate = float(in_win["_win"].mean() * 100.0)
+            if win_rate < _RECENT_PERF_MIN_WIN:
+                sig = cooled_signals[name]
+                if _RECENT_PERF_MODE == "disable":
+                    cooled_signals[name] = sig & False
+                else:
+                    rng = np.random.default_rng(20261007)
+                    keep = rng.random(len(sig)) < _RECENT_PERF_WEIGHT
+                    cooled_signals[name] = sig & pd.Series(keep, index=sig.index)
+                disabled.append(f"{name}({win_rate:.0f}%)")
+        except Exception as e:
+            logger.warning(f"近期过滤 standalone 失败({name}): {e}")
+
+    if disabled:
+        logger.info(f"近期表现过滤：{len(disabled)} 个策略近{window}日胜率"
+                    f"<{_RECENT_PERF_MIN_WIN:.0f}%，模式={_RECENT_PERF_MODE}："
+                    + ", ".join(disabled))
+    return cooled_signals
+
+
 def validate_week(df_full, df_week, top_results, top_n=VALIDATE_CANDIDATES, signals=None):
     """最近 5 个交易日的本周验证（P1 批次2 重设计）。
 
@@ -4221,9 +4429,12 @@ def validate_week(df_full, df_week, top_results, top_n=VALIDATE_CANDIDATES, sign
             if signals is not None and name in signals:
                 sig = signals[name]
             else:
-                sig = _strategy_signal(df_full, name)
+                # 修复（P2-❸调试）：必须传 enhanced=True（回测主口径用增强 regime），
+                # 否则严格 regime 下验证窗信号丢失（2026-09-18~24 实测 0 信号）
+                sig = _strategy_signal(df_full, name, enhanced=True)
             fwd_cols = (_signal_return_cols(df_full.columns, name, best_p,
-                                            _PRIMARY_ENTRY_TIMING) if best_p else [])
+                                            _PRIMARY_ENTRY_TIMING,
+                                            min_period=3) if best_p else [])
             closed_rets = []
             open_count = 0
             for d in week_dates:
@@ -4588,7 +4799,8 @@ def get_top_stocks_by_win_rate(df_full, df_week, results, top_n=10, signals=None
             # 分组出场参数列优先，再回退默认 dyn_ret / ret；主口径 next_open
             # 优先取 _no 后缀列，缺失时回退 close 口径列）
             fwd_cols = (_signal_return_cols(df_full.columns, strategy_name, best_p,
-                                            _PRIMARY_ENTRY_TIMING) if best_p else [])
+                                            _PRIMARY_ENTRY_TIMING,
+                                            min_period=3) if best_p else [])
             rec_cols = ["code", "name", "open", "close"] + (["atr20"] if "atr20" in df_full.columns else [])
             rec_cols.extend(c for c in fwd_cols if c not in rec_cols)
             matched = df_full.loc[mask, rec_cols].to_dict("records")
@@ -4736,12 +4948,39 @@ def get_top_stocks_by_win_rate(df_full, df_week, results, top_n=10, signals=None
                 sample_w = float(np.sqrt(max(trades or 0, 0) / HANDOFF_MIN_STRATEGY_TRADES))
                 sample_w = min(sample_w, 1.0)
                 exp_w = 1.0 if strategy_expectancy.get(strat, 0.0) > 0 else 0.3
-                val_w = 1.0 if (sret is not None and pd.notna(sret) and sret > 0) else 0.5
+                # 验证档（P1-❶）：正收益 1.0；负收益按幅度惩罚
+                # val_w = clip(0.5 + sret*K, floor, 0.5)
+                if sret is not None and pd.notna(sret) and sret > 0:
+                    val_w = 1.0
+                elif sret is None or pd.isna(sret):
+                    val_w = 0.5
+                else:
+                    val_w = float(np.clip(
+                        0.5 + float(sret) * _HANDOFF_VAL_PENALTY_K,
+                        _HANDOFF_VAL_FLOOR, 0.5))
                 score += sample_w * exp_w * val_w
         s["resonance_score"] = round(score, 4)
 
     ranked = [s for s in stock_list if s["resonance_score"] > 0]
     ranked.sort(key=lambda x: x["resonance_score"], reverse=True)
+
+    # 硬过滤（P1-❶，可选）：验证收益低于阈值的股票不送入主程序
+    if _HANDOFF_HARD_FILTER_RET is not None:
+        kept = []
+        dropped = []
+        for s in ranked:
+            r = s["sell_return"]
+            if r is not None and pd.notna(r) and r < _HANDOFF_HARD_FILTER_RET:
+                dropped.append(s)
+            else:
+                kept.append(s)
+        if dropped:
+            logger.info(f"handoff 硬过滤：{len(dropped)} 只验证收益 < "
+                        f"{_HANDOFF_HARD_FILTER_RET*100:.1f}% 不送入主程序："
+                        + ", ".join(f"{s['code']}({s['sell_return']*100:.1f}%)"
+                                    for s in dropped))
+        ranked = kept
+
     logger.info(
         f"handoff 共振强度评分（共 {len(ranked)} 只有信号股票，"
         f"取 score>0 前 {top_n}；权重=√(笔数/{HANDOFF_MIN_STRATEGY_TRADES})"
@@ -4978,6 +5217,17 @@ def main(argv=None):
     parser.add_argument("--handoff-mode", choices=["score", "gate"], default=None,
                         help="handoff 口径（P1 批次2）：score=共振强度评分排序取 top_n（默认）；"
                              "gate=旧硬门槛（验证收益>0 且 ≥3 个稳健策略命中才送入主程序）")
+    parser.add_argument("--handoff-hard-filter", type=float, default=None,
+                        help="handoff 硬过滤阈值%%（P1-❶）：验证收益低于此值（如 -2）不送入主程序；"
+                             "默认不过滤。score 模式下验证负收益已按幅度降低评分")
+    parser.add_argument("--recent-perf", choices=["off", "disable", "downweight"], default="off",
+                        help="近期表现自适应过滤（P1-❷）：策略近60交易日胜率<45%% 判失效，"
+                             "disable=信号剔除/downweight=信号减半；默认 off。实时决策用近期胜率而非5年平均")
+    parser.add_argument("--recent-window", type=int, default=None,
+                        help="近期胜率回看交易日数（默认 60）")
+    parser.add_argument("--no-retire", action="store_true",
+                        help="不停用死策略（P3-❺）：默认停用 chan_theory/dragon_head/box_oscillation"
+                             "（5年 0~3 笔，白耗算力）；传此开关恢复全量计算")
     parser.add_argument("--ensemble-classic", action="store_true",
                         help="组合策略回退旧 3 组件（ma_crossover/volume_surge_std/rsi_bullish_divergence）"
                              "二值投票 + 0.5 阈值（P1 批次2，默认 6 组件连续强度 + 0.35 阈值）")
@@ -5020,7 +5270,7 @@ def main(argv=None):
     parser.add_argument("--trail-schedule", type=str, default=None,
                         help="时间阶梯 trail：'N:value' 表示入场后前 N 根 bar 用 value（宽 trail）、"
                              "之后用 --exit-trail（0.97）；默认（不传）启用固化值 4d_085（前4日0.85，"
-                             "2026-10-05 A/B 收敛，总收益+137%）；传 'off' 回退统一 trail（旧行为）")
+                             "2026-10-05 A/B 收敛，总收益+137%%）；传 'off' 回退统一 trail（旧行为）")
     parser.add_argument("--pre-arm-atr", type=float, default=None,
                         help="trail 武装前 ATR 止损倍数（默认 None=3.0 旧行为）：如 1.5；"
                              "武装后恢复 --exit-atr-mult，限制延迟武装期间单笔亏损。"
@@ -5099,6 +5349,29 @@ def main(argv=None):
         _BEAR_CONFIRM_MIN = max(1, args.bear_confirm)
     _HANDOFF_MODE = args.handoff_mode or "score"
     _ENSEMBLE_CLASSIC = bool(args.ensemble_classic)
+    # P1/P3 新增全局开关（必须 global 声明：否则赋值会创建局部变量、模块全局不更新）
+    global _HANDOFF_HARD_FILTER_RET, _RECENT_PERF_WINDOW, _RETIRED_STRATEGIES
+    # handoff 硬过滤（P1-❶）：CLI 传入百分数（如 -2），转为小数
+    if args.handoff_hard_filter is not None:
+        _HANDOFF_HARD_FILTER_RET = float(args.handoff_hard_filter) / 100.0
+        logger.info(f"handoff 硬过滤启用：验证收益 < {args.handoff_hard_filter}% 不送入主程序")
+
+    # 近期表现过滤（P1-❷）
+    global _RECENT_PERF_MODE
+    _RECENT_PERF_MODE = args.recent_perf
+    if args.recent_window is not None:
+        _RECENT_PERF_WINDOW = max(20, int(args.recent_window))
+    if _RECENT_PERF_MODE != "off":
+        logger.info(f"近期表现过滤启用：模式={_RECENT_PERF_MODE}，"
+                    f"窗口={_RECENT_PERF_WINDOW}，胜率阈值={_RECENT_PERF_MIN_WIN}%")
+
+    # 死策略停用（P3-❺）
+    if args.no_retire:
+        _RETIRED_STRATEGIES = set()
+        logger.info("死策略停用已关闭（--no-retire），全量计算 24 策略")
+    else:
+        logger.info(f"死策略停用启用：{', '.join(sorted(_RETIRED_STRATEGIES))}")
+
     enhanced = _REGIME_MODE != "strict"
     industry_on = not args.no_industry_momentum
 
@@ -5490,7 +5763,7 @@ def main(argv=None):
     signals = {name: _strategy_signal(df_all, name, enhanced=enhanced,
                                       regime_filter=hard_regime,
                                       industry_filter=industry_on)
-               for name in STRATEGIES}
+               for name in STRATEGIES if name not in _RETIRED_STRATEGIES}
     signals = {name: _apply_cooldown(df_all, sig, enhanced=enhanced, name=name)
                for name, sig in signals.items()}
     if args.regime_soft:
