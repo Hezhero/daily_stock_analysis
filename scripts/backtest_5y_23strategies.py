@@ -4334,54 +4334,70 @@ def _apply_recent_filter_standalone(df: pd.DataFrame,
                                     cooled_signals: Dict[str, pd.Series],
                                     entry_timing: str = "next_open"
                                     ) -> Dict[str, pd.Series]:
-    """近期过滤的独立版本（P1-❷）：不依赖 results（best_period 未知）。
+    """近期过滤（P1-❷）：逐日因果，回测与实时决策均可用。
 
-    用 5 日持有期的 dyn_ret 列评估各策略近期胜率（5 日是中间档，评估稳健），
-    在最新交易日判定失效并过滤/随机降权。因果口径：只纳入信号日+5日≤当日的信号。
+    用 5 日持有期 dyn_ret 列评估各策略"截至每个交易日的近 window 日胜率"，
+    对每个信号按其信号日当日的近期胜率决定去留（因果：只纳入信号日+5日≤当日的
+    已平仓信号，无前视）。胜率缺失（窗口内样本不足）时放行。
+    disable=失效信号置 False；downweight=失效信号按固定种子随机保留一半。
     """
+    if _RECENT_PERF_MODE == "off":
+        return cooled_signals
     trade_dates = np.sort(df["date"].unique())
     n_dates = len(trade_dates)
     date_pos = {pd.Timestamp(d): i for i, d in enumerate(trade_dates)}
-    latest_pos = n_dates - 1
+    row_pos = df["date"].map(date_pos).to_numpy()
     window = _RECENT_PERF_WINDOW
     disabled = []
 
-    for name in cooled_signals:
+    for name in list(cooled_signals):
         # 评估用 5 日收益列（与 _signal_return_cols 同口径选择）
-        fwd = _signal_return_cols(df.columns, name, 5, entry_timing,
-                                 min_period=3)
+        fwd = _signal_return_cols(df.columns, name, 5, entry_timing, min_period=3)
         if not fwd:
             continue
         try:
             eval_sig = _strategy_signal(df, name, enhanced=True)
-            sub = df.loc[eval_sig.values, ["date"] + fwd]
-            sub = sub.assign(_ret=sub[fwd].bfill(axis=1).iloc[:, 0])
+            sub = df.loc[eval_sig.values, ["date"] + fwd].copy()
+            sub["_ret"] = sub[fwd].bfill(axis=1).iloc[:, 0]
             sub = sub[["date", "_ret"]].dropna()
             if len(sub) < _RECENT_PERF_MIN_SAMPLES:
                 continue
             sub["_win"] = (sub["_ret"].values - _TRADING_COST_PCT / 100.0) > 0
             sub["_known"] = sub["date"].map(date_pos) + 5
-            lo = latest_pos - window
-            in_win = sub[(sub["_known"] > lo) & (sub["_known"] <= latest_pos)]
-            if len(in_win) < _RECENT_PERF_MIN_SAMPLES:
-                continue
-            win_rate = float(in_win["_win"].mean() * 100.0)
-            if win_rate < _RECENT_PERF_MIN_WIN:
-                sig = cooled_signals[name]
-                if _RECENT_PERF_MODE == "disable":
-                    cooled_signals[name] = sig & False
-                else:
-                    rng = np.random.default_rng(20261007)
-                    keep = rng.random(len(sig)) < _RECENT_PERF_WEIGHT
-                    cooled_signals[name] = sig & pd.Series(keep, index=sig.index)
-                disabled.append(f"{name}({win_rate:.0f}%)")
+            sub = sub.sort_values("_known")
+            known = sub["_known"].to_numpy()
+            wins = sub["_win"].to_numpy()
+            n_sub = len(sub)
+            # 逐日滚动胜率（因果）：时点 di 只用 known <= di 的信号
+            wr = np.full(n_dates, np.nan)
+            start_k = end_k = 0
+            for di in range(n_dates):
+                while start_k < n_sub and known[start_k] <= di - window:
+                    start_k += 1
+                while end_k < n_sub and known[end_k] <= di:
+                    end_k += 1
+                if end_k - start_k >= _RECENT_PERF_MIN_SAMPLES:
+                    wr[di] = wins[start_k:end_k].mean() * 100.0
+            # 每个信号按其信号日的近期胜率判定
+            wr_at = wr[row_pos]
+            bad = (~np.isnan(wr_at)) & (wr_at < _RECENT_PERF_MIN_WIN)
+            sig = cooled_signals[name].to_numpy()
+            if _RECENT_PERF_MODE == "disable":
+                keep = ~bad
+            else:
+                rng = np.random.default_rng(20261007)
+                keep = (~bad) | (rng.random(len(sig)) < _RECENT_PERF_WEIGHT)
+            cooled_signals[name] = pd.Series(sig & keep, index=df.index)
+            n_drop = int((sig & ~keep).sum())
+            if n_drop:
+                disabled.append(f"{name}(剔除{n_drop}笔)")
         except Exception as e:
-            logger.warning(f"近期过滤 standalone 失败({name}): {e}")
+            logger.warning(f"近期过滤失败({name}): {e}")
 
     if disabled:
         logger.info(f"近期表现过滤：{len(disabled)} 个策略近{window}日胜率"
-                    f"<{_RECENT_PERF_MIN_WIN:.0f}%，模式={_RECENT_PERF_MODE}："
-                    + ", ".join(disabled))
+                    f"<{_RECENT_PERF_MIN_WIN:.0f}% 的信号被处理（模式="
+                    f"{_RECENT_PERF_MODE}）：" + ", ".join(disabled[:12]))
     return cooled_signals
 
 
@@ -5774,6 +5790,11 @@ def main(argv=None):
         signals = _apply_confluence_filter(df_all, signals, regime_gate="all")
     if args.resonance > 1 or args.resonance_layered:
         signals = _apply_resonance(df_all, signals, min_strategies=args.resonance)
+    # 近期表现过滤（P1-❷）：验证/handoff 信号需与 run_backtests 同口径应用，
+    # 否则过滤器只影响回测指标、对实时决策（验证/推荐）无效。
+    if _RECENT_PERF_MODE != "off":
+        signals = _apply_recent_filter_standalone(df_all, signals,
+                                                  entry_timing=args.entry_timing)
     if args.ml_filter:
         try:
             from scripts import train_signal_filter as mlf

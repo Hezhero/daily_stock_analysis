@@ -1,4 +1,6 @@
 ## [Unreleased]
+- [修复] `scripts/backtest_5y_23strategies.py` **近期表现过滤改为逐日因果口径并接入验证/handoff**：原 `_apply_recent_filter_standalone` 用"最新交易日的近 window 日胜率"套用整条序列，回测存在前视偏差，且仅在 `run_backtests` 内部生效、验证与推荐所用 signals 未过滤（过滤器对实时决策无效）。现改为逐日滚动胜率（时点 di 只用「信号日+持有期≤di」的已平仓信号），并在 `main()` 的验证/handoff 信号链补齐同口径应用。
+- [改进] `--recent-perf` 效果 A/B（近 2 年，逐日因果）：`downweight` 各回测指标一致小幅改善（总收益 51.35→55.20、期望 1.412→1.446、回撤 6.89→6.63、夏普 4.44→4.57、笔数 5758→5248）；`disable` 略负（总收益 47.68、回撤 7.22）。近期 5 日验证窗三档一致（20.42% / -1.88% / 135 笔），因候选策略近期胜率均 ≥45% 未触发过滤。结论：保持默认 `off`，启用时推荐 `downweight`。
 - [修复] `scripts/backtest_5y_23strategies.py` **validate_week / 近期胜率在严格 regime 下丢失验证窗信号**：`_strategy_signal(df, name)` 调用未传 `enhanced=True`，默认走严格 `market_ok` 口径，导致 2026-09-18~24 验证窗 8 个候选策略全部 0 信号（P2-❸ 对比调试中暴露）。修复为 `enhanced=True`（与回测主口径一致），验证/近期过滤恢复正常。
 - [新功能] `scripts/backtest_5y_23strategies.py` 新增近期表现自适应过滤（P1-❷）：`--recent-perf {off,disable,downweight}` + `--recent-window`（默认 60 交易日）。按因果口径（信号日+持有期≤当日才计入）计算各策略近窗口滚动胜率，低于 45% 判失效：`disable`=信号剔除、`downweight`=信号按固定种子随机保留一半。实时决策用近期胜率而非 5 年平均，识别策略失效期。默认 off。
 - [改进] `scripts/backtest_5y_23strategies.py` handoff 验证亏损惩罚与硬过滤（P1-❶）：共振评分中验证负收益的权重由固定 0.5 改为按幅度递减 `clip(0.5 + sret*5, 0.1, 0.5)`（此前柳工验证 -5.77% 仍高分上位）；新增 `--handoff-hard-filter`（如 `-2`，验证收益低于该值% 不送入主程序）。
