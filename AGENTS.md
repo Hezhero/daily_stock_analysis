@@ -81,6 +81,17 @@ python scripts/check_ai_assets.py
 
 ## 4. 常用命令
 
+### 运行环境（本项目约定）
+
+本项目统一使用 conda 环境 `daily_stock_analysis`，执行任何 Python 命令前先：
+
+```bash
+conda activate daily_stock_analysis
+```
+
+- 不要用 base 或其他环境的解释器跑本项目脚本；跨环境（Python / numpy 版本不同）会让回测结果不可比。
+- 该环境未安装 `numexpr`，pandas 会回退到 NumPy，因此不受 numexpr 2.14.1「多线程静默返回全零缓冲」缺陷影响；不要在未评估的情况下给它装 numexpr。根因、护栏与已验证的升级路径见 `docs/CHANGELOG.md` 的 `[Unreleased]` 条目。
+
 ### 运行应用
 
 ```bash
@@ -289,3 +300,17 @@ CI 通过只能说明自动检查通过，不能替代人工语义收敛，也�
 - 自动 tag 默认不触发，只有 commit title 包含 `#patch`、`#minor`、`#major` 才会触发版本号更新。
 - 手动打 tag 必须使用 annotated tag。
 - 用户可见变更优先通过 PR 合入，并补齐 label 与验证说明。
+
+## Agent skills
+
+### Issue tracker
+
+Issues live as GitHub issues in `Hezhero/daily_stock_analysis`, via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `GLOSSARY.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.

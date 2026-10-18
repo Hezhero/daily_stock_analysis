@@ -113,16 +113,19 @@ P1 批次5（2026-09-14，探针复现 logs/backtest_5y_20260913.log 的全样�
 
 import argparse
 import contextlib
+import json
 import logging
 import os
 import sys
 import time
 import gc
 import subprocess
+from collections import Counter
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from dataclasses import replace
 from dotenv import load_dotenv
 from typing_extensions import deprecated
 
@@ -132,11 +135,33 @@ from typing import Dict, List, Optional, Tuple, Callable
 
 import numpy as np
 import pandas as pd
+
+# numexpr 2.14.1（Anaconda win-64 构建）在多线程下会间歇性返回"未写入的全零输出
+# 缓冲"，而 pandas 会把元素数 > 1e6 的二元运算（加减乘除、比较）派发给 numexpr：
+# 除法结果被置零时 `close.shift(-p) / open.shift(-1) - 1` 变成整列常量 -1.0（NA=0）；
+# 比较结果被置零时策略 mask 整条变 False。两者都不抛异常，只让同一份代码、同一份
+# 数据两次回测的胜率/信号数/组合指标不同。本仓库 T0.1 组合模拟基线与 family 消融
+# 均已被此缺陷污染（详见 docs/CHANGELOG.md）。
+# 这里对整个回测进程关闭 numexpr，走纯 NumPy 路径：可复现性优先于少量加速。
+# 根治方式：升级 numexpr 至 2.14.2+，或设置 NUMEXPR_NUM_THREADS=1。
+pd.set_option("compute.use_numexpr", False)
+
 from sqlalchemy import create_engine
 from urllib.parse import quote_plus
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BASE_DIR))
+
+# T0.1 资金约束组合模拟（S2/S3 模块）：纯函数、无日志副作用；仅在 --portfolio-sim
+# 开启时被调用，默认路径既不导数据也不改变任何旧指标。
+from scripts.portfolio_sim import (  # noqa: E402
+    SimConfig,
+    apply_declustered_resonance,
+    apply_lead_expectation,
+    build_candidate_table,
+    collapse_candidates,
+    simulate,
+)
 
 # ─── 配置 ──────────────────────────────────────────────────────────────────────
 INITIAL_CAPITAL = 1000000.0   # 初始资金（元），用于回测收益口径展示
@@ -288,6 +313,16 @@ _RECENT_PERF_WEIGHT = 0.5         # downweight 模式下失效策略的信号权
 # 的白耗策略。默认停用（不生成信号/不回测），--retired-strategies 可覆盖。
 RETIRED_STRATEGIES_DEFAULT: set = {"chan_theory", "dragon_head", "box_oscillation"}
 _RETIRED_STRATEGIES: set = set(RETIRED_STRATEGIES_DEFAULT)
+
+# ─── T0.1 资金约束组合模拟（S4，--portfolio-sim 显式开启） ──────────────────────
+# 默认全部为 no-op：run_backtests 的新增 kwargs 默认 None/False，旧路径不读取
+# sim_bars、不快照信号、不计算冻结出场路径列、不写侧边产物。
+_PORTFOLIO_SIM_ENABLED = False
+_PORTFOLIO_SIM_OUT = "result/"
+_PORTFOLIO_SIM_WINDOW: Optional[str] = None
+_PORTFOLIO_SIM_STRATEGIES: Optional[set] = None
+_PORTFOLIO_SIM_MIN_FAMILIES: Optional[int] = None
+_PORTFOLIO_SIM_RESULT: Optional[Dict] = None
 
 # ─── 日志配置 ──────────────────────────────────────────────────────────────────
 _LOG_DIR = Path(os.environ.get("LOG_DIR") or "logs")
@@ -1518,6 +1553,27 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def assert_forward_returns_sane(df: pd.DataFrame) -> None:
+    bad = []
+    for c in [*(f"ret_{p}d_no" for p in HOLDING_PERIODS), "ret_5d_open_to_close"]:
+        if c not in df.columns:
+            continue
+        s = df[c]
+        na = int(s.isna().sum())
+        nuniq = int(s.nunique(dropna=True))
+        if na == 0 or nuniq <= 1:
+            bad.append(f"{c}(NA={na}, 不同取值={nuniq})")
+    if bad:
+        raise RuntimeError(
+            "前瞻收益列完整性校验失败：" + "、".join(bad) + "。"
+            "每只股票的末尾若干行经 shift(-N) 后必然为 NA，因此 NA=0 或整列常量在正常"
+            "结果中不可能出现；该指纹与 numexpr 多线程返回未写入全零缓冲的已知缺陷一致。"
+            "请勿移除本模块顶部的 pd.set_option('compute.use_numexpr', False)，"
+            "并考虑升级 numexpr 至 2.14.2+ 或设置 NUMEXPR_NUM_THREADS=1。"
+        )
+    logger.info("前瞻收益完整性校验通过")
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # 动态退出收益（ATR 止损 + 移动止盈 + 时间止损，C2；P2-10 分组参数化）
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1634,7 +1690,11 @@ def compute_dynamic_exit_returns(df: pd.DataFrame,
                                  take_profit_r: float = 0.0,
                                  diagnostics: bool = False,
                                  trail_schedule: Optional[list] = None,
-                                 pre_arm_atr_mult: Optional[float] = None) -> pd.DataFrame:
+                                 pre_arm_atr_mult: Optional[float] = None,
+                                 min_hold_bars: int = 0,
+                                 exit_path_period: Optional[int] = None,
+                                 exit_path_timings: Tuple[str, ...] = ("close", "next_open"),
+                                 ) -> pd.DataFrame:
     """按股票分组计算各持有期的动态退出收益,替换固定持有期收益。
 
     对每个持有期 p,入场日在持有期内逐日检查:
@@ -1680,6 +1740,20 @@ def compute_dynamic_exit_returns(df: pd.DataFrame,
     前用更紧的 ATR 止损（如 1.5），武装后恢复 atr_mult（3.0），限制延迟武装
     期间单笔亏损幅度；仅在 trail_activate_r>0 时生效。
 
+    min_hold_bars（资金约束组合模拟 S1，默认 0=旧口径 bit-for-bit）：>0 时
+    入场日不可卖出（T+1）——跳过 p<=min_hold_bars 的持有期（该期记未平仓），
+    触发搜索从窗口第 k_lo=1 根开始；时间止损结算 bar 取
+    max(p-1, min_hold_bars)。窗口最高价 peaks 与 trail 武装状态仍从窗口第 0
+    根（含入场 bar）累计：T+1 只限制卖出，不改变持仓期间的高点记忆。
+    exit_path_period（默认 None=不输出）：仅对指定的单个持有期导出逐笔出场
+    路径，exit_path_timings 指定口径（默认 close/next_open 两种）。每口径 5 列：
+    dyn_path_entry_{p}d[_no]（float32 入场价）、dyn_path_bar_{p}d[_no]
+    （Int16 实际出场 bar 相对入场 bar 的偏移，0=入场 bar，未平仓 NA）、
+    dyn_path_px_{p}d[_no]（float32 实际成交价）、dyn_path_reason_{p}d[_no]
+    （int8：1=ATR止损, 2=固定止盈, 3=移动止盈, 4=时间止损）、
+    dyn_path_defer_{p}d[_no]（int8：1=跌停顺延成交）。路径列与 dyn_reason
+    诊断列命名分离，下游可整块丢弃。内存：每持有期每行 5 列，2.4M 行约 70MB。
+
     跌停不可卖（sellability）：止损/移动止盈/固定止盈/时间止损若触发在跌停 bar
     （_is_limit_down，复用入场侧精确 down_limit + 板块阈值兜底逻辑），当日
     无法成交，顺延到其后第一个非跌停 bar 按该 bar 收盘价成交（保守口径）；
@@ -1688,6 +1762,12 @@ def compute_dynamic_exit_returns(df: pd.DataFrame,
     """
     max_p = max(HOLDING_PERIODS)
     timings = ("close", "next_open") if dual_timing else (entry_timing,)
+    # S1 资金约束模拟：T+1 最小持有（默认 0=旧口径）与出场路径导出
+    # （默认 None=不新增任何列）。
+    k_lo = 1 if min_hold_bars else 0
+    _path_fields = ("entry", "bar", "px", "reason", "defer")
+    path_active = (exit_path_period is not None
+                   and exit_path_period in HOLDING_PERIODS)
     # 用位置索引计算并按逆置换还原行序：df 原始 index 可能非唯一（多次
     # concat/merge 后常见），直接 out.reindex(df.index) 会按重复标签错位，导致
     # dyn_ret 的 NaN 模式漂移、回测交易数不确定。这里排序后全程用 0..n-1 位置，
@@ -1717,6 +1797,18 @@ def compute_dynamic_exit_returns(df: pd.DataFrame,
                     for t in timings}
             mfes = {t: {p: np.full(n, np.nan, dtype=np.float32) for p in HOLDING_PERIODS}
                     for t in timings}
+        path_rec: Dict[str, Dict[str, np.ndarray]] = {}
+        if path_active:
+            for t in timings:
+                if t not in exit_path_timings:
+                    continue
+                path_rec[t] = {
+                    "entry": np.full(n, np.nan, dtype=np.float32),
+                    "bar": np.full(n, -1, dtype=np.int16),
+                    "px": np.full(n, np.nan, dtype=np.float32),
+                    "reason": np.zeros(n, dtype=np.int8),
+                    "defer": np.zeros(n, dtype=np.int8),
+                }
 
         for i in range(n - 1):
             w = min(max_p, n - 1 - i)
@@ -1783,16 +1875,21 @@ def compute_dynamic_exit_returns(df: pd.DataFrame,
                 for p in HOLDING_PERIODS:
                     if p > w:
                         continue
-                    hit_p = any_hit[:p]
+                    if min_hold_bars and p <= min_hold_bars:
+                        # T+1：p<=min_hold 无法在可卖窗口内平仓，保持未平仓。
+                        continue
+                    hit_p = any_hit[k_lo:p] if k_lo else any_hit[:p]
                     reason = 0
+                    deferred = False
                     if hit_p.any():
-                        k = int(np.argmax(hit_p))
+                        k = (k_lo + int(np.argmax(hit_p))) if k_lo else int(np.argmax(hit_p))
                         if win_ld[k]:
                             # 触发日跌停无法卖出：顺延到窗口内第一个非跌停 bar，
                             # 按该 bar 收盘价成交；窗口内全部跌停则按最后 bar 收盘
                             non_ld = np.flatnonzero(~win_ld[k:])
                             j = (k + int(non_ld[0])) if non_ld.size else (w - 1)
                             exit_price = win_close[j]
+                            deferred = True
                         else:
                             j = k
                             if atr_hit_t[k]:
@@ -1815,13 +1912,15 @@ def compute_dynamic_exit_returns(df: pd.DataFrame,
                     else:
                         # 时间止损：第 p 日收盘退出；该日跌停同样顺延
                         reason = 4
-                        if win_ld[p - 1]:
-                            non_ld = np.flatnonzero(~win_ld[p - 1:])
-                            j = ((p - 1) + int(non_ld[0])) if non_ld.size else (w - 1)
+                        # T+1 下结算 bar 不得早于 min_hold_bars（0=旧口径 p-1）
+                        j = max(p - 1, min_hold_bars)
+                        if win_ld[j]:
+                            non_ld = np.flatnonzero(~win_ld[j:])
+                            j = (j + int(non_ld[0])) if non_ld.size else (w - 1)
                             exit_price = win_close[j]
+                            deferred = True
                         else:
-                            j = p - 1
-                            exit_price = win_close[p - 1]
+                            exit_price = win_close[j]
                     if entry > 0:
                         rets[t][p][i] = (exit_price / entry - 1.0)
                         if diagnostics:
@@ -1831,6 +1930,15 @@ def compute_dynamic_exit_returns(df: pd.DataFrame,
                             if seg_low.size:
                                 maes[t][p][i] = seg_low.min() / entry - 1.0
                                 mfes[t][p][i] = seg_high.max() / entry - 1.0
+                        if path_active and p == exit_path_period and t in path_rec:
+                            rec = path_rec[t]
+                            rec["entry"][i] = entry
+                            # 实际出场 bar 相对入场 bar 的偏移；next_open 的窗口
+                            # 第 0 根即入场 bar，close 入场需 +1。
+                            rec["bar"][i] = j + (0 if t == "next_open" else 1)
+                            rec["px"][i] = exit_price
+                            rec["reason"][i] = reason
+                            rec["defer"][i] = 1 if deferred else 0
 
         for t in timings:
             sfx = "_no" if t == "next_open" else ""
@@ -1841,10 +1949,29 @@ def compute_dynamic_exit_returns(df: pd.DataFrame,
                     out.loc[g.index, f"dyn_reason_{p}d{sfx}"] = reasons[t][p]
                     out.loc[g.index, f"dyn_mae_{p}d{sfx}"] = maes[t][p]
                     out.loc[g.index, f"dyn_mfe_{p}d{sfx}"] = mfes[t][p]
+            if t in path_rec:
+                rec = path_rec[t]
+                p = exit_path_period
+                out.loc[g.index, f"dyn_path_entry_{p}d{sfx}"] = rec["entry"]
+                out.loc[g.index, f"dyn_path_bar_{p}d{sfx}"] = rec["bar"]
+                out.loc[g.index, f"dyn_path_px_{p}d{sfx}"] = rec["px"]
+                out.loc[g.index, f"dyn_path_reason_{p}d{sfx}"] = rec["reason"]
+                out.loc[g.index, f"dyn_path_defer_{p}d{sfx}"] = rec["defer"]
 
     # 按逆置换还原到原 df 行序（位置对齐，规避非唯一 index 的 reindex 错位）
     out = out.iloc[inv_order].reset_index(drop=True)
     out.index = df.index
+
+    if path_active:
+        # 路径列按契约收敛 dtype；int16 无原生缺失值，用 -1 占位后转
+        # nullable Int16 表达“未平仓”。
+        for c in out.columns:
+            if c.startswith(("dyn_path_entry_", "dyn_path_px_")):
+                out[c] = out[c].astype("float32")
+            elif c.startswith("dyn_path_bar_"):
+                out[c] = out[c].astype("Int16").mask(out[c] < 0)
+            elif c.startswith(("dyn_path_reason_", "dyn_path_defer_")):
+                out[c] = out[c].astype("int8")
 
     def _diag_suffix(diag: bool):
         sfx_cols = [f"dyn_ret_{p}d" for p in HOLDING_PERIODS]
@@ -1852,6 +1979,8 @@ def compute_dynamic_exit_returns(df: pd.DataFrame,
             sfx_cols += [f"dyn_reason_{p}d" for p in HOLDING_PERIODS]
             sfx_cols += [f"dyn_mae_{p}d" for p in HOLDING_PERIODS]
             sfx_cols += [f"dyn_mfe_{p}d" for p in HOLDING_PERIODS]
+        if path_active and entry_timing in exit_path_timings:
+            sfx_cols += [f"dyn_path_{f}_{exit_path_period}d" for f in _path_fields]
         return sfx_cols
 
     if not dual_timing and entry_timing == "close":
@@ -3972,6 +4101,404 @@ def report_wfo_sweep(rows: List[Dict]) -> None:
     logger.info("=" * 78)
 
 
+def _portfolio_sim_config() -> SimConfig:
+    """构造 T0.1 冻结配置，并显式校验 metric contract §2.1（不改 S2 默认值）。"""
+    cfg = SimConfig()
+    mismatches: List[str] = []
+    expected_scalars = {
+        "explicit_cost_roundtrip": 0.0035,
+        "adv_window": 20,
+        "min_resonance_families": 2,
+        "max_positions": 10,
+        "industry_cap": 2,
+        "max_holding_bars": 10,
+        "max_dd_floor_pct": 25.0,
+        "min_trades": 100,
+        "warmup_days": 252,
+    }
+    for field, expected in expected_scalars.items():
+        actual = getattr(cfg, field)
+        if actual != expected:
+            mismatches.append(f"{field}={actual!r} (contract {expected!r})")
+    expected_tiers = (
+        (1_000_000_000, 0.0005),
+        (300_000_000, 0.0010),
+        (100_000_000, 0.0020),
+        (30_000_000, 0.0035),
+        (0.0, 0.0050),
+    )
+    if tuple(cfg.adv_tiers) != expected_tiers:
+        mismatches.append(f"adv_tiers={cfg.adv_tiers!r} (contract {expected_tiers!r})")
+    if dict(cfg.family_cap) != {"trend": 3}:
+        mismatches.append(f"family_cap={cfg.family_cap!r} (contract trend<=3)")
+    if mismatches:
+        raise RuntimeError(
+            "SimConfig 默认值与指标契约 §2.1 不一致（禁止静默改 S2 默认值）: "
+            + "; ".join(mismatches)
+        )
+    if _PORTFOLIO_SIM_MIN_FAMILIES is not None:
+        override = int(_PORTFOLIO_SIM_MIN_FAMILIES)
+        if override == cfg.min_resonance_families:
+            return cfg
+        logger.warning(
+            "消融覆盖：min_resonance_families 由契约默认 %d 改为 %d"
+            "（仅用于分离会计效应与家族过滤器效应，非新默认值，不得固化）",
+            cfg.min_resonance_families, override,
+        )
+        cfg = replace(cfg, min_resonance_families=override)
+    return cfg
+
+
+def _parse_portfolio_sim_window(window: Optional[str]) -> Optional[Tuple[pd.Timestamp, pd.Timestamp]]:
+    """解析 --portfolio-sim-window A:B（含端点，仅切片信号日期；debug-only）。"""
+    if not window:
+        return None
+    parts = str(window).split(":")
+    if len(parts) != 2 or not parts[0].strip() or not parts[1].strip():
+        raise ValueError("--portfolio-sim-window 必须为 A:B（含端点，信号日期）")
+    start = pd.Timestamp(parts[0].strip())
+    end = pd.Timestamp(parts[1].strip())
+    if start > end:
+        raise ValueError(f"--portfolio-sim-window 起点晚于终点: {window}")
+    return start, end
+
+
+def _align_signals_to_panel(book: Dict[str, pd.Series], df_bt: pd.DataFrame,
+                            sim_bars: pd.DataFrame) -> Dict[str, pd.Series]:
+    """把 df_bt 行序的布尔信号映射到 sim_bars 的原始行位置（按 code/date）。
+
+    sim_bars（df_all）是全量面板，df_bt 是其中 signal_date<=backtest_end 的子集；
+    两者行数/行序不同，不能直接 reindex。build_candidate_table 内部按 bars 原始
+    位置取值，因此这里必须产出与 sim_bars.index 等长的 Series。
+    """
+    if sim_bars is None:
+        raise ValueError("portfolio sim 需要 sim_bars=df_all（不得为 df_bt）")
+    if len(sim_bars) == len(df_bt) and sim_bars.index.equals(df_bt.index):
+        return book
+
+    panel = sim_bars[["code", "date"]].copy()
+    panel["code"] = panel["code"].astype(str)
+    panel["date"] = pd.to_datetime(panel["date"])
+    panel["_pos"] = np.arange(len(panel), dtype=np.int64)
+    panel = panel.drop_duplicates(["code", "date"], keep="last")
+
+    source = pd.DataFrame(
+        {
+            "code": df_bt["code"].astype(str).to_numpy(),
+            "date": pd.to_datetime(df_bt["date"]).to_numpy(),
+        }
+    )
+    positions = source.merge(panel, on=["code", "date"], how="left")["_pos"].to_numpy()
+    missing = int(pd.isna(positions).sum())
+    if missing:
+        raise ValueError(f"portfolio sim 信号对齐失败：{missing} 行在 sim_bars 中不存在")
+    positions = positions.astype(np.int64)
+
+    aligned: Dict[str, pd.Series] = {}
+    for name, series in book.items():
+        values = np.asarray(series.reindex(df_bt.index).fillna(False), dtype=bool)
+        full = np.zeros(len(sim_bars), dtype=bool)
+        full[positions] = values
+        aligned[name] = pd.Series(full, index=sim_bars.index)
+    return aligned
+
+
+def _sim_date_mask(sim_bars: pd.DataFrame,
+                   window: Optional[Tuple[pd.Timestamp, pd.Timestamp]]) -> Optional[np.ndarray]:
+    if window is None:
+        return None
+    dates = pd.to_datetime(sim_bars["date"])
+    return ((dates >= window[0]) & (dates <= window[1])).to_numpy(dtype=bool)
+
+
+def _restrict_book_to_window(book: Dict[str, pd.Series], sim_bars: pd.DataFrame,
+                             window: Optional[Tuple[pd.Timestamp, pd.Timestamp]]) -> Dict[str, pd.Series]:
+    mask = _sim_date_mask(sim_bars, window)
+    if mask is None:
+        return book
+    restricted: Dict[str, pd.Series] = {}
+    for name, series in book.items():
+        values = np.asarray(series, dtype=bool) & mask
+        restricted[name] = pd.Series(values, index=sim_bars.index)
+    return restricted
+
+
+def _filter_candidates_window(cands: pd.DataFrame,
+                              window: Optional[Tuple[pd.Timestamp, pd.Timestamp]]) -> pd.DataFrame:
+    if window is None or cands.empty:
+        return cands
+    mask = (cands["signal_date"] >= window[0]) & (cands["signal_date"] <= window[1])
+    return cands.loc[mask].reset_index(drop=True)
+
+
+def _portfolio_sim_spot_checks(trades: pd.DataFrame, collapsed: pd.DataFrame,
+                               sim_bars: pd.DataFrame, limit: int = 3) -> List[Dict]:
+    """抽检成交记录 ↔ dyn_path_*_no：入场价、出场价（含跳空规则）、出场日。"""
+    if trades.empty or collapsed.empty:
+        return []
+    entry_col = f"dyn_path_entry_{max(HOLDING_PERIODS)}d_no"
+    bar_col = f"dyn_path_bar_{max(HOLDING_PERIODS)}d_no"
+    px_col = f"dyn_path_px_{max(HOLDING_PERIODS)}d_no"
+    checks: List[Dict] = []
+    for trade in trades.head(limit).itertuples(index=False):
+        match = collapsed.loc[
+            (collapsed["code"] == trade.code) & (collapsed["entry_date"] == trade.entry_date)
+        ]
+        if match.empty:
+            continue
+        cand = match.iloc[0]
+        code_bars = sim_bars.loc[
+            sim_bars["code"] == trade.code, ["date", entry_col, bar_col, px_col]
+        ]
+        signal_row = code_bars.loc[code_bars["date"] == cand["signal_date"]]
+        if signal_row.empty or pd.isna(signal_row.iloc[0][bar_col]):
+            continue
+        row = signal_row.iloc[0]
+        path_entry = float(row[entry_col])
+        path_bar = int(row[bar_col])
+        path_px = float(row[px_col])
+        reason = int(cand["exit_reason"])
+        deferred = int(cand["exit_deferred"])
+        exit_open = float(cand["exit_open"])
+        if deferred or reason == 4:
+            expected_exit = path_px
+        elif reason in (1, 3):
+            expected_exit = min(path_px, exit_open)
+        elif reason == 2:
+            expected_exit = max(path_px, exit_open)
+        else:
+            expected_exit = path_px
+
+        dates = code_bars["date"].to_numpy()
+        signal_idx = int(np.searchsorted(dates, np.datetime64(pd.Timestamp(cand["signal_date"]))))
+        exit_idx = signal_idx + 1 + path_bar
+        expected_exit_date = pd.Timestamp(dates[exit_idx]) if exit_idx < len(dates) else None
+        checks.append(
+            {
+                "code": str(trade.code),
+                "strategy": str(trade.strategy),
+                "signal_date": str(pd.Timestamp(cand["signal_date"]).date()),
+                "entry_date": str(pd.Timestamp(trade.entry_date).date()),
+                "exit_date": str(pd.Timestamp(trade.exit_date).date()),
+                "dyn_path_entry": path_entry,
+                "trade_entry_px_raw": float(trade.entry_px_raw),
+                "entry_ok": bool(abs(path_entry - float(trade.entry_px_raw)) <= 1e-4 * max(1.0, abs(path_entry))),
+                "dyn_path_px": path_px,
+                "dyn_path_reason": reason,
+                "dyn_path_defer": deferred,
+                "trade_exit_fill_px": float(trade.exit_fill_px),
+                "expected_exit_fill_px": expected_exit,
+                "exit_ok": bool(
+                    abs(expected_exit - float(trade.exit_fill_px))
+                    <= 1e-6 * max(1.0, abs(expected_exit))
+                ),
+                "dyn_path_exit_date": str(expected_exit_date.date()) if expected_exit_date is not None else None,
+                "exit_date_ok": bool(
+                    expected_exit_date is not None
+                    and pd.Timestamp(expected_exit_date) == pd.Timestamp(trade.exit_date)
+                ),
+            }
+        )
+    return checks
+
+
+def _write_portfolio_sim_artifacts(payload: Dict) -> Dict[str, str]:
+    """写 side-by-side 产物；不触碰任何旧指标输出路径。"""
+    out_dir = Path(payload.get("sim_out") or _PORTFOLIO_SIM_OUT or "result/")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    result = payload["result"]
+    equity = result.equity
+    trades = result.trades
+    candidates = payload["collapsed"]
+    first = pd.Timestamp(payload["sim_start"])
+    last = pd.Timestamp(payload["sim_end"])
+    stem = f"portfolio_sim_{first:%Y%m%d}_{last:%Y%m%d}"
+
+    candidates_path = out_dir / f"{stem}.csv"
+    trades_path = out_dir / f"{stem}_trades.csv"
+    equity_path = out_dir / f"{stem}_equity.csv"
+    summary_path = out_dir / f"{stem}.json"
+    candidates.to_csv(candidates_path, index=False, encoding="utf-8-sig")
+    trades.to_csv(trades_path, index=False, encoding="utf-8-sig")
+    equity.to_csv(equity_path, index=False, encoding="utf-8-sig")
+
+    summary = {
+        "metrics": result.metrics,
+        "rejects": payload["rejects"],
+        "funnel": payload["funnel"],
+        "config": result.meta.get("config"),
+        "config_hash": result.meta.get("config_hash"),
+        "exit_period": max(HOLDING_PERIODS),
+        "exit_params": {"atr_mult": DEFAULT_EXIT_PARAMS[0], "trail": DEFAULT_EXIT_PARAMS[1]},
+        "trail_schedule": _TRAIL_SCHEDULE,
+        "primary_entry_timing": "next_open",
+        "window": payload.get("window"),
+        "strategies": payload.get("strategies"),
+        "warnings": payload.get("warnings", []),
+        "universe_bias": "L-only (T0.4 owns PIT)",
+        "spot_checks": payload.get("spot_checks", []),
+        "equity_cash_max_abs_diff": payload.get("equity_cash_max_abs_diff"),
+        "artifacts": {
+            "candidates_csv": str(candidates_path),
+            "trades_csv": str(trades_path),
+            "equity_csv": str(equity_path),
+            "summary_json": str(summary_path),
+        },
+    }
+    with open(summary_path, "w", encoding="utf-8") as handle:
+        json.dump(summary, handle, ensure_ascii=False, indent=2, default=str)
+    return summary["artifacts"]
+
+
+def _run_portfolio_sim_chain(sim_bars: pd.DataFrame, pre_resonance: Dict[str, pd.Series],
+                             df_bt: pd.DataFrame, industry_members: Optional[pd.DataFrame],
+                             sim_window: Optional[str], sim_out: str) -> Dict:
+    """T0.1 S4：build → 去簇共振 → 因果期望 → collapse → simulate（不写 results）。"""
+    cfg = _portfolio_sim_config()
+    warnings: List[str] = []
+    book = dict(pre_resonance)
+
+    if "ensemble" in book and _ENSEMBLE_WF_DATES is None:
+        book.pop("ensemble")
+        message = ("ensemble dropped from portfolio sim: walk-forward weights unavailable "
+                   "(_ENSEMBLE_WF_DATES is None)")
+        logger.warning(message)
+        warnings.append(message)
+
+    if _PORTFOLIO_SIM_STRATEGIES:
+        missing = sorted(set(_PORTFOLIO_SIM_STRATEGIES) - set(book))
+        if missing:
+            logger.warning(f"portfolio-sim 指定策略未生成信号/已停用: {', '.join(missing)}")
+        book = {name: series for name, series in book.items() if name in _PORTFOLIO_SIM_STRATEGIES}
+    if not book:
+        raise RuntimeError("portfolio sim 没有可用策略信号（检查 --portfolio-sim-strategies/停用策略）")
+
+    book = _align_signals_to_panel(book, df_bt, sim_bars)
+    strength_book = {name: _signal_strength(sim_bars, name) for name in book}
+    window = _parse_portfolio_sim_window(sim_window)
+    window_book = _restrict_book_to_window(book, sim_bars, window)
+
+    raw = int(sum(int(np.asarray(series, dtype=bool).sum()) for series in window_book.values()))
+    if raw == 0:
+        raise RuntimeError(f"portfolio sim 在窗口 {sim_window or 'full'} 内没有注入信号")
+
+    if industry_members is None:
+        message = "industry_cap_disabled: member_df unavailable; industry cap=2 not enforced"
+        logger.warning(message)
+        warnings.append(message)
+
+    build_rejects: Counter[str] = Counter()
+    built_window = build_candidate_table(
+        sim_bars, window_book, cfg=cfg, exit_period=max(HOLDING_PERIODS),
+        industry_members=industry_members, strength_book=strength_book,
+        rejects=build_rejects,
+    )
+
+    decluster_rejects: Counter[str] = Counter()
+    declustered = apply_declustered_resonance(built_window, cfg, rejects=decluster_rejects)
+
+    lead_rejects: Counter[str] = Counter()
+    if window is None:
+        lead_eligible = apply_lead_expectation(declustered, cfg, rejects=lead_rejects)
+    else:
+        # 期望值必须使用全历史已平仓候选（严格 as-of）；窗口只限制最终注入 sim 的行。
+        full_built = build_candidate_table(
+            sim_bars, book, cfg=cfg, exit_period=max(HOLDING_PERIODS),
+            industry_members=industry_members, strength_book=strength_book,
+        )
+        full_declustered = apply_declustered_resonance(full_built, cfg)
+        full_lead = apply_lead_expectation(full_declustered, cfg)
+        lead_eligible = _filter_candidates_window(full_lead, window)
+        expected = len(declustered)
+        if len(lead_eligible) > expected:
+            raise RuntimeError(
+                f"portfolio-sim 窗口漏斗不一致：decluster={expected} "
+                f"vs full-history-lead={len(lead_eligible)}"
+            )
+        lead_rejects["lead_expectation_ineligible"] = expected - len(lead_eligible)
+
+    collapsed = collapse_candidates(lead_eligible)
+    collapse_dropped = int(len(lead_eligible) - len(collapsed))
+    result = simulate(collapsed, sim_bars, cfg)
+
+    entry_reject_keys = {
+        "max_positions", "already_held", "family_cap", "industry_cap",
+        "unbuyable", "no_price_data", "invalid_price", "no_cash",
+    }
+    rejects: Counter[str] = Counter()
+    for key, value in build_rejects.items():
+        if key == "industry_cap_disabled":
+            continue
+        if value:
+            rejects[key] += int(value)
+    rejects["decluster_dropped"] += int(decluster_rejects.get("decluster_dropped", 0))
+    rejects["lead_expectation_ineligible"] += int(lead_rejects.get("lead_expectation_ineligible", 0))
+    rejects["collapse_duplicate"] += collapse_dropped
+    for key, value in result.rejects.items():
+        if key in entry_reject_keys and value:
+            rejects[key] += int(value)
+
+    entered = int(len(collapsed) - sum(rejects[key] for key in entry_reject_keys if key in rejects))
+    open_at_end = int(entered - len(result.trades))
+    if open_at_end > 0:
+        rejects["open_at_end"] += open_at_end
+
+    exit_diagnostics = {
+        key: int(value) for key, value in result.rejects.items() if key not in entry_reject_keys
+    }
+    filled = int(len(result.trades))
+    reject_total = int(sum(rejects.values()))
+    reconciled = raw == filled + reject_total
+    if not reconciled:
+        logger.error(
+            f"portfolio-sim 漏斗不闭合：raw={raw}, filled={filled}, rejects={reject_total}, "
+            f"diff={raw - filled - reject_total}"
+        )
+
+    equity = result.equity
+    cash_diff = float(np.max(np.abs(
+        np.asarray(equity["cash"], dtype=np.float64)
+        + np.asarray(equity["position_value"], dtype=np.float64)
+        - np.asarray(equity["equity"], dtype=np.float64)
+    ))) if not equity.empty else 0.0
+
+    if window is not None:
+        warnings.append(
+            "debug window: equity curve still spans the full bar panel; "
+            "CAGR/Sharpe include flat pre-window days"
+        )
+
+    sim_start = pd.Timestamp(collapsed["signal_date"].min()) if not collapsed.empty else pd.Timestamp(sim_bars["date"].min())
+    sim_end = pd.Timestamp(equity["date"].iloc[-1]) if not equity.empty else pd.Timestamp(sim_bars["date"].max())
+    payload: Dict = {
+        "result": result,
+        "collapsed": collapsed,
+        "rejects": dict(sorted(rejects.items())),
+        "exit_diagnostics": exit_diagnostics,
+        "funnel": {
+            "raw": raw,
+            "built": int(len(built_window)),
+            "declustered": int(len(declustered)),
+            "lead_eligible": int(len(lead_eligible)),
+            "collapsed": int(len(collapsed)),
+            "filled": filled,
+            "rejects_total": reject_total,
+            "reconciled": bool(reconciled),
+        },
+        "window": f"{window[0].date()}:{window[1].date()}" if window else None,
+        "sim_start": sim_start,
+        "sim_end": sim_end,
+        "strategies": sorted(book),
+        "warnings": warnings,
+        "equity_cash_max_abs_diff": cash_diff,
+        "spot_checks": _portfolio_sim_spot_checks(result.trades, collapsed, sim_bars),
+        "sim_out": sim_out,
+    }
+    artifacts = _write_portfolio_sim_artifacts(payload)
+    payload["artifacts"] = artifacts
+    return payload
+
+
 def run_backtests(df_bt: pd.DataFrame, index_df: Optional[pd.DataFrame] = None,
                   enhanced_regime: bool = False,
                   resonance_min: int = 1,
@@ -3981,7 +4508,12 @@ def run_backtests(df_bt: pd.DataFrame, index_df: Optional[pd.DataFrame] = None,
                   regime_soft: bool = False,
                   confluence_only: bool = False,
                   confluence_regime: Optional[str] = None,
-                  resonance_layered: bool = False) -> List[Dict]:
+                  resonance_layered: bool = False,
+                  sim_bars: Optional[pd.DataFrame] = None,
+                  industry_members: Optional[pd.DataFrame] = None,
+                  portfolio_sim: bool = False,
+                  sim_window: Optional[str] = None,
+                  sim_out: str = "result/") -> List[Dict]:
     """对全部 23 个策略执行回测，返回按期望值降序的有效结果列表。
 
     enhanced_regime=True 时使用 market_ok_enh（放宽 regime, P0-1）；
@@ -4030,7 +4562,7 @@ def run_backtests(df_bt: pd.DataFrame, index_df: Optional[pd.DataFrame] = None,
     hard_regime = regime_filter and not regime_soft
 
     # 预计算全部策略信号（含冷却期），组合策略先按等权回退生成（权重随后填充）
-    global _ENSEMBLE_WEIGHTS, _ENSEMBLE_WF_DATES, _ENSEMBLE_WF_WEIGHTS
+    global _ENSEMBLE_WEIGHTS, _ENSEMBLE_WF_DATES, _ENSEMBLE_WF_WEIGHTS, _PORTFOLIO_SIM_RESULT
     _ENSEMBLE_WEIGHTS = {}
     _ENSEMBLE_WF_DATES = None
     _ENSEMBLE_WF_WEIGHTS = None
@@ -4091,6 +4623,10 @@ def run_backtests(df_bt: pd.DataFrame, index_df: Optional[pd.DataFrame] = None,
             # 幂等：仅对新重算的 ensemble 生效（强信号不变、弱信号已剔除）
             cooled_signals = _apply_regime_soft_filter(df_bt, cooled_signals)
         logger.info(f"组合策略 ensemble 信号数（冷却后/共振前）: {int(cooled_signals['ensemble'].sum())}")
+
+    # T0.1 S4：组合模拟使用“去簇共振”而非旧 _apply_resonance（旧口径按原始
+    # 策略计数，会把同族同源信号误算成独立共振票），因此必须在旧共振覆盖前快照。
+    pre_resonance = {name: series.copy() for name, series in cooled_signals.items()} if portfolio_sim else None
 
     # 同股同日多策略共振过滤（P0-2）；分层模式（B2）按策略门槛查表
     if resonance_min > 1 or resonance_layered:
@@ -4203,6 +4739,28 @@ def run_backtests(df_bt: pd.DataFrame, index_df: Optional[pd.DataFrame] = None,
         f"回测完成，耗时 {time.time()-t0:.1f}s（样本充足 {len(valid)-n_small} 个，"
         f"小样本 <{MIN_TRADES_FOR_RANKING} 笔 {n_small} 个不参与头部排名）"
     )
+
+    # T0.1 S4：组合报告写入模块全局，绝不 append 到 results（不得污染 23 策略
+    # 表格/跨策略均值），也不改变 run_backtests 的返回类型。
+    if portfolio_sim:
+        if pre_resonance is None:
+            raise RuntimeError("portfolio sim 已启用但 pre_resonance 快照缺失")
+        logger.info("组合模拟（T0.1）：build → 去簇共振 → 因果期望 → collapse → simulate ...")
+        t_sim = time.time()
+        _PORTFOLIO_SIM_RESULT = _run_portfolio_sim_chain(
+            sim_bars=sim_bars,
+            pre_resonance=pre_resonance,
+            df_bt=df_bt,
+            industry_members=industry_members,
+            sim_window=sim_window,
+            sim_out=sim_out,
+        )
+        logger.info(
+            f"组合模拟完成，耗时 {time.time() - t_sim:.1f}s；"
+            f"漏斗 raw={_PORTFOLIO_SIM_RESULT['funnel']['raw']} → "
+            f"filled={_PORTFOLIO_SIM_RESULT['funnel']['filled']}，"
+            f"reconcile={_PORTFOLIO_SIM_RESULT['funnel']['reconciled']}"
+        )
     return valid
 
 
@@ -4646,6 +5204,74 @@ def print_results(results, val_results, backtest_start, backtest_end, market_ok_
             suffix = "（全部为空仓市况，信号被市场环境过滤）" if ok_n == 0 else f"（{total_n - ok_n} 天为空仓市况）"
             print(f"市况提示: 验证区间 {total_n} 个交易日中 {ok_n} 天可开仓 ({_regime_col()}){suffix}")
         print("=" * 85)
+
+
+def print_portfolio_report(payload: Optional[Dict] = None) -> None:
+    """T0.1 S4：在旧 23 策略表之后追加组合模拟块（只新增行，不改旧数字）。"""
+    payload = payload if payload is not None else _PORTFOLIO_SIM_RESULT
+    if not payload:
+        return
+    result = payload["result"]
+    metrics = result.metrics
+    trades = result.trades
+    funnel = payload["funnel"]
+    rejects = payload["rejects"]
+    expectation = (
+        float(np.mean(np.asarray(trades["ret"], dtype=np.float64)) * 100.0)
+        if not trades.empty else 0.0
+    )
+    print("\n" + "=" * 110)
+    print("════ 组合模拟（T0.1 资金约束日频盯市）════")
+    print("=" * 110)
+    print(f"区间: {payload['sim_start'].date()} ~ {payload['sim_end'].date()}"
+          f" | 窗口(信号日): {payload.get('window') or 'full'}"
+          f" | 策略: {', '.join(payload.get('strategies', []))}")
+    print(f"初始资金: {INITIAL_CAPITAL:,.0f} 元 | 期末权益: {metrics['final_equity']:,.2f} 元"
+          f" | 总收益: {metrics['total_return'] * 100:.2f}%")
+    print(f"CAGR(全期): {metrics['cagr_full'] * 100:.2f}%"
+          f" | CAGR(OOS, warmup={SimConfig().warmup_days}d): {metrics['cagr_oos'] * 100:.2f}%"
+          f" (OOS 起点 {metrics.get('oos_start')})")
+    print(f"maxDD: {metrics['maxDD_pct']:.2f}% | Sharpe(全部交易日, 含空仓): {metrics['sharpe']:.3f}"
+          f" | gate: {metrics['gate']}")
+    print(f"交易: {metrics['n_trades']} 笔 | 胜率: {metrics['win_rate'] * 100:.2f}%"
+          f" | 单笔期望: {expectation:.3f}%"
+          f" | 平均持有: {metrics['avg_holding_days']:.1f} 日"
+          f" | 换手: {metrics['turnover']:.3f}"
+          f" | 成本拖累: {metrics['cost_drag'] * 100:.3f}%")
+    print(f"平均持仓: {metrics['avg_positions']:.2f} 只"
+          f" | 平均现金占比: {metrics['avg_cash_share'] * 100:.2f}%"
+          f" | 配置 hash: {result.meta.get('config_hash')}")
+    print("-" * 110)
+    print(f"信号漏斗: raw={funnel['raw']} → build={funnel['built']} → 去簇共振={funnel['declustered']}"
+          f" → 期望合格={funnel['lead_eligible']} → collapse={funnel['collapsed']}"
+          f" → 成交={funnel['filled']}")
+    print("拒绝明细: " + (", ".join(f"{key}={value}" for key, value in rejects.items()) or "无"))
+    if payload.get("exit_diagnostics"):
+        print("出场诊断(非漏斗拒绝): "
+              + ", ".join(f"{key}={value}" for key, value in payload["exit_diagnostics"].items()))
+    print(f"漏斗闭合校验: raw == filled + Σrejects → {funnel['raw']} == "
+          f"{funnel['filled']} + {funnel['rejects_total']} = "
+          f"{funnel['filled'] + funnel['rejects_total']} → {funnel['reconciled']}")
+    print(f"现金会计校验: max|cash + position_value - equity| = "
+          f"{payload['equity_cash_max_abs_diff']:.6e}")
+    checks = payload.get("spot_checks") or []
+    if checks:
+        print("成交 ↔ dyn_path_*_no 抽检:")
+        for check in checks:
+            print(f"  {check['code']} {check['strategy']} {check['signal_date']}"
+                  f" entry={check['dyn_path_entry']:.4f}/{check['trade_entry_px_raw']:.4f}"
+                  f" ({check['entry_ok']})"
+                  f" exit={check['trade_exit_fill_px']:.4f}/expect {check['expected_exit_fill_px']:.4f}"
+                  f" ({check['exit_ok']})"
+                  f" exit_date={check['exit_date']}"
+                  f" path_bar_date={check['dyn_path_exit_date']} ({check['exit_date_ok']})")
+    artifacts = payload.get("artifacts") or {}
+    for name, path in artifacts.items():
+        print(f"产物[{name}]: {path}")
+    for warning in payload.get("warnings") or []:
+        print(f"警告: {warning}")
+    print("提示: L-only universe（生存者偏差由 T0.4 负责）；本块为新增口径，旧 23 策略数字保持原样。")
+    print("=" * 110)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -5264,6 +5890,20 @@ def main(argv=None):
                         help="关闭行业动量过滤（默认开启仅保留动量前 3 行业信号，P2-7）")
     parser.add_argument("--per-strategy-exit", action="store_true",
                         help="按策略族差异化出场参数（P2-10，实测劣于统一默认参数，默认关闭）")
+    parser.add_argument("--portfolio-sim", action="store_true",
+                        help="启用 T0.1 资金约束组合模拟（要求 --entry-timing next_open；"
+                             "T+1 + 10 仓位 + 0.35%% 成本 + ADV 滑点 + 日频盯市）；默认关闭")
+    parser.add_argument("--portfolio-sim-out", default="result/", metavar="DIR",
+                        help="组合模拟产物目录（默认 result/；与旧指标输出并排，不覆盖）")
+    parser.add_argument("--portfolio-sim-window", default=None, metavar="A:B",
+                        help="debug-only：仅把信号日 A~B（含端点）的候选注入组合模拟；"
+                             "指标/出场仍在全历史上计算，期望值仍使用全历史已平仓候选")
+    parser.add_argument("--portfolio-sim-strategies", default=None, metavar="LIST",
+                        help="debug-only：逗号分隔的策略子集，仅限制组合模拟候选（不改旧回测）")
+    parser.add_argument("--portfolio-sim-min-families", type=int, default=None, metavar="N",
+                        choices=(1, 2),
+                        help="ablation-only：覆盖家族去簇共振门槛（契约默认 2，不改变默认行为）；"
+                             "1=关闭家族去簇，用于分离会计效应与家族过滤器效应")
     parser.add_argument("--exit-atr-mult", type=float, default=None,
                         help="全局 ATR 止损倍数覆盖（默认取 DEFAULT_EXIT_PARAMS；传旧值 2.5 可回退，P1 批次5）")
     parser.add_argument("--exit-trail", type=float, default=None,
@@ -5343,6 +5983,19 @@ def main(argv=None):
                              "持有期 3 列会增加内存占用（580 万行约 +400MB），低内存环境可关闭")
     args = parser.parse_args(argv)
 
+    if args.portfolio_sim:
+        if args.entry_timing != "next_open":
+            parser.error("--portfolio-sim 要求 --entry-timing next_open（T+1 资金约束口径）")
+        if args.per_strategy_exit:
+            parser.error("--portfolio-sim 与 --per-strategy-exit 互斥："
+                         "T0.1 冻结单一 DEFAULT_EXIT_PARAMS 出场参数集")
+    elif args.portfolio_sim_window:
+        parser.error("--portfolio-sim-window 需要同时启用 --portfolio-sim")
+    elif args.portfolio_sim_strategies:
+        parser.error("--portfolio-sim-strategies 需要同时启用 --portfolio-sim")
+    elif args.portfolio_sim_min_families is not None:
+        parser.error("--portfolio-sim-min-families 需要同时启用 --portfolio-sim")
+
     # 环境变量开关（供 GitHub Actions / 定时任务在不改命令的情况下启用质量门槛）：
     #   BACKTEST_CONFLUENCE=1 等价 --confluence-only（基本面合流，实盘推荐质量门槛）；
     #   BACKTEST_REGIME_SOFT=1 等价 --regime-soft。CLI 显式参数优先于环境变量。
@@ -5390,6 +6043,24 @@ def main(argv=None):
 
     enhanced = _REGIME_MODE != "strict"
     industry_on = not args.no_industry_momentum
+
+    # T0.1 S4 组合模拟开关（默认 False：所有新参数保持 no-op）
+    global _PORTFOLIO_SIM_ENABLED, _PORTFOLIO_SIM_OUT, _PORTFOLIO_SIM_WINDOW, _PORTFOLIO_SIM_STRATEGIES, _PORTFOLIO_SIM_MIN_FAMILIES
+    _PORTFOLIO_SIM_ENABLED = bool(args.portfolio_sim)
+    _PORTFOLIO_SIM_OUT = args.portfolio_sim_out or "result/"
+    _PORTFOLIO_SIM_WINDOW = args.portfolio_sim_window
+    _PORTFOLIO_SIM_MIN_FAMILIES = args.portfolio_sim_min_families
+    _PORTFOLIO_SIM_STRATEGIES = (
+        {name.strip() for name in str(args.portfolio_sim_strategies).split(",") if name.strip()}
+        if args.portfolio_sim_strategies else None
+    )
+    if _PORTFOLIO_SIM_ENABLED:
+        logger.info(
+            f"组合模拟（T0.1）启用：out={_PORTFOLIO_SIM_OUT}, "
+            f"window={_PORTFOLIO_SIM_WINDOW or 'full'}, "
+            f"min_families={_PORTFOLIO_SIM_MIN_FAMILIES if _PORTFOLIO_SIM_MIN_FAMILIES is not None else 'contract(2)'}, "
+            f"strategies={','.join(sorted(_PORTFOLIO_SIM_STRATEGIES)) if _PORTFOLIO_SIM_STRATEGIES else 'all'}"
+        )
 
     # 选期口径与共振投票范围（P1 批次3）
     global _SELECT_PERIOD_BY, _RESONANCE_VOTE_EXCLUDE
@@ -5509,6 +6180,7 @@ def main(argv=None):
                 f" | 合流过滤: {confluence_label}"
                 f" | 行业动量: {'启用' if industry_on else '未启用'}"
                 f" | 分组止损: {'启用' if args.per_strategy_exit else '未启用'}"
+                f" | 组合模拟: {'启用(T0.1 ' + (_PORTFOLIO_SIM_WINDOW or 'full') + ')' if _PORTFOLIO_SIM_ENABLED else '未启用'}"
                 f" | 出场参数: ATR×{DEFAULT_EXIT_PARAMS[0]:g}/trail {DEFAULT_EXIT_PARAMS[1]:g}"
                 f" | 入场口径: {args.entry_timing}（双口径对比已启用）"
                 f" | 跳空过滤: 涨停≤{_MAX_GAP_PCT:g}%/通用±{_GAP_BAND_PCT:g}%"
@@ -5555,6 +6227,7 @@ def main(argv=None):
     del df_adjusted
     gc.collect()
     log_memory_usage("指标计算后")
+    assert_forward_returns_sane(df_all)
 
     # 入场跳空过滤（B1）：预计算信号日次日开盘跳空 = open[t+1]/close[t]-1，与
     # compute_dynamic_exit_returns 的 i+1 语义一致（组内下一行），无前视。按
@@ -5623,13 +6296,18 @@ def main(argv=None):
         logger.warning(f"财务数据加载失败，跳过财务过滤: {e}")
 
     # 行业动量上下文(P2-7):申万 L1 排名 + 成分映射 → ind_rank 列（默认启用）
+    member_df = None
     if industry_on:
         try:
             rank_df, member_df = load_industry_context(anchored_start, today_str)
             df_all = apply_industry_momentum(df_all, rank_df, member_df)
-            del rank_df, member_df
+            del rank_df
+            if not _PORTFOLIO_SIM_ENABLED:
+                del member_df
+                member_df = None
             gc.collect()
         except Exception as e:
+            member_df = None
             logger.warning(f"行业动量上下文加载失败，ind_rank 缺失将全量放行: {e}")
 
     # 动态退出收益(ATR止损 + 移动止盈 + 时间止损)；一次扫描同时产出 close 与
@@ -5641,13 +6319,21 @@ def main(argv=None):
         logger.info("出场诊断已启用（dyn_reason/dyn_mae/dyn_mfe，仅默认参数组）："
                     "每持有期 +3 列，可用 --no-exit-diagnostics 关闭")
     t_dyn = time.time()
+    sim_exit_kwargs = {}
+    if _PORTFOLIO_SIM_ENABLED:
+        sim_exit_kwargs = {
+            "min_hold_bars": 1,
+            "exit_path_period": max(HOLDING_PERIODS),
+            "exit_path_timings": ("next_open",),
+        }
     dyn_ret = compute_dynamic_exit_returns(
         df_all, atr_mult=DEFAULT_EXIT_PARAMS[0], trail=DEFAULT_EXIT_PARAMS[1],
         dual_timing=True,
         trail_activate_r=_TRAIL_ACTIVATE_R, take_profit_r=_TAKE_PROFIT_R,
         diagnostics=_EXIT_DIAGNOSTICS,
         trail_schedule=_TRAIL_SCHEDULE,
-        pre_arm_atr_mult=_PRE_ARM_ATR_MULT)
+        pre_arm_atr_mult=_PRE_ARM_ATR_MULT,
+        **sim_exit_kwargs)
     df_all = pd.concat([df_all, dyn_ret], axis=1)
     del dyn_ret
     gc.collect()
@@ -5767,7 +6453,16 @@ def main(argv=None):
                             regime_soft=args.regime_soft,
                             confluence_only=args.confluence_only,
                             confluence_regime=args.confluence_regime,
-                            resonance_layered=args.resonance_layered)
+                            resonance_layered=args.resonance_layered,
+                            sim_bars=df_all if _PORTFOLIO_SIM_ENABLED else None,
+                            industry_members=member_df if _PORTFOLIO_SIM_ENABLED else None,
+                            portfolio_sim=_PORTFOLIO_SIM_ENABLED,
+                            sim_window=_PORTFOLIO_SIM_WINDOW,
+                            sim_out=_PORTFOLIO_SIM_OUT)
+    if member_df is not None:
+        del member_df
+        member_df = None
+        gc.collect()
     # 回测切片（580 万行级）回测后不再需要，立即释放，避免与后续验证信号计算
     # 叠加内存峰值，并降低 handoff 子进程 spawn 时父进程 RSS（0 可用内存 + swap 问题）。
     del df_bt
@@ -5809,6 +6504,8 @@ def main(argv=None):
             print_results(results, val_results, backtest_start_date, backtest_end_date,
                           market_ok_days=(market_ok_in_week, len(week_market_ok))
                           if market_ok_in_week is not None else None)
+            if _PORTFOLIO_SIM_ENABLED:
+                print_portfolio_report()
 
     if args.no_handoff:
         logger.info("--no-handoff：跳过 handoff 评分与主程序子进程，回测结束")
