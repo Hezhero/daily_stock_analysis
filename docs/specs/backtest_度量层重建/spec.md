@@ -1,8 +1,8 @@
 # Spec: 回测度量层重建 + 实验登记（资金约束 / 去簇共振）
 
-> 状态：**草案**（本地、入库）。产物保存在本地文件 `docs/specs/backtest_度量层重建_spec_20261018.md`，
-> 纳入 git 版本管理；**不发布到 GitHub Issues**（本机未安装、且明确不安装 `gh`）。
-> `docs/agents/{issue-tracker,triage-labels,domain}.md` 已就绪（见 `docs/agents/`）。
+> 状态：**草案**（本地、入库）。产物保存在本地文件 `docs/specs/backtest_度量层重建/spec.md`，
+> 纳入 git 版本管理；**不发布到任何外部追踪器**（本机未安装、且明确不安装 `gh`）。
+> 本地 markdown 追踪约定见 `docs/agents/issue-tracker.md`。
 > 来源：`/grill-with-docs`（grilling + domain-modeling）会话，Round 1 已锁定（组合级 / 生产导向 /
 > 风险调整裁判 / 本轮交付诊断+方案+文档 / 参数与结构性改动都允许）；Round 2 推荐项见文末。
 
@@ -109,8 +109,8 @@
 
 ## Further Notes
 
-- **归档方式**：本 spec 以本地文件形式保存在 `docs/specs/`，随 git 版本管理；不发布到 GitHub Issues
-  （`gh` 未安装，且明确不安装）。`docs/agents/{issue-tracker,triage-labels,domain}.md` 已就绪。
+- **归档方式**：本 spec 保存在 `docs/specs/backtest_度量层重建/spec.md`，随 git 版本管理；不发布到外部
+  追踪器（本地 markdown 追踪，约定见 `docs/agents/issue-tracker.md`）。
 - **Round 2 推荐项（待用户确认）**：
   - Q1：契约改为**只冻结度量口径**，`min_resonance_families` 降级为登记实验 + bootstrap 门槛。
   - Q2：**资金部署感知仓位**（卡 B）排在 Card A（卡 C）之前。

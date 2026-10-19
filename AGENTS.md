@@ -305,7 +305,7 @@ CI 通过只能说明自动检查通过，不能替代人工语义收敛，也�
 
 ### Issue tracker
 
-Issues live as GitHub issues in `Hezhero/daily_stock_analysis`, via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+Issues and specs live as local markdown files under `docs/specs/<feature>/`, tracked in git. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
