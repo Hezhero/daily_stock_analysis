@@ -1,10 +1,11 @@
 # Spec: 回测度量层重建 + 实验登记（资金约束 / 去簇共振）
 
-> 状态：**草案**（本地、入库）。产物保存在本地文件 `docs/specs/backtest_度量层重建/spec.md`，
-> 纳入 git 版本管理；**不发布到任何外部追踪器**（本机未安装、且明确不安装 `gh`）。
-> 本地 markdown 追踪约定见 `docs/agents/issue-tracker.md`。
-> 来源：`/grill-with-docs`（grilling + domain-modeling）会话，Round 1 已锁定（组合级 / 生产导向 /
-> 风险调整裁判 / 本轮交付诊断+方案+文档 / 参数与结构性改动都允许）；Round 2 推荐项见文末。
+> 状态：**已定稿**（Round 1 + Round 2 全部锁定，本地入库）。产物保存在本地文件
+> `docs/specs/backtest_度量层重建/spec.md`，纳入 git 版本管理；**不发布到任何外部追踪器**
+> （本机未安装、且明确不安装 `gh`）。本地 markdown 追踪约定见 `docs/agents/issue-tracker.md`。
+> 来源：`/grill-with-docs`（grilling + domain-modeling）会话。Round 1 锁定（组合级 / 生产导向 /
+> 风险调整裁判 / 本轮交付诊断+方案+文档 / 参数与结构性改动都允许）；Round 2 锁定见
+> `Implementation Decisions` 与文末「决策记录」。
 
 ## Problem Statement
 
@@ -76,6 +77,8 @@
   - 卡 B：资金部署感知仓位（波动率目标 / 用闲置现金；复用既有全局配置）。
   - 卡 C：并发信号选股 / 持仓上限排序（计划书原文 Card A）。
   - 卡 D：`tushare_moneyflow` 分层主力资金因子（低优先级，基线稳定后再跑）。
+- **实验优先级（Round 2 锁定）**：卡 A 消融已完成，过 bootstrap 门槛即可翻转；新增实验按
+  **卡 B（资金部署感知仓位）→ 卡 C（并发信号选股 / 持仓上限排序）**顺序推进；卡 D 最低，基线稳定后再跑。
 - **门槛**：池化样本外每信号 Δ 的日期分块 bootstrap CI，风险调整口径（CAGR / Sharpe / maxDD）
   不劣于基线方可翻转；WFO 保留给*改信号 / 出场定义*的改动。
 - **可复现性**：任何实验参数改动必须改变 `config_hash` 并落进侧边产物。
@@ -111,9 +114,9 @@
 
 - **归档方式**：本 spec 保存在 `docs/specs/backtest_度量层重建/spec.md`，随 git 版本管理；不发布到外部
   追踪器（本地 markdown 追踪，约定见 `docs/agents/issue-tracker.md`）。
-- **Round 2 推荐项（待用户确认）**：
-  - Q1：契约改为**只冻结度量口径**，`min_resonance_families` 降级为登记实验 + bootstrap 门槛。
-  - Q2：**资金部署感知仓位**（卡 B）排在 Card A（卡 C）之前。
+- **决策记录（Round 2，已锁定）**：
+  - Q1：契约改为**只冻结度量口径**，`min_resonance_families` 降级为登记实验 + 可构建 bootstrap 门槛。
+  - Q2：**资金部署感知仓位**（卡 B）先于卡 C（并发信号选股）。
   - Q3：**moneyflow** 登记为低优先级卡 D，基线稳定后再跑。
 - **numexpr 2.14.1 缺陷背景**：回测进程已 `compute.use_numexpr=False`；T0.1 基线与 family 消融曾被污染
   （详见 `docs/CHANGELOG.md`）。
