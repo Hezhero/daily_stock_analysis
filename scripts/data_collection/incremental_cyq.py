@@ -34,6 +34,9 @@
   python scripts/data_collection/incremental_cyq.py --symbol 600519
   python scripts/data_collection/incremental_cyq.py --start-date 20260101 --end-date 20261231
   python scripts/data_collection/incremental_cyq.py --sleep 0.2        # 每只股票处理间隔秒数
+  python scripts/data_collection/incremental_cyq.py --codes 605081.SH,603963.SH \\
+      --start-date 20200101 --end-date 20261016   # 退市股一次性重算
+  python scripts/data_collection/incremental_cyq.py --include-delisted
 """
 
 import argparse
@@ -52,6 +55,7 @@ from tushare_pg_utils import (
     PROJECT_ROOT,
     get_pg_connection,
     insert_dataframe,
+    normalize_ts_code,
     table_exists,
 )
 
@@ -161,19 +165,38 @@ def ensure_cyq_table(conn) -> bool:
     return not existed
 
 
-def get_stock_list(conn) -> list[tuple[str, str]]:
-    """从 tushare_stock_basic 读取上市股票 (symbol, ts_code) 列表。
+def get_stock_list(conn, include_delisted: bool = False) -> list[tuple[str, str]]:
+    """从 tushare_stock_basic 读取股票 (symbol, ts_code) 列表。
 
     symbol 为 6 位纯数字，ts_code 为 Tushare 格式（入库用）。
+    include_delisted=True 时同时纳入 list_status='D' 的退市股。
     """
+    where = "list_status IN ('L','D')" if include_delisted else "list_status='L'"
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"SELECT symbol, ts_code FROM tushare_stock_basic "
+            f"WHERE {where} ORDER BY ts_code"
+        )
+        rows = [(str(sym), str(code)) for sym, code in cur.fetchall()]
+        return rows
+    finally:
+        cur.close()
+
+
+def get_stocks_by_codes(conn, codes: list[str]) -> list[tuple[str, str]]:
+    """按显式 ts_code / 6 位代码查 (symbol, ts_code)，不限制 list_status。"""
+    normalized = [normalize_ts_code(c) for c in codes if str(c).strip()]
+    if not normalized:
+        return []
     cur = conn.cursor()
     try:
         cur.execute(
             "SELECT symbol, ts_code FROM tushare_stock_basic "
-            "WHERE list_status='L' ORDER BY ts_code"
+            "WHERE ts_code = ANY(%s) ORDER BY ts_code",
+            (normalized,),
         )
-        rows = [(str(sym), str(code)) for sym, code in cur.fetchall()]
-        return rows
+        return [(str(sym), str(code)) for sym, code in cur.fetchall()]
     finally:
         cur.close()
 
@@ -584,6 +607,10 @@ def main():
     parser = argparse.ArgumentParser(description="筹码分布（CYQ）本地计算采集（逐日，支持增量）")
     parser.add_argument("--limit", type=int, default=0, help="最多处理的股票数量（0=全部）")
     parser.add_argument("--symbol", type=str, default="", help="指定单只股票 6 位代码（如 600519）")
+    parser.add_argument("--codes", type=str, default="",
+                        help="逗号分隔的 ts_code / 6 位代码，指定后只重算这些股票")
+    parser.add_argument("--include-delisted", action="store_true",
+                        help="同时处理 list_status='D' 的退市股（opt-in，默认不启用）")
     parser.add_argument("--start-date", type=str, default="20160101",
                         help="起始日期 YYYYMMDD（默认 20160101，首次全量起点）")
     parser.add_argument("--end-date", type=str, default="",
@@ -599,12 +626,12 @@ def main():
         ensure_cyq_table(conn)
 
         if args.symbol:
-            # 指定单只：按 symbol 查 ts_code
+            where = "list_status IN ('L','D')" if args.include_delisted else "list_status='L'"
             cur = conn.cursor()
             try:
                 cur.execute(
-                    "SELECT symbol, ts_code FROM tushare_stock_basic "
-                    "WHERE list_status='L' AND symbol=%s",
+                    f"SELECT symbol, ts_code FROM tushare_stock_basic "
+                    f"WHERE {where} AND symbol=%s",
                     (args.symbol,),
                 )
                 rows = [(str(s), str(t)) for s, t in cur.fetchall()]
@@ -613,8 +640,14 @@ def main():
             if not rows:
                 logger.error("未在 tushare_stock_basic 找到 symbol=%s", args.symbol)
                 sys.exit(1)
+        elif args.codes:
+            codes = [c for c in args.codes.split(",") if c.strip()]
+            rows = get_stocks_by_codes(conn, codes)
+            if not rows:
+                logger.error("未在 tushare_stock_basic 找到 --codes 指定的股票")
+                sys.exit(1)
         else:
-            rows = get_stock_list(conn)
+            rows = get_stock_list(conn, include_delisted=args.include_delisted)
 
         if args.limit > 0:
             rows = rows[:args.limit]

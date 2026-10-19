@@ -113,6 +113,7 @@ P1 批次5（2026-09-14，探针复现 logs/backtest_5y_20260913.log 的全样�
 
 import argparse
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -146,7 +147,7 @@ import pandas as pd
 # 根治方式：升级 numexpr 至 2.14.2+，或设置 NUMEXPR_NUM_THREADS=1。
 pd.set_option("compute.use_numexpr", False)
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from urllib.parse import quote_plus
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -176,6 +177,19 @@ HANDOFF_MIN_STRATEGY_TRADES = 30  # 命中策略的历史回测最小笔数，�
 # ─── 数据质量与可成交性过滤 ────────────────────────────────────────────────────
 MIN_DAILY_AMOUNT_K = 5000        # 最小日成交额（单位：千元，即 500 万元），过滤流动性不足的样本
 MIN_LISTING_DAYS = 120           # 上市最短天数，过滤次新股（上市初期涨跌结构特殊）
+
+# ─── 股票池口径（T0.4 PIT 宇宙） ────────────────────────────────────────────────
+# 默认 pit（ADR 0001 冻结度量口径）：移除 L 硬过滤，按 list_date/delist_date 的可交易
+#      窗口纳入窗口内退市股；依赖退市股清单与历史行情回填，数据缺失时显式告警，绝不静默回退。
+# l-only 为显式 opt-out：保留历史 `list_status='L'` 硬过滤，其 SQL / 产物文件名 /
+#      冻结 config_hash 逐位不变（= T0.1 基线 5eea0519…）。
+UNIVERSE_DEFAULT = "pit"
+UNIVERSE_L_ONLY = "l-only"
+UNIVERSE_PIT = "pit"
+UNIVERSE_CHOICES = (UNIVERSE_L_ONLY, UNIVERSE_PIT)
+_UNIVERSE = UNIVERSE_DEFAULT
+_PIT_UNIVERSE_WARNING: Optional[str] = None
+
 LIMIT_UP_PCT_MAIN = 9.5          # 主板/中小板涨停判定阈值（%）
 LIMIT_UP_PCT_GEM = 19.5          # 创业板涨停判定阈值（%），2020-08 起涨跌幅扩至 20%
 
@@ -395,6 +409,95 @@ def _get_pg_engine():
     quoted_user = quote_plus(user)
     quoted_password = quote_plus(password)
     return create_engine(f"postgresql+psycopg2://{quoted_user}:{quoted_password}@{host}:{port}/{dbname}")
+
+
+def _universe_filter_sql(universe: str = UNIVERSE_DEFAULT) -> str:
+    """股票池口径的 WHERE 片段。
+
+    l-only 分支必须与历史 SQL 逐字一致，确保默认运行的可复现基线不漂移；
+    pit 分支移除 list_status 硬过滤，用 list_date/delist_date 限定可交易窗口，
+    delist_date 为 NULL 表示尚未退市（等价 +infinity）。
+    """
+    if universe == UNIVERSE_L_ONLY:
+        return "\n".join([
+            "          AND s.list_status = 'L'",
+            "          AND s.exchange IN ('SSE', 'SZSE')",
+            "          AND s.market IN ('主板', '中小板', '创业板')",
+        ])
+    if universe == UNIVERSE_PIT:
+        return "\n".join([
+            "          AND s.exchange IN ('SSE', 'SZSE')",
+            "          AND s.market IN ('主板', '中小板', '创业板')",
+            "          AND (s.delist_date IS NULL OR d.trade_date <= s.delist_date)",
+        ])
+    raise ValueError(
+        f"未知 universe 口径: {universe!r}（可选: {', '.join(UNIVERSE_CHOICES)}）"
+    )
+
+
+def _count_delisted_stock_rows() -> int:
+    """单条廉价探针：tushare_stock_basic 中的退市股清单行数。"""
+    engine = _get_pg_engine()
+    try:
+        with engine.connect() as conn:
+            return int(
+                conn.execute(
+                    text("SELECT count(*) FROM tushare_stock_basic WHERE list_status = 'D'")
+                ).scalar_one()
+            )
+    finally:
+        engine.dispose()
+
+
+def _check_pit_universe_availability() -> Optional[str]:
+    """--universe pit 的 fail-loud 检查：返回告警文案或 None（数据可用）。
+
+    探针失败同样返回告警，不静默；PIT 谓词仍会执行，但结果只能视为 L-only。
+    """
+    try:
+        n_delisted = _count_delisted_stock_rows()
+    except Exception as exc:
+        message = (
+            "PIT 宇宙告警：无法验证退市股数据"
+            f"（tushare_stock_basic.list_status='D'）：{exc}；"
+            "本次 PIT 结果可能等价于 L-only，不得作为 PIT 口径证据"
+        )
+    else:
+        if n_delisted > 0:
+            logger.info(f"PIT 宇宙：tushare_stock_basic 退市股行数={n_delisted}")
+            return None
+        message = (
+            "PIT 宇宙告警：tushare_stock_basic 中 list_status='D' 行数为 0；"
+            "--universe pit 实际仍等价于 L-only（无退市股可纳入），"
+            "生存者偏差未修复，结果不得作为 PIT 口径证据"
+        )
+    logger.warning("=" * 88)
+    logger.warning(message)
+    logger.warning("=" * 88)
+    return message
+
+
+def _add_universe_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--universe",
+        choices=list(UNIVERSE_CHOICES),
+        default=UNIVERSE_DEFAULT,
+        help="股票池口径（T0.4）：l-only=仅当前正常上市（默认，冻结基线逐位不变）；"
+             "pit=按 list_date/delist_date 的可交易窗口纳入窗口内退市股"
+             "（需先回填退市股清单与历史行情）",
+    )
+
+
+def _universe_config_hash(base_hash: str, universe: str = UNIVERSE_DEFAULT) -> str:
+    """把股票池口径并入组合模拟 config_hash。
+
+    l-only 原样返回冻结基线哈希；pit 追加口径标记后重算，
+    防止两种股票池的产物被误当作同一配置。
+    """
+    _universe_filter_sql(universe)  # 校验口径合法性（未知值直接抛错）
+    if universe == UNIVERSE_L_ONLY:
+        return base_hash
+    return hashlib.sha1(f"{base_hash}|universe={universe}".encode("utf-8")).hexdigest()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -699,7 +802,7 @@ def _convert_columns_to_float32(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def load_data(start: str, end: str) -> pd.DataFrame:
+def load_data(start: str, end: str, universe: str = UNIVERSE_DEFAULT) -> pd.DataFrame:
     """从本地 Tushare PostgreSQL 加载区间内的日线行情与每日基本面数据。
 
     数据来源：
@@ -708,7 +811,9 @@ def load_data(start: str, end: str) -> pd.DataFrame:
       - tushare_daily_basic  ：换手率、PE(TTM)、PB
 
     过滤条件：
-      - 仅沪深主板/中小板/创业板、上市状态为 L（正常上市）的股票
+      - l-only（默认）：仅沪深主板/中小板/创业板、上市状态为 L（正常上市）的股票
+      - pit：移除 list_status 硬过滤，按 [list_date + MIN_LISTING_DAYS, delist_date]
+        的可交易窗口纳入窗口内退市股（delist_date 为空视为尚未退市）
       - 日成交额不低于 MIN_DAILY_AMOUNT_K（流动性过滤，P2-11）
       - 上市满 MIN_LISTING_DAYS 天（次新股过滤，P2-12）
     返回字段含 code（内部格式）、name、date 及各行情/基本面数值列。
@@ -720,10 +825,11 @@ def load_data(start: str, end: str) -> pd.DataFrame:
         顺序一致，无需再 sort_values（避免全量副本）
     """
     t0 = time.time()
-    logger.info(f"加载数据 {start} ~ {end} (Tushare PostgreSQL)...")
+    universe_note = "" if universe == UNIVERSE_L_ONLY else f", universe={universe}"
+    logger.info(f"加载数据 {start} ~ {end} (Tushare PostgreSQL{universe_note})...")
 
     # 注意单位换算：vol 以"手"为单位 ×100 转股数；amount 以"千元"为单位 ×1000 转元
-    sql = """
+    sql = f"""
         SELECT
             d.ts_code,
             s.name,
@@ -768,9 +874,7 @@ def load_data(start: str, end: str) -> pd.DataFrame:
         LEFT JOIN tushare_cyq cy ON d.ts_code = cy.ts_code AND d.trade_date = cy.trade_date
         LEFT JOIN tushare_margin_detail md ON d.ts_code = md.ts_code AND d.trade_date = md.trade_date
         WHERE d.trade_date BETWEEN %s AND %s
-          AND s.list_status = 'L'
-          AND s.exchange IN ('SSE', 'SZSE')
-          AND s.market IN ('主板', '中小板', '创业板')
+{_universe_filter_sql(universe)}
           AND d.amount >= %s
           AND d.trade_date >= (s.list_date + %s)
         ORDER BY d.ts_code, d.trade_date
@@ -1325,23 +1429,28 @@ def load_signal_aux(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _prepared_cache_path(start: str, end: str) -> Path:
+def _prepared_cache_path(start: str, end: str,
+                         universe: str = UNIVERSE_DEFAULT) -> Path:
     """准备态数据缓存文件路径（日期紧凑格式，Windows 文件名安全）。
 
     inst_smart_break 滚动窗口非默认时（--inst-window，C3）追加独立版本后缀：
     准备态数据中的 inst_buy5 值随窗口变化，与默认口径串用会得到错误信号。
+    PIT 股票池同样使用独立后缀，避免命中 L-only 缓存后静默退化。
     """
     s = start.replace("-", "")
     e = end.replace("-", "")
     ver = (CACHE_VERSION if _INST_SMART_BREAK_WINDOW == INST_SMART_BREAK_WINDOW
            else f"{CACHE_VERSION}w{_INST_SMART_BREAK_WINDOW}")
+    if universe != UNIVERSE_L_ONLY:
+        _universe_filter_sql(universe)  # 校验口径合法性
+        ver = f"{ver}u{universe.replace('-', '')}"
     return CACHE_DIR / f"backtest_{s}_{e}_{ver}.parquet"
 
 
-def load_prepared_cache(start: str, end: str):
+def load_prepared_cache(start: str, end: str, universe: str = UNIVERSE_DEFAULT):
     """命中准备态 parquet 缓存则返回 DataFrame，否则 None。任何异常都视为未命中
     （缓存是加速手段，失败必须回退 PG 全量加载，不能中断回测）。"""
-    path = _prepared_cache_path(start, end)
+    path = _prepared_cache_path(start, end, universe)
     if not path.exists():
         return None
     try:
@@ -1354,11 +1463,12 @@ def load_prepared_cache(start: str, end: str):
         return None
 
 
-def write_prepared_cache(df: pd.DataFrame, start: str, end: str) -> None:
+def write_prepared_cache(df: pd.DataFrame, start: str, end: str,
+                         universe: str = UNIVERSE_DEFAULT) -> None:
     """写准备态缓存；失败仅告警不中断（磁盘不足/权限问题不应影响回测）。"""
     try:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        path = _prepared_cache_path(start, end)
+        path = _prepared_cache_path(start, end, universe)
         t0 = time.time()
         df.to_parquet(path, index=False)
         logger.info(f"已写缓存 {path.name} ({len(df):,} 行, 耗时 {time.time()-t0:.1f}s)")
@@ -4343,6 +4453,16 @@ def _portfolio_sim_spot_checks(trades: pd.DataFrame, collapsed: pd.DataFrame,
     return checks
 
 
+def _portfolio_sim_artifact_stem(sim_start, sim_end, universe: str = UNIVERSE_DEFAULT) -> str:
+    """产物文件名前缀；非 l-only 口径加后缀，避免 PIT 与 L-only 产物互相覆盖。"""
+    first = pd.Timestamp(sim_start)
+    last = pd.Timestamp(sim_end)
+    stem = f"portfolio_sim_{first:%Y%m%d}_{last:%Y%m%d}"
+    if universe != UNIVERSE_L_ONLY:
+        stem = f"{stem}_{universe}"
+    return stem
+
+
 def _write_portfolio_sim_artifacts(payload: Dict) -> Dict[str, str]:
     """写 side-by-side 产物；不触碰任何旧指标输出路径。
 
@@ -4361,7 +4481,7 @@ def _write_portfolio_sim_artifacts(payload: Dict) -> Dict[str, str]:
     signals = payload["signals"]
     first = pd.Timestamp(payload["sim_start"])
     last = pd.Timestamp(payload["sim_end"])
-    stem = f"portfolio_sim_{first:%Y%m%d}_{last:%Y%m%d}"
+    stem = _portfolio_sim_artifact_stem(first, last, _UNIVERSE)
 
     candidates_path = out_dir / f"{stem}.csv"
     signals_path = out_dir / f"{stem}_signals.csv"
@@ -4397,6 +4517,9 @@ def _write_portfolio_sim_artifacts(payload: Dict) -> Dict[str, str]:
             "summary_json": str(summary_path),
         },
     }
+    if _UNIVERSE != UNIVERSE_L_ONLY:
+        summary["universe"] = _UNIVERSE
+        summary["universe_bias"] = "PIT (list_date~delist_date tradable window)"
     with open(summary_path, "w", encoding="utf-8") as handle:
         json.dump(summary, handle, ensure_ascii=False, indent=2, default=str)
     return summary["artifacts"]
@@ -4472,6 +4595,13 @@ def _run_portfolio_sim_chain(sim_bars: pd.DataFrame, pre_resonance: Dict[str, pd
     collapsed = collapse_candidates(lead_eligible)
     collapse_dropped = int(len(lead_eligible) - len(collapsed))
     result = simulate(collapsed, sim_bars, cfg)
+    result.meta["config_hash"] = _universe_config_hash(
+        str(result.meta.get("config_hash", "")), _UNIVERSE
+    )
+    if _UNIVERSE == UNIVERSE_PIT:
+        result.meta["universe"] = _UNIVERSE
+        if _PIT_UNIVERSE_WARNING:
+            warnings.append(_PIT_UNIVERSE_WARNING)
 
     entry_reject_keys = {
         "max_positions", "already_held", "family_cap", "industry_cap",
@@ -5900,6 +6030,7 @@ def main(argv=None):
     非交易日默认退出，--force 可强制运行。
     """
     parser = argparse.ArgumentParser()
+    _add_universe_argument(parser)
     parser.add_argument("--force", action="store_true", help="强制运行（非交易日也执行）")
     parser.add_argument("--strict", action="store_true",
                         help="使用严格 regime（market_ok）替代默认的 enhanced regime（market_ok_enh，P0-1）")
@@ -6036,6 +6167,10 @@ def main(argv=None):
                              "持有期 3 列会增加内存占用（580 万行约 +400MB），低内存环境可关闭")
     args = parser.parse_args(argv)
 
+    global _UNIVERSE, _PIT_UNIVERSE_WARNING
+    _UNIVERSE = args.universe
+    _PIT_UNIVERSE_WARNING = None
+
     if args.portfolio_sim:
         if args.entry_timing != "next_open":
             parser.error("--portfolio-sim 要求 --entry-timing next_open（T+1 资金约束口径）")
@@ -6048,6 +6183,10 @@ def main(argv=None):
         parser.error("--portfolio-sim-strategies 需要同时启用 --portfolio-sim")
     elif args.portfolio_sim_min_families is not None:
         parser.error("--portfolio-sim-min-families 需要同时启用 --portfolio-sim")
+
+    if _UNIVERSE == UNIVERSE_PIT:
+        _PIT_UNIVERSE_WARNING = _check_pit_universe_availability()
+
 
     # 环境变量开关（供 GitHub Actions / 定时任务在不改命令的情况下启用质量门槛）：
     #   BACKTEST_CONFLUENCE=1 等价 --confluence-only（基本面合流，实盘推荐质量门槛）；
@@ -6251,14 +6390,15 @@ def main(argv=None):
 
     # 准备态数据缓存（复权 + 增强信号合并后、指标计算前）：命中则跳过 PG 加载
     # （~464s）+ 复权因子（~50s）+ 增强信号合并（~89s）；--no-cache 强制重算。
-    df_adjusted = None if args.no_cache else load_prepared_cache(anchored_start, today_str)
+    df_adjusted = None if args.no_cache else load_prepared_cache(
+        anchored_start, today_str, universe=_UNIVERSE)
     if df_adjusted is not None:
         logger.info(f"缓存命中：{len(df_adjusted):,} 行 x {df_adjusted['code'].nunique()} 只股票")
     else:
         if args.no_cache:
             logger.info("--no-cache：跳过缓存读取，从 PG 全量加载")
         t_prep = time.time()
-        df_market = load_data(anchored_start, today_str)
+        df_market = load_data(anchored_start, today_str, universe=_UNIVERSE)
 
         logger.info("从数据库加载复权因子并计算前复权价格...")
         df_factor = load_adj_factors_from_db(anchored_start, today_str)
@@ -6274,7 +6414,7 @@ def main(argv=None):
         log_memory_usage("增强信号合并后")
         logger.info(f"准备态数据就绪，耗时 {time.time()-t_prep:.1f}s")
         if not args.no_cache:
-            write_prepared_cache(df_adjusted, anchored_start, today_str)
+            write_prepared_cache(df_adjusted, anchored_start, today_str, universe=_UNIVERSE)
 
     df_all = compute_indicators(df_adjusted)
     del df_adjusted

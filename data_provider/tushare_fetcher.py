@@ -19,7 +19,7 @@ import logging
 import re
 import time
 from datetime import datetime, timedelta
-from typing import Optional, Tuple, List, Dict, Any
+from typing import Optional, Tuple, List, Dict, Any, Sequence, Union
 
 import pandas as pd
 import requests
@@ -657,32 +657,60 @@ class TushareFetcher(BaseFetcher):
         
         return None
     
-    def get_stock_list(self) -> Optional[pd.DataFrame]:
+    def get_stock_list(
+        self,
+        list_status: Union[str, Sequence[str]] = 'L',
+        include_dates: bool = False,
+    ) -> Optional[pd.DataFrame]:
         """
         获取股票列表
-        
+
         使用 Tushare 的 stock_basic 接口获取 A 股列表（不含港股）。
-        
+
+        Args:
+            list_status: 上市状态，'L' 上市 / 'D' 退市 / 'P' 暂停上市。
+                可传单个值、逗号分隔字符串或序列；默认 'L' 保持旧行为。
+            include_dates: 为 True 时额外返回 list_date / delist_date 列，
+                供 PIT 宇宙构造使用；默认 False 保持旧列契约。
+
         Returns:
-            包含 code, name, industry, area, market 列的 DataFrame，失败返回 None
+            包含 code, name, industry, area, market（可选 list_date,
+            delist_date）列的 DataFrame，失败返回 None
         """
         if self._api is None:
             logger.warning("Tushare API 未初始化，无法获取股票列表")
             return None
-        
+
+        if isinstance(list_status, str):
+            statuses = [s.strip().upper() for s in list_status.split(',') if s.strip()]
+        else:
+            statuses = [str(s).strip().upper() for s in list_status if str(s).strip()]
+        invalid = [s for s in statuses if s not in {'L', 'D', 'P'}]
+        if invalid or not statuses:
+            logger.warning(f"Tushare 获取股票列表失败: 非法 list_status={list_status!r}")
+            return None
+
+        base_fields = 'ts_code,name,industry,area,market'
+        fields = base_fields + (',list_date,delist_date' if include_dates else '')
+
         try:
             self._check_rate_limit()
 
-            df = self._api.stock_basic(
-                exchange='',
-                list_status='L',
-                fields='ts_code,name,industry,area,market'
-            )
+            frames = []
+            for status in statuses:
+                part = self._api.stock_basic(
+                    exchange='',
+                    list_status=status,
+                    fields=fields,
+                )
+                if part is not None and not part.empty:
+                    frames.append(part)
 
-            if df is None or df.empty:
+            if not frames:
                 return None
 
-            df = df.copy()
+            df = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0].copy()
+            df = df.drop_duplicates(subset=['ts_code'], keep='first')
             df['code'] = df['ts_code'].astype(str).str.split('.').str[0]
 
             if not hasattr(self, '_stock_name_cache'):
@@ -691,7 +719,10 @@ class TushareFetcher(BaseFetcher):
                 self._stock_name_cache[row['code']] = row['name']
 
             logger.info(f"Tushare 获取股票列表成功: {len(df)} 条")
-            return df[['code', 'name', 'industry', 'area', 'market']]
+            out_cols = ['code', 'name', 'industry', 'area', 'market']
+            if include_dates:
+                out_cols += ['list_date', 'delist_date']
+            return df[out_cols]
 
         except Exception as e:
             logger.warning(f"Tushare 获取股票列表失败: {e}")

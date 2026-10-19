@@ -22,6 +22,8 @@ import sys
 import time
 from datetime import date, datetime, timedelta
 
+import pandas as pd
+
 from tushare_pg_utils import (
     TushareClient,
     execute_sql_file,
@@ -94,23 +96,37 @@ def ensure_extra_schema(conn) -> bool:
 
 # ── 2. 基础数据 ──────────────────────────────────────────────
 def ensure_stock_basic(client: TushareClient, conn) -> bool:
-    """若 stock_basic 表为空，全量拉取上市股票列表。"""
+    """若 stock_basic 表为空，全量拉取 L/D/P 三种状态的股票列表。
+
+    退市码必须在首次自举时就落库，否则依赖该表的增量脚本只能在后续
+    incremental_base.py 刷新后才看到 D 行。
+    """
     if row_count(conn, "tushare_stock_basic") > 0:
         logger.info("stock_basic 已有数据，跳过")
         return False
-    logger.info("stock_basic 为空，全量拉取...")
-    df = client.query(
-        "stock_basic",
-        fields=(
-            "ts_code,symbol,name,area,industry,cnspell,market,list_status,"
-            "list_date,delist_date,is_hs,act_name,act_ent_type,fullname,"
-            "exchange,curr_type,enname"
-        ),
-        list_status="L",
-    )
-    if df.empty:
+    logger.info("stock_basic 为空，全量拉取 (L/D/P)...")
+    frames = []
+    for status in ("L", "D", "P"):
+        df = client.query(
+            "stock_basic",
+            fields=(
+                "ts_code,symbol,name,area,industry,cnspell,market,list_status,"
+                "list_date,delist_date,is_hs,act_name,act_ent_type,fullname,"
+                "exchange,curr_type,enname"
+            ),
+            list_status=status,
+        )
+        if df is None or df.empty:
+            logger.info("  stock_basic list_status=%s 返回空，跳过", status)
+            continue
+        logger.info("  stock_basic list_status=%s: %s 行", status, f"{len(df):,}")
+        frames.append(df)
+    if not frames:
         logger.error("stock_basic API 返回空，请检查 Tushare Token 权限")
         return False
+    df = pd.concat(frames, ignore_index=True).drop_duplicates(
+        subset=["ts_code"], keep="first",
+    )
     n = insert_dataframe(conn, "tushare_stock_basic", df, "(ts_code)")
     logger.info("stock_basic: %s 行", f"{n:,}")
     return True
@@ -130,7 +146,7 @@ def ensure_trade_cal(client: TushareClient, conn, start_year: int = 2015) -> boo
     end_year = now.year
     missing_years = [
         y for y in range(start_year, end_year + 1)
-        if not (mn and mn.year <= y <= mx.year)
+        if mn is None or mx is None or mn.year > y or mx.year < y
     ]
     if not missing_years:
         logger.info("trade_cal 已覆盖 %d~%d，跳过", start_year, end_year)

@@ -98,6 +98,78 @@ class TestTushareFetcherGetStockList(unittest.TestCase):
 
         self.assertIsNone(df)
 
+    def test_get_stock_list_multiple_statuses_with_dates(self) -> None:
+        fetcher = self._make_fetcher()
+        listed = pd.DataFrame(
+            {
+                "ts_code": ["600519.SH"],
+                "name": ["贵州茅台"],
+                "industry": ["白酒"],
+                "area": ["贵州"],
+                "market": ["主板"],
+                "list_date": ["20010827"],
+                "delist_date": [None],
+            }
+        )
+        delisted = pd.DataFrame(
+            {
+                "ts_code": ["605081.SH"],
+                "name": ["退市某某"],
+                "industry": ["环保"],
+                "area": ["上海"],
+                "market": ["主板"],
+                "list_date": ["20200901"],
+                "delist_date": ["20251016"],
+            }
+        )
+        fetcher._api.stock_basic.side_effect = [listed, delisted]
+
+        with patch.object(fetcher, "_check_rate_limit"):
+            df = fetcher.get_stock_list(list_status=("L", "D"), include_dates=True)
+
+        self.assertIsNotNone(df)
+        assert df is not None
+        self.assertEqual(
+            set(df.columns.tolist()),
+            {"code", "name", "industry", "area", "market", "list_date", "delist_date"},
+        )
+        self.assertEqual(set(df["code"].tolist()), {"600519", "605081"})
+        self.assertEqual(fetcher._api.stock_basic.call_count, 2)
+        calls = fetcher._api.stock_basic.call_args_list
+        self.assertEqual([c.kwargs["list_status"] for c in calls], ["L", "D"])
+        self.assertIn("delist_date", calls[1].kwargs["fields"])
+        self.assertEqual(fetcher._stock_name_cache.get("605081"), "退市某某")
+
+    def test_get_stock_list_tolerates_empty_status(self) -> None:
+        fetcher = self._make_fetcher()
+        listed = pd.DataFrame(
+            {
+                "ts_code": ["600519.SH"],
+                "name": ["贵州茅台"],
+                "industry": ["白酒"],
+                "area": ["贵州"],
+                "market": ["主板"],
+            }
+        )
+        fetcher._api.stock_basic.side_effect = [listed, pd.DataFrame(), pd.DataFrame()]
+
+        with patch.object(fetcher, "_check_rate_limit"):
+            df = fetcher.get_stock_list(list_status="L,D,P")
+
+        self.assertIsNotNone(df)
+        assert df is not None
+        self.assertEqual(len(df), 1)
+        self.assertEqual(fetcher._api.stock_basic.call_count, 3)
+
+    def test_get_stock_list_rejects_invalid_status(self) -> None:
+        fetcher = self._make_fetcher()
+
+        with patch.object(fetcher, "_check_rate_limit"):
+            df = fetcher.get_stock_list(list_status="X")
+
+        self.assertIsNone(df)
+        fetcher._api.stock_basic.assert_not_called()
+
 
 class TestTushareFetcherFetchRawData(unittest.TestCase):
     """TushareFetcher._fetch_raw_data: API routing and error handling."""

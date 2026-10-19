@@ -1080,3 +1080,32 @@ Week 4-5:
 - **纪律**：门槛不通过时保留默认值，记录失败原因；不追加局部 patch，不把同一张卡拆成多轮小修继续试。
 - **本轮边界**：不修改回测代码，不运行回测或测试，不翻转任何默认值。一次完整回测约 1.5 小时，后续实验优先选择可逆的单变量旋钮。
 - **落地记录（2026-10-19，ticket 01）**：契约守卫收敛落地——`_portfolio_sim_config()` 将冻结项收敛为 `_METRIC_PROFILE_*`（仅度量口径与验收门槛：显式成本 / ADV 滑点 / OOS 窗口 / maxDD 下限 / 最小成交笔数 / 去簇共振定义），`min_resonance_families` 与部署、选取旋钮（持仓上限 `max_positions`、最大持有 `max_holding_bars`、持仓簇上限 `family_cap`、行业上限 `industry_cap`）一并降级为 `_REGISTERED_EXPERIMENT_DEFAULTS` / `_REGISTERED_EXPERIMENT_FAMILY_CAP` 中的已登记实验参数（默认值仍被守卫，覆盖 = warning + `config_hash` 变化，未登记参数拒绝覆盖）；默认基线 `config_hash` 不变，守卫/覆盖两条路径已补 S3 单测，《指标契约》§2.1 与 spec 的代码边界表述同步修订。
+
+### 10.4 PIT 宇宙落地与双口径对照（2026-10-19，ticket 07）
+
+> 个股 PIT 宇宙由「路线 B」（先采集退市股清单/行情，再落地 PIT）实施并验收；数据层与驱动层均已入库，本节记录默认切换、产物命名修复与 L-only/PIT 同库同窗口对照结果。
+
+- **默认切换**：`--universe` 默认由 `l-only` 切为 `pit`（ADR 0001 冻结度量口径）；`l-only` 保留为显式 opt-out，其 SQL / 产物文件名 / 冻结 `config_hash` **逐位不变**。
+- **产物命名隔离修复**：原组合产物名 `portfolio_sim_<start>_<end>` 不含口径，PIT 与 L-only 会写入同一路径。本次两口径窗口实测**同为 `20210514_20261016`**——若无修复，PIT 会覆盖冻结基线。新增 `_portfolio_sim_artifact_stem()`：非 `l-only` 追加 `_<universe>`（PIT → `portfolio_sim_20210514_20261016_pit`），`l-only` 文件名不变。
+- **`config_hash`**：`l-only = 5eea05195af3d89432af8b2a049fde2517d6a53b`；`pit = acb32bd95d3c94c9c575b00008409c483cd04064`（= sha1("5eea0519…|universe=pit")）。
+- **对照设置**：同库（本地 PG）、同窗口 `20210514~20261016`，命令 `python scripts/backtest_5y_23strategies.py --force --no-handoff --portfolio-sim --entry-timing next_open` 分别加 `--universe pit` / `--universe l-only`（顺序执行，各一次）；两次均 `exit=0`。
+
+| 指标 | L-only | PIT | Δ | 相对 |
+| --- | --- | --- | --- | --- |
+| 样本外 CAGR (`cagr_oos`) | 3.88% | **4.20%** | +0.32pct | +8.26% |
+| 全期 CAGR (`cagr_full`) | 3.66% | **3.93%** | +0.26pct | +7.16% |
+| 夏普 | 0.423 | **0.444** | +0.021 | +4.94% |
+| 最大回撤 (`maxDD_pct`) | **13.11%** | 13.91% | +0.80pct | +6.11% |
+| 总收益 | 22.12% | **23.84%** | +1.72pct | +7.80% |
+| 胜率 | 43.67% | 43.93% | +0.26pct | +0.59% |
+| 成交笔数 | 561 | 560 | −1 | −0.18% |
+| 期末权益 | 1,221,170 | **1,238,420** | +17,250 | +1.41% |
+| 验收门槛 | pass | pass | — | — |
+
+（`n_days=1400`、`oos_days=1147`、`oos_start=2022-01-17` 两侧一致；漏斗两口径均 `reconciled=True`。）
+
+- **每策略成交笔数变化（PIT − L-only）**：`washout_break +26`（15→41）、`limit_up_pullback +11`（27→38）、`volume_surge_std +3`（0→3）；`holder_conc_break −24`（234→210）、`rsi_bullish_divergence −9`（49→40）、`monthly_macd_20ma −4`（24→20）、`ma_crossover −2`（144→142）、`volume_breakout −2`（2→0）；其余不变。**方向与判据预期一致：生存者偏差修复后，反转（超跌）与涨停族成交显著增加。**
+- **风险**：maxDD 由 13.11%→13.91%（+0.80pct，仍在门槛内）；PIT 增加反转/涨停族暴露，回撤略升属机制可解释，非门槛失败。
+- **L→D 迁移影响**：`601198.SH`/`601059.SH` 于 2026-10-19 由 `L` 移入 `D`（L 5577→5575）；同库 L-only 全回测**逐位复现** 2026-10-18 冻结基线（metrics 与 `config_hash` 完全一致），证明该迁移对 L-only 池绩效**零影响**。
+- **03/04/05 翻转重验**：卡 A/B/C 尚未翻转（均 `ready-for-agent`），本轮**无待重验项**；PIT 落地不改变其门槛口径。
+- **遗留**：`T600018.SH`（`symbol` 7 字符 > `varchar(6)`）未入库，不在 205 退市码集内；`cyq_perf` 无权限（本地由 `daily + daily_basic` 计算，已绕过）；行业 PIT 仍受 §9.11 P3-❻（`tushare_index_member_all.out_date` 全空）阻塞，属独立问题。

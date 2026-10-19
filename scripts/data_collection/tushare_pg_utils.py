@@ -377,6 +377,26 @@ def insert_dataframe(
         cur.close()
 
 
+def normalize_ts_code(code: str) -> str:
+    """把 6 位股票代码或大小写混合的 ts_code 归一化为 Tushare 格式。
+
+    ``600519`` -> ``600519.SH``；``000001`` -> ``000001.SZ``；``920305`` ->
+    ``920305.BJ``；已带后缀的代码只做去空格/大写处理。
+    """
+    s = str(code).strip().upper()
+    if not s:
+        return ""
+    if "." in s:
+        return s
+    if s.startswith(("4", "8", "920")):
+        return f"{s}.BJ"
+    if s.startswith(("6", "9")):
+        return f"{s}.SH"
+    if s.startswith(("0", "2", "3")):
+        return f"{s}.SZ"
+    return s
+
+
 def _parse_date(value):
     """将 YYYYMMDD 格式的字符串/数值转换为 datetime.date。"""
     if pd.isna(value):

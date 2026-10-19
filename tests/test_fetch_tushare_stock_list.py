@@ -113,6 +113,62 @@ def test_main_default_flow_keeps_original_filename():
     assert random_sleep.call_count == 2
 
 
+def test_fetch_a_stock_list_merges_multiple_statuses():
+    api = MagicMock()
+    listed = pd.DataFrame(
+        {
+            "ts_code": ["600519.SH"],
+            "symbol": ["600519"],
+            "name": ["贵州茅台"],
+            "exchange": ["SSE"],
+            "list_status": ["L"],
+            "list_date": ["20010827"],
+            "delist_date": [None],
+        }
+    )
+    delisted = pd.DataFrame(
+        {
+            "ts_code": ["605081.SH"],
+            "symbol": ["605081"],
+            "name": ["退市某某"],
+            "exchange": ["SSE"],
+            "list_status": ["D"],
+            "list_date": ["20200901"],
+            "delist_date": ["20251016"],
+        }
+    )
+    api.stock_basic.side_effect = [listed, delisted, pd.DataFrame()]
+
+    result = fetch_tushare_stock_list.fetch_a_stock_list(api, list_status="L,D,P")
+
+    assert result is not None
+    assert len(result) == 2
+    assert set(result["list_status"].tolist()) == {"L", "D"}
+    assert api.stock_basic.call_count == 3
+    assert [c.kwargs["list_status"] for c in api.stock_basic.call_args_list] == ["L", "D", "P"]
+
+
+def test_main_list_status_is_forwarded():
+    api = MagicMock()
+    a_df = pd.DataFrame({"ts_code": ["605081.SH"], "name": ["退市某某"]})
+    hk_df = pd.DataFrame({"ts_code": ["00001.HK"], "name": ["长和"]})
+    us_df = pd.DataFrame({"ts_code": ["AAPL"], "name": ["苹果"]})
+
+    with (
+        patch.object(fetch_tushare_stock_list, "get_tushare_api", return_value=api),
+        patch.object(fetch_tushare_stock_list, "fetch_a_stock_list", return_value=a_df) as fetch_a,
+        patch.object(fetch_tushare_stock_list, "save_to_csv"),
+        patch.object(fetch_tushare_stock_list, "fetch_hk_stock_list", return_value=hk_df),
+        patch.object(fetch_tushare_stock_list, "fetch_us_stock_list", return_value=us_df),
+        patch.object(fetch_tushare_stock_list, "generate_data_documentation"),
+        patch.object(fetch_tushare_stock_list, "random_sleep"),
+    ):
+        exit_code = fetch_tushare_stock_list.main(["--list-status", "L,D"])
+
+    assert exit_code == 0
+    fetch_a.assert_called_once_with(api, list_status="L,D")
+
+
 def test_main_a_rk_flow_overwrites_a_filename_and_rt_k():
     api = MagicMock()
     a_df = pd.DataFrame({"ts_code": ["000001.SZ"], "name": ["XD西藏药"]})

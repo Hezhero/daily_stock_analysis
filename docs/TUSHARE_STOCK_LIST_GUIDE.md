@@ -28,6 +28,12 @@ python3 scripts/fetch_tushare_stock_list.py
 python3 scripts/fetch_tushare_stock_list.py --a-rk
 ```
 
+A 股抓取默认只请求 `list_status='L'`。需要构建 point-in-time 宇宙时，可用 `--list-status` 一并抓取退市（`D`）或暂停上市（`P`）代码；输出 CSV 保留 `list_status` / `list_date` / `delist_date` 字段：
+
+```bash
+python3 scripts/fetch_tushare_stock_list.py --list-status L,D,P
+```
+
 ### 3. 查看输出
 
 数据将保存到 `data/` 目录：

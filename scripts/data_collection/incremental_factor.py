@@ -25,8 +25,11 @@
 用法:
   python scripts/data_collection/incremental_factor.py            # 增量
   python scripts/data_collection/incremental_factor.py 20160101 20260806  # 指定范围
+  python scripts/data_collection/incremental_factor.py --codes 605081.SH,603963.SH \\
+      --start-date 20200101 --end-date 20261016   # 退市股一次性回填（仅按股 3 表）
 """
 
+import argparse
 import logging
 import os
 import sys
@@ -37,6 +40,7 @@ from tushare_pg_utils import (
     TushareClient,
     get_pg_connection,
     insert_dataframe,
+    normalize_ts_code,
     row_count,
     TUSHARE_TOKEN,
 )
@@ -99,6 +103,15 @@ STOCK_APIS = [
 
 STOCK_BATCH = 1  # 该类接口不支持批量 ts_code
 
+# 退市股一次性回填：这三张表可按 ts_code + 日期范围直接拉取，逐只请求即可
+# 覆盖完整历史，且不会触发全市场按日接口的大体量回填。
+DELISTED_BACKFILL_APIS = [
+    ("moneyflow", "tushare_moneyflow", "(ts_code, trade_date)"),
+    ("stk_limit", "tushare_stk_limit", "(ts_code, trade_date)"),
+    ("margin_detail", "tushare_margin_detail", "(ts_code, trade_date)"),
+]
+BACKFILL_DEFAULT_START = "20200101"
+
 
 def _fmt(d) -> str:
     return d.strftime("%Y%m%d")
@@ -135,12 +148,11 @@ def get_existing_dates(conn, table: str, col: str) -> set[str]:
         cur.close()
 
 
-def get_codes(conn) -> list[str]:
+def get_codes(conn, include_delisted: bool = False) -> list[str]:
+    where = "list_status IN ('L','D')" if include_delisted else "list_status='L'"
     cur = conn.cursor()
     try:
-        cur.execute(
-            "SELECT ts_code FROM tushare_stock_basic WHERE list_status='L' ORDER BY ts_code"
-        )
+        cur.execute(f"SELECT ts_code FROM tushare_stock_basic WHERE {where} ORDER BY ts_code")
         return [row[0] for row in cur.fetchall()]
     finally:
         cur.close()
@@ -311,13 +323,43 @@ def _print_summary(conn):
         logger.info("  %s: %s 行", label, f"{cnt:,}" if cnt else "空")
 
 
+def _parse_args(argv=None):
+    parser = argparse.ArgumentParser(
+        description="Tushare 衍生/情绪/博弈数据增量采集（支持退市股一次性回填）",
+    )
+    parser.add_argument("start", nargs="?", default=None, help="起始日期 YYYYMMDD（可选）")
+    parser.add_argument("end", nargs="?", default=None, help="结束日期 YYYYMMDD（可选）")
+    parser.add_argument(
+        "--codes", default="",
+        help="逗号分隔的 ts_code 或 6 位代码；指定后只回填按股 3 表",
+    )
+    parser.add_argument(
+        "--include-delisted", action="store_true",
+        help="把 list_status='D' 的退市股纳入本次回填（opt-in，默认不启用）",
+    )
+    parser.add_argument(
+        "--start-date", default="",
+        help=f"回填起始日 YYYYMMDD（默认 {BACKFILL_DEFAULT_START}）",
+    )
+    parser.add_argument(
+        "--end-date", default="",
+        help="回填结束日 YYYYMMDD（默认今天）",
+    )
+    return parser.parse_args(argv)
+
+
 def main():
     if not TUSHARE_TOKEN:
         logger.error("TUSHARE_TOKEN 未设置，请在 .env 中配置")
         sys.exit(1)
 
-    start_arg = sys.argv[1] if len(sys.argv) > 1 else None
-    end_arg = sys.argv[2] if len(sys.argv) > 2 else None
+    args = _parse_args()
+    start_arg = args.start_date or args.start
+    end_arg = args.end_date or args.end
+    explicit_codes = [
+        code for code in (normalize_ts_code(x) for x in args.codes.split(",")) if code
+    ]
+    code_mode = bool(explicit_codes) or args.include_delisted
 
     t0 = time.time()
     client = TushareClient(TUSHARE_TOKEN, rate_limit=RATE_LIMIT)
@@ -333,6 +375,33 @@ def main():
         _print_summary(conn)
 
         today = date.today()
+
+        # ── 退市股一次性回填（opt-in，仅按股 3 表，不进入夜间默认链路） ──
+        if code_mode:
+            codes = explicit_codes or get_codes(conn, include_delisted=True)
+            if not codes:
+                logger.error("没有可回填的股票代码")
+                sys.exit(1)
+            start = args.start_date or args.start or BACKFILL_DEFAULT_START
+            until = args.end_date or args.end or _fmt(today)
+            logger.info(
+                "退市股回填模式: %d 只 (%s ~ %s)，接口=%s",
+                len(codes), start, until,
+                ", ".join(api[0] for api in DELISTED_BACKFILL_APIS),
+            )
+            grand_total = 0
+            for api_name, table_name, conflict in DELISTED_BACKFILL_APIS:
+                grand_total += pull_stock_api(
+                    client, conn, api_name, table_name, conflict,
+                    codes, start, until,
+                )
+            logger.info(
+                "=== 退市股回填完成 耗时 %.0f 秒  新增: %s ===",
+                time.time() - t0, f"{grand_total:,}",
+            )
+            _print_summary(conn)
+            return
+
         until = end_arg or _fmt(today)
         default_start = _fmt(today - timedelta(days=LOOKBACK_DAYS))
 

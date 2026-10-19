@@ -6,8 +6,11 @@
 三张表中缺失的交易日数据。
 
 策略:
-  - daily_basic: 按 trade_date 逐日全市场拉取（API 支持不传 ts_code）
-  - daily / adj_factor: 按股票批次 + 日期范围拉取（API 需要 ts_code）
+  - 默认（夜间增量）: daily_basic 按 trade_date 逐日全市场拉取（API 支持不传
+    ts_code）；daily / adj_factor 按上市股票批次 + 日期范围拉取
+  - 退市股回填（opt-in，一次性）: 通过 --codes 或 --include-delisted 启用，
+    daily / adj_factor / daily_basic 全部按 ts_code 逐只拉取，避免长区间
+    批量请求超过 API 单次返回上限；默认夜间行为完全不变
 
 容错:
   - TushareClient.query() 内置 3 次重试（指数退避 1s/2s）
@@ -15,9 +18,14 @@
   - insert_dataframe() 批量失败时自动降级为逐行插入
   - 单品/单日 API 失败不中断整体流程
 
-用法: python scripts/data_collection/incremental_daily.py
+用法:
+  python scripts/data_collection/incremental_daily.py        # 夜间增量（L-only）
+  python scripts/data_collection/incremental_daily.py --include-delisted
+  python scripts/data_collection/incremental_daily.py --codes 605081.SH,603963.SH \\
+      --start-date 20200101 --end-date 20261016
 """
 
+import argparse
 import logging
 import os
 import sys
@@ -30,6 +38,7 @@ from tushare_pg_utils import (
     TushareClient,
     get_pg_connection,
     insert_dataframe,
+    normalize_ts_code,
     row_count,
     TUSHARE_TOKEN,
 )
@@ -63,13 +72,25 @@ DAILY_BASIC_FIELDS = (
 STOCK_BATCH = 200
 SLEEP_BETWEEN = 0.15
 
+# 退市股一次性回填：每日线约 1400 行，逐只请求可稳定低于 API 单次返回上限；
+# 默认夜间批量（200 只/批）只覆盖很短的增量窗口，不受此限制。
+BACKFILL_BATCH = 1
+BACKFILL_DEFAULT_START = "20200101"
 
-def get_codes(conn) -> list[str]:
+MARKET_APIS = [
+    ("daily", "tushare_daily", DAILY_FIELDS, "(ts_code, trade_date)"),
+    ("adj_factor", "tushare_adj_factor", ADJ_FACTOR_FIELDS, "(ts_code, trade_date)"),
+]
+BACKFILL_APIS = MARKET_APIS + [
+    ("daily_basic", "tushare_daily_basic", DAILY_BASIC_FIELDS, "(ts_code, trade_date)"),
+]
+
+
+def get_codes(conn, include_delisted: bool = False) -> list[str]:
+    where = "list_status IN ('L','D')" if include_delisted else "list_status='L'"
     cur = conn.cursor()
     try:
-        cur.execute(
-            "SELECT ts_code FROM tushare_stock_basic WHERE list_status='L' ORDER BY ts_code"
-        )
+        cur.execute(f"SELECT ts_code FROM tushare_stock_basic WHERE {where} ORDER BY ts_code")
         return [row[0] for row in cur.fetchall()]
     finally:
         cur.close()
@@ -130,35 +151,31 @@ def pull_daily_basic(client: TushareClient, conn, trade_dates: list[str]):
     logger.info("  daily_basic 完成: %s", f"{total:,}")
 
 
-def pull_daily_and_adj(
+def pull_market_by_code(
     client: TushareClient, conn,
     codes: list[str],
     trade_dates: list[str],
+    apis: list[tuple[str, str, str, str]],
+    batch_size: int = STOCK_BATCH,
 ):
-    """按股票批次拉取 daily 和 adj_factor。"""
-    if not trade_dates:
+    """按 ts_code 批次 + 日期范围拉取行情类接口并幂等入库。"""
+    if not trade_dates or not codes:
         return
 
     start_d = trade_dates[0]
     end_d = trade_dates[-1]
-    logger.info("--- daily + adj_factor: %s ~ %s (%d 日) ---", start_d, end_d, len(trade_dates))
+    names = [api[0] for api in apis]
+    logger.info(
+        "--- %s: %s ~ %s (%d 日, %d 只) ---",
+        " + ".join(names), start_d, end_d, len(trade_dates), len(codes),
+    )
 
-    apis = [
-        (
-            "daily", "tushare_daily", DAILY_FIELDS,
-            "(ts_code, trade_date)",
-        ),
-        (
-            "adj_factor", "tushare_adj_factor", ADJ_FACTOR_FIELDS,
-            "(ts_code, trade_date)",
-        ),
-    ]
+    totals: dict[str, int] = {name: 0 for name in names}
+    fails: dict[str, int] = {name: 0 for name in names}
+    batches = max(1, (len(codes) + batch_size - 1) // batch_size)
 
-    totals: dict[str, int] = {"daily": 0, "adj_factor": 0}
-    fails: dict[str, int] = {"daily": 0, "adj_factor": 0}
-
-    for i in range(0, len(codes), STOCK_BATCH):
-        batch = codes[i:i + STOCK_BATCH]
+    for bi, i in enumerate(range(0, len(codes), batch_size), start=1):
+        batch = codes[i:i + batch_size]
         cs = ",".join(batch)
         for api_name, table_name, fields, conflict in apis:
             try:
@@ -176,23 +193,32 @@ def pull_daily_and_adj(
                     totals[api_name] += n
             except Exception as exc:
                 fails[api_name] += 1
-                if fails[api_name] <= 1 or (i // STOCK_BATCH) % 10 == 0:
+                if fails[api_name] <= 1 or bi % 10 == 0:
                     logger.warning("  %s b%d 失败: %s", api_name, i, exc)
             time.sleep(SLEEP_BETWEEN)
 
-        if (i // STOCK_BATCH) % 20 == 0:
+        if bi % 20 == 0 or bi == batches:
             logger.info(
-                "  batch [%d/%d] daily=%s adj=%s",
-                i // STOCK_BATCH + 1,
-                (len(codes) + STOCK_BATCH - 1) // STOCK_BATCH,
-                f"{totals['daily']:,}",
-                f"{totals['adj_factor']:,}",
+                "  batch [%d/%d] %s",
+                bi, batches,
+                "  ".join(f"{name}={totals[name]:,}" for name in names),
             )
 
     logger.info(
-        "  daily: %s  adj_factor: %s  失败批次: daily=%d adj_factor=%d",
-        f"{totals['daily']:,}", f"{totals['adj_factor']:,}",
-        fails["daily"], fails["adj_factor"],
+        "  %s  失败批次: %s",
+        "  ".join(f"{name}: {totals[name]:,}" for name in names),
+        "  ".join(f"{name}={fails[name]}" for name in names),
+    )
+
+
+def pull_daily_and_adj(
+    client: TushareClient, conn,
+    codes: list[str],
+    trade_dates: list[str],
+):
+    """默认夜间路径：按股票批次拉取 daily 和 adj_factor。"""
+    pull_market_by_code(
+        client, conn, codes, trade_dates, MARKET_APIS, batch_size=STOCK_BATCH,
     )
 
 
@@ -209,10 +235,39 @@ def _print_summary(conn):
         logger.info("  %s: %s 行  最新: %s", label, f"{cnt:,}", last_date or "无")
 
 
+def _parse_args(argv=None):
+    parser = argparse.ArgumentParser(
+        description="Tushare 日线/复权/每日指标增量采集（支持退市股一次性回填）",
+    )
+    parser.add_argument(
+        "--codes", default="",
+        help="逗号分隔的 ts_code 或 6 位代码；指定后只回填这些股票",
+    )
+    parser.add_argument(
+        "--include-delisted", action="store_true",
+        help="把 list_status='D' 的退市股纳入本次回填（opt-in，默认不启用）",
+    )
+    parser.add_argument(
+        "--start-date", default="",
+        help=f"回填起始日 YYYYMMDD（默认 {BACKFILL_DEFAULT_START}）",
+    )
+    parser.add_argument(
+        "--end-date", default="",
+        help="回填结束日 YYYYMMDD（默认今天，且不超过 2026-12-31）",
+    )
+    return parser.parse_args(argv)
+
+
 def main():
     if not TUSHARE_TOKEN:
         logger.error("TUSHARE_TOKEN 未设置，请在 .env 中配置")
         sys.exit(1)
+
+    args = _parse_args()
+    explicit_codes = [
+        code for code in (normalize_ts_code(x) for x in args.codes.split(",")) if code
+    ]
+    code_mode = bool(explicit_codes) or args.include_delisted
 
     t0 = time.time()
     client = TushareClient(TUSHARE_TOKEN)
@@ -223,9 +278,35 @@ def main():
         bootstrap.ensure_schema(conn)
         bootstrap.ensure_stock_basic(client, conn)
         bootstrap.ensure_trade_cal(client, conn)
-        bootstrap.ensure_market_data(client, conn)
+        if not code_mode:
+            bootstrap.ensure_market_data(client, conn)
 
         _print_summary(conn)
+
+        # ── 退市股一次性回填（opt-in，不进入夜间默认链路） ──
+        if code_mode:
+            codes = explicit_codes or get_codes(conn, include_delisted=True)
+            if not codes:
+                logger.error("没有可回填的股票代码")
+                sys.exit(1)
+            start = args.start_date or BACKFILL_DEFAULT_START
+            until = args.end_date or _fmt(min(date.today(), date(2026, 12, 31)))
+            trade_dates = get_trade_dates(conn, start, until)
+            if not trade_dates:
+                logger.error("回填区间 %s~%s 没有交易日，请检查 trade_cal", start, until)
+                sys.exit(1)
+            logger.info(
+                "退市股回填模式: %d 只 (%s ~ %s)，股票池=%s",
+                len(codes), start, until,
+                "显式代码" if explicit_codes else "L+D",
+            )
+            pull_market_by_code(
+                client, conn, codes, trade_dates, BACKFILL_APIS,
+                batch_size=BACKFILL_BATCH,
+            )
+            logger.info("=== 回填完成 耗时 %.0f 秒 ===", time.time() - t0)
+            _print_summary(conn)
+            return
 
         # ── 确定日期范围 ──
         today = date.today()

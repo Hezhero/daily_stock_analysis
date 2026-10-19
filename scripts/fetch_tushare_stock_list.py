@@ -99,38 +99,54 @@ def random_sleep(min_seconds: int = SLEEP_MIN, max_seconds: int = SLEEP_MAX):
     time.sleep(sleep_time)
 
 
-def fetch_a_stock_list(api: ts.pro_api) -> Optional[pd.DataFrame]:
+def fetch_a_stock_list(api: ts.pro_api, list_status: str = 'L') -> Optional[pd.DataFrame]:
     """
     获取 A股列表
 
     接口：stock_basic
-    限量：单次最多6000行（覆盖全市场A股）
+    限量：单次最多6000行（覆盖全市场A股）；多状态时逐一请求后合并
 
     Args:
         api: Tushare API 实例
+        list_status: 单个状态或逗号分隔组合，L: 上市, D: 退市, P: 暂停上市
 
     Returns:
-        A股数据 DataFrame，失败返回 None
+        A股数据 DataFrame（含 list_status/list_date/delist_date），失败返回 None
     """
-    print("\n[1/3] 正在获取 A股列表...")
+    statuses = [s.strip().upper() for s in str(list_status).split(',') if s.strip()]
+    invalid = [s for s in statuses if s not in {'L', 'D', 'P'}]
+    if invalid or not statuses:
+        print(f"[错误] 非法的 list_status: {list_status!r}")
+        return None
+
+    print(f"\n[1/3] 正在获取 A股列表（list_status={','.join(statuses)}）...")
 
     try:
-        # 获取所有正常上市的股票
-        df = api.stock_basic(
-            exchange='',        # 空：全部交易所
-            list_status='L',    # L: 上市, D: 退市, P: 暂停上市
-            fields='ts_code,symbol,name,area,industry,fullname,enname,cnspell,market,exchange,curr_type,list_status,list_date,delist_date,is_hs,act_name,act_ent_type'
-        )
+        frames = []
+        for status in statuses:
+            df = api.stock_basic(
+                exchange='',        # 空：全部交易所
+                list_status=status,  # L: 上市, D: 退市, P: 暂停上市
+                fields='ts_code,symbol,name,area,industry,fullname,enname,cnspell,market,exchange,curr_type,list_status,list_date,delist_date,is_hs,act_name,act_ent_type'
+            )
+            if df is not None and len(df) > 0:
+                print(f"  - list_status={status}: {len(df)} 只")
+                frames.append(df)
+            else:
+                print(f"  - list_status={status}: 0 只（跳过）")
 
-        if df is not None and len(df) > 0:
-            print(f"✓ A股列表获取成功，共 {len(df)} 只股票")
-            print("  - 交易所分布：")
-            for exchange, count in df['exchange'].value_counts().items():
-                print(f"    {exchange}: {count} 只")
-            return df
-        else:
+        if not frames:
             print("[错误] A股数据为空")
             return None
+
+        result = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
+        result = result.drop_duplicates(subset=['ts_code'], keep='first')
+        print(f"✓ A股列表获取成功，共 {len(result)} 只股票")
+        if 'exchange' in result.columns:
+            print("  - 交易所分布：")
+            for exchange, count in result['exchange'].value_counts().items():
+                print(f"    {exchange}: {count} 只")
+        return result
 
     except Exception as e:
         print(f"[错误] 获取 A股列表失败: {e}")
@@ -593,6 +609,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="使用 rt_k 修正 A 股中带 XD/XR/DR/N/C 前缀的名称，并覆盖输出到 stock_list_a.csv",
     )
+    parser.add_argument(
+        "--list-status",
+        default="L",
+        help="A股上市状态，支持 L/D/P 或逗号组合（如 L,D,P），默认 L",
+    )
     return parser
 
 
@@ -605,14 +626,18 @@ def main(argv: Optional[List[str]] = None):
     print("Tushare 股票列表获取工具")
     print("=" * 60)
     print(f"[信息] A股名称修正模式：{'开启' if args.a_rk else '关闭'}")
+    print(f"[信息] A股 list_status：{args.list_status}")
 
     # 1. 获取 API 实例
     api = get_tushare_api()
     if not api:
         return 1
 
-    # 2. 获取 A股数据
-    a_df = fetch_a_stock_list(api)
+    # 2. 获取 A股数据（默认 L 保持旧调用契约）
+    if args.list_status.strip().upper() == 'L':
+        a_df = fetch_a_stock_list(api)
+    else:
+        a_df = fetch_a_stock_list(api, list_status=args.list_status)
     if a_df is not None:
         a_filename = 'stock_list_a.csv'
         a_title = 'A股列表'
