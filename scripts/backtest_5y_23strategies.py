@@ -4344,22 +4344,32 @@ def _portfolio_sim_spot_checks(trades: pd.DataFrame, collapsed: pd.DataFrame,
 
 
 def _write_portfolio_sim_artifacts(payload: Dict) -> Dict[str, str]:
-    """写 side-by-side 产物；不触碰任何旧指标输出路径。"""
+    """写 side-by-side 产物；不触碰任何旧指标输出路径。
+
+    产物键：candidates_csv（collapse 后每 (entry_date, code) 一行）、
+    signals_csv（decluster 后、collapse 前的信号池，观测单元
+    (strategy, signal_date, code)）、trades_csv、equity_csv、summary_json。
+    注意：设置 --portfolio-sim-window 时 signals_csv 仅含窗口内信号；
+    门槛（ticket-02）需再按 metrics.oos_start 收窄到 OOS。
+    """
     out_dir = Path(payload.get("sim_out") or _PORTFOLIO_SIM_OUT or "result/")
     out_dir.mkdir(parents=True, exist_ok=True)
     result = payload["result"]
     equity = result.equity
     trades = result.trades
     candidates = payload["collapsed"]
+    signals = payload["signals"]
     first = pd.Timestamp(payload["sim_start"])
     last = pd.Timestamp(payload["sim_end"])
     stem = f"portfolio_sim_{first:%Y%m%d}_{last:%Y%m%d}"
 
     candidates_path = out_dir / f"{stem}.csv"
+    signals_path = out_dir / f"{stem}_signals.csv"
     trades_path = out_dir / f"{stem}_trades.csv"
     equity_path = out_dir / f"{stem}_equity.csv"
     summary_path = out_dir / f"{stem}.json"
     candidates.to_csv(candidates_path, index=False, encoding="utf-8-sig")
+    signals.to_csv(signals_path, index=False, encoding="utf-8-sig")
     trades.to_csv(trades_path, index=False, encoding="utf-8-sig")
     equity.to_csv(equity_path, index=False, encoding="utf-8-sig")
 
@@ -4381,6 +4391,7 @@ def _write_portfolio_sim_artifacts(payload: Dict) -> Dict[str, str]:
         "equity_cash_max_abs_diff": payload.get("equity_cash_max_abs_diff"),
         "artifacts": {
             "candidates_csv": str(candidates_path),
+            "signals_csv": str(signals_path),
             "trades_csv": str(trades_path),
             "equity_csv": str(equity_path),
             "summary_json": str(summary_path),
@@ -4513,6 +4524,7 @@ def _run_portfolio_sim_chain(sim_bars: pd.DataFrame, pre_resonance: Dict[str, pd
     sim_end = pd.Timestamp(equity["date"].iloc[-1]) if not equity.empty else pd.Timestamp(sim_bars["date"].max())
     payload: Dict = {
         "result": result,
+        "signals": declustered,
         "collapsed": collapsed,
         "rejects": dict(sorted(rejects.items())),
         "exit_diagnostics": exit_diagnostics,

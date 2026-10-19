@@ -14,7 +14,7 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from scripts.portfolio_sim import SimConfig, _config_hash
+from scripts.portfolio_sim import SimConfig, _CAND_COLUMNS, _config_hash
 
 DRIVER = Path(__file__).resolve().parents[1] / "scripts" / "backtest_5y_23strategies.py"
 
@@ -103,9 +103,16 @@ def test_s4_chain_reconciles_funnel_and_cash(tmp_path: Path) -> None:
     assert Path(artifacts["candidates_csv"]).exists()
     assert Path(artifacts["trades_csv"]).exists()
     assert Path(artifacts["equity_csv"]).exists()
+    signals_path = Path(artifacts["signals_csv"])
+    assert signals_path.exists()
+    signals = pd.read_csv(signals_path, encoding="utf-8-sig")
+    assert not signals.empty
+    assert tuple(signals.columns) == _CAND_COLUMNS
+    assert len(signals) == funnel["declustered"]
     summary = json.loads(Path(artifacts["summary_json"]).read_text(encoding="utf-8"))
     assert summary["config_hash"]
     assert summary["funnel"]["reconciled"] is True
+    assert summary["artifacts"]["signals_csv"] == str(signals_path)
 
 
 def test_s4_config_matches_contract_defaults(tmp_path: Path) -> None:
