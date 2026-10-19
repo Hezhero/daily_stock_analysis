@@ -1079,3 +1079,4 @@ Week 4-5:
 - **契约语义**：后续修订《指标契约》时，只冻结度量口径（成本 0.35% 往返、T+1 盯市、PIT 宇宙、去簇共振定义、`next_open` 入场），`min_resonance_families` 作为实验参数显式覆盖，并改变 `config_hash`。
 - **纪律**：门槛不通过时保留默认值，记录失败原因；不追加局部 patch，不把同一张卡拆成多轮小修继续试。
 - **本轮边界**：不修改回测代码，不运行回测或测试，不翻转任何默认值。一次完整回测约 1.5 小时，后续实验优先选择可逆的单变量旋钮。
+- **落地记录（2026-10-19，ticket 01）**：契约守卫收敛落地——`_portfolio_sim_config()` 将冻结项收敛为 `_METRIC_PROFILE_*`（仅度量口径与验收门槛：显式成本 / ADV 滑点 / OOS 窗口 / maxDD 下限 / 最小成交笔数 / 去簇共振定义），`min_resonance_families` 与部署、选取旋钮（持仓上限 `max_positions`、最大持有 `max_holding_bars`、持仓簇上限 `family_cap`、行业上限 `industry_cap`）一并降级为 `_REGISTERED_EXPERIMENT_DEFAULTS` / `_REGISTERED_EXPERIMENT_FAMILY_CAP` 中的已登记实验参数（默认值仍被守卫，覆盖 = warning + `config_hash` 变化，未登记参数拒绝覆盖）；默认基线 `config_hash` 不变，守卫/覆盖两条路径已补 S3 单测，《指标契约》§2.1 与 spec 的代码边界表述同步修订。

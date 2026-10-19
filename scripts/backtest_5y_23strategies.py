@@ -4101,47 +4101,88 @@ def report_wfo_sweep(rows: List[Dict]) -> None:
     logger.info("=" * 78)
 
 
+# 冻结度量画像（metric profile）：只含度量口径与验收门槛，决定"测的是什么"。改动 = 改变度量基准，
+# 属契约变更（须走 ADR），不得静默调参。清单与 result/指标契约_metric_contract_v1_*.md §2.1 对应。
+_METRIC_PROFILE_SCALARS = {
+    "explicit_cost_roundtrip": 0.0035,
+    "adv_window": 20,
+    "warmup_days": 252,
+    "max_dd_floor_pct": 25.0,
+    "min_trades": 100,
+}
+_METRIC_PROFILE_ADV_TIERS = (
+    (1_000_000_000, 0.0005),
+    (300_000_000, 0.0010),
+    (100_000_000, 0.0020),
+    (30_000_000, 0.0035),
+    (0.0, 0.0050),
+)
+
+# 已登记实验参数：持仓上限/最大持有/持仓簇上限/行业上限属部署/选取旋钮（Card B/C 的靶子），
+# 不是度量画像。默认值仍必须等于登记值（防止静默改默认），但允许经显式登记路径覆盖。
+# 覆盖 = 一次"已登记的重跑"（warning + config_hash 变化），不是新默认值。
+# 只有出现在这些登记表中的参数才允许被覆盖；未登记参数（含度量画像）不得覆盖。
+_REGISTERED_EXPERIMENT_DEFAULTS = {
+    "min_resonance_families": 2,
+    "max_positions": 10,
+    "industry_cap": 2,
+    "max_holding_bars": 10,
+}
+_REGISTERED_EXPERIMENT_FAMILY_CAP = {"trend": 3}
+
+
+def _registered_experiment_override(param: str, value: int) -> int:
+    """返回已登记实验参数的覆盖值；未登记参数一律拒绝（登记表是唯一准入名单）。"""
+    if param not in _REGISTERED_EXPERIMENT_DEFAULTS:
+        raise ValueError(
+            f"实验参数 {param!r} 未登记，禁止覆盖；"
+            "请先加入 _REGISTERED_EXPERIMENT_DEFAULTS 并同步指标契约"
+        )
+    return value
+
+
 def _portfolio_sim_config() -> SimConfig:
-    """构造 T0.1 冻结配置，并显式校验 metric contract §2.1（不改 S2 默认值）。"""
+    """构造 T0.1 冻结配置，并校验 metric contract §2.1 的两类参数。
+
+    度量画像（_METRIC_PROFILE_*）不符 → `RuntimeError`（契约变更须走 ADR）；
+    已登记实验参数默认值不符 → 同样 `RuntimeError`（禁止静默改默认），
+    但允许经显式登记路径覆盖（附 warning 且改变 `config_hash`）。
+    """
     cfg = SimConfig()
     mismatches: List[str] = []
-    expected_scalars = {
-        "explicit_cost_roundtrip": 0.0035,
-        "adv_window": 20,
-        "min_resonance_families": 2,
-        "max_positions": 10,
-        "industry_cap": 2,
-        "max_holding_bars": 10,
-        "max_dd_floor_pct": 25.0,
-        "min_trades": 100,
-        "warmup_days": 252,
-    }
-    for field, expected in expected_scalars.items():
+    for field, expected in _METRIC_PROFILE_SCALARS.items():
         actual = getattr(cfg, field)
         if actual != expected:
-            mismatches.append(f"{field}={actual!r} (contract {expected!r})")
-    expected_tiers = (
-        (1_000_000_000, 0.0005),
-        (300_000_000, 0.0010),
-        (100_000_000, 0.0020),
-        (30_000_000, 0.0035),
-        (0.0, 0.0050),
-    )
-    if tuple(cfg.adv_tiers) != expected_tiers:
-        mismatches.append(f"adv_tiers={cfg.adv_tiers!r} (contract {expected_tiers!r})")
-    if dict(cfg.family_cap) != {"trend": 3}:
-        mismatches.append(f"family_cap={cfg.family_cap!r} (contract trend<=3)")
+            mismatches.append(f"[度量画像] {field}={actual!r} (contract {expected!r})")
+    if tuple(cfg.adv_tiers) != _METRIC_PROFILE_ADV_TIERS:
+        mismatches.append(
+            f"[度量画像] adv_tiers={cfg.adv_tiers!r} (contract {_METRIC_PROFILE_ADV_TIERS!r})"
+        )
+    for field, expected in _REGISTERED_EXPERIMENT_DEFAULTS.items():
+        actual = getattr(cfg, field)
+        if actual != expected:
+            mismatches.append(
+                f"[已登记实验参数] {field}={actual!r} (registered {expected!r})"
+            )
+    if dict(cfg.family_cap) != _REGISTERED_EXPERIMENT_FAMILY_CAP:
+        mismatches.append(
+            f"[已登记实验参数] family_cap={cfg.family_cap!r} "
+            f"(registered {_REGISTERED_EXPERIMENT_FAMILY_CAP!r})"
+        )
     if mismatches:
         raise RuntimeError(
-            "SimConfig 默认值与指标契约 §2.1 不一致（禁止静默改 S2 默认值）: "
+            "SimConfig 默认值与指标契约 §2.1 不一致"
+            "（度量画像=契约变更，已登记实验参数=默认值漂移，均禁止静默调参）: "
             + "; ".join(mismatches)
         )
     if _PORTFOLIO_SIM_MIN_FAMILIES is not None:
-        override = int(_PORTFOLIO_SIM_MIN_FAMILIES)
+        override = _registered_experiment_override(
+            "min_resonance_families", int(_PORTFOLIO_SIM_MIN_FAMILIES)
+        )
         if override == cfg.min_resonance_families:
             return cfg
         logger.warning(
-            "消融覆盖：min_resonance_families 由契约默认 %d 改为 %d"
+            "消融覆盖（已登记实验参数）：min_resonance_families 由契约默认 %d 改为 %d"
             "（仅用于分离会计效应与家族过滤器效应，非新默认值，不得固化）",
             cfg.min_resonance_families, override,
         )

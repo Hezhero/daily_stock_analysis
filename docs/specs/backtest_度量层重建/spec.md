@@ -6,6 +6,7 @@
 > 来源：`/grill-with-docs`（grilling + domain-modeling）会话。Round 1 锁定（组合级 / 生产导向 /
 > 风险调整裁判 / 本轮交付诊断+方案+文档 / 参数与结构性改动都允许）；Round 2 锁定见
 > `Implementation Decisions` 与文末「决策记录」。
+> 执行状态：2026-10-19 起按 tracer-bullet ticket 增量落地代码；ticket 01（契约守卫收敛）为第一项经用户授权的代码改动。
 
 ## Problem Statement
 
@@ -38,7 +39,7 @@
 4. 把"新因子（`tushare_moneyflow` 分层主力资金）"登记为低优先级实验卡。
 5. 产出：诊断报告、方案（含实验卡登记表）、`GLOSSARY.md` 与首批 ADR。
 
-**本阶段不修改回测代码**（交付 = 诊断 + 方案 + 文档）。
+**交付 = 诊断 + 方案 + 文档**；代码改动自 2026-10-19 起经用户显式授权后按 tracer-bullet ticket 增量落地（首项为 ticket 01 契约守卫收敛）。
 
 ## User Stories
 
@@ -107,7 +108,7 @@
 - 出场参数再调（§9 已饱和 / 证伪）。
 - 本阶段不做完整多年 WFO 引擎（T0.3）。
 - 新增策略。
-- **本轮不修改任何回测代码**（本阶段交付 = 诊断 + 方案 + 文档）。
+- **不做未授权的代码改动**：交付 = 诊断 + 方案 + 文档；代码改动须经用户显式授权后按 tracer-bullet ticket 增量落地（ticket 01 为首项）。
 - 生产 / Web / Desktop 改动。
 
 ## Further Notes

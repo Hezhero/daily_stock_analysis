@@ -4,10 +4,12 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
-- [ ] 默认配置跑出的 `config_hash` 仍为已发布基线值，指标逐位不变。
-- [ ] 显式覆盖已登记的实验参数（如 `min_resonance_families`）时：发出 warning，且 `config_hash` 改变；结果可复现（同参两次运行逐位一致）。
-- [ ] 当 `SimConfig` 默认值与冻结度量画像不符时，仍抛 `RuntimeError`（画像本身继续被守卫，不允许静默调参）。
-- [ ] 《指标契约》文档与守卫行为一致：冻结项 = 成本 0.35% 往返 / T+1 盯市 / PIT 宇宙 / 去簇共振定义 / `next_open` 入场；实验参数 = `min_resonance_families` 等。
-- [ ] 守卫与覆盖两条路径都有单元测试覆盖（契约守卫 seam）。
+- [x] 默认配置跑出的 `config_hash` 仍为已发布基线值，指标逐位不变。
+- [x] 显式覆盖已登记的实验参数（如 `min_resonance_families`）时：发出 warning，且 `config_hash` 改变；结果可复现（同参两次运行逐位一致）。
+- [x] 当 `SimConfig` 默认值与冻结度量画像不符时，仍抛 `RuntimeError`（画像本身继续被守卫，不允许静默调参）。
+- [x] 《指标契约》文档与守卫行为一致：冻结项 = 成本 0.35% 往返 / T+1 盯市 / PIT 宇宙 / 去簇共振定义 / `next_open` 入场；实验参数 = `min_resonance_families` 等。
+- [x] 守卫与覆盖两条路径都有单元测试覆盖（契约守卫 seam）。
+
+**Note:** 2026-10-19 用户批准扩展：同步将持仓上限 / 最大持有 / 持仓簇上限 / 行业上限降级为已登记实验参数（见《指标契约》§2.1）；本 ticket 的 `min_resonance_families` 验收不变。
