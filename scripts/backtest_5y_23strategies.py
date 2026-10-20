@@ -482,7 +482,8 @@ def _add_universe_argument(parser: argparse.ArgumentParser) -> None:
         "--universe",
         choices=list(UNIVERSE_CHOICES),
         default=UNIVERSE_DEFAULT,
-        help="股票池口径（T0.4）：l-only=仅当前正常上市（默认，冻结基线逐位不变）；"
+        help="股票池口径（T0.4，默认 %(default)s）："
+             "l-only=仅当前正常上市（冻结基线逐位不变，作 opt-out）；"
              "pit=按 list_date/delist_date 的可交易窗口纳入窗口内退市股"
              "（需先回填退市股清单与历史行情）",
     )
@@ -4232,6 +4233,8 @@ _METRIC_PROFILE_ADV_TIERS = (
 # 不是度量画像。默认值仍必须等于登记值（防止静默改默认），但允许经显式登记路径覆盖。
 # 覆盖 = 一次"已登记的重跑"（warning + config_hash 变化），不是新默认值。
 # 只有出现在这些登记表中的参数才允许被覆盖；未登记参数（含度量画像）不得覆盖。
+# 当前唯一接入覆盖入口的是 min_resonance_families（_PORTFOLIO_SIM_MIN_FAMILIES → Card A）；
+# 其余三项与 family_cap 只有默认值漂移守卫，尚无覆盖入口，新增入口须同步指标契约。
 _REGISTERED_EXPERIMENT_DEFAULTS = {
     "min_resonance_families": 2,
     "max_positions": 10,
