@@ -161,6 +161,32 @@ class TestTushareFetcherGetStockList(unittest.TestCase):
         self.assertEqual(len(df), 1)
         self.assertEqual(fetcher._api.stock_basic.call_count, 3)
 
+    def test_get_stock_list_keeps_listed_frame_when_one_status_fails(self) -> None:
+        fetcher = self._make_fetcher()
+        listed = pd.DataFrame(
+            {
+                "ts_code": ["600519.SH"],
+                "name": ["贵州茅台"],
+                "industry": ["白酒"],
+                "area": ["贵州"],
+                "market": ["主板"],
+            }
+        )
+        fetcher._api.stock_basic.side_effect = [listed, RuntimeError("tushare 500")]
+
+        with patch.object(fetcher, "_check_rate_limit"):
+            with self.assertLogs("data_provider.tushare_fetcher", level="WARNING") as captured:
+                df = fetcher.get_stock_list(list_status="L,D")
+
+        self.assertIsNotNone(df)
+        assert df is not None
+        self.assertEqual(df["code"].tolist(), ["600519"])
+        self.assertEqual(fetcher._api.stock_basic.call_count, 2)
+        self.assertTrue(
+            any("不完整" in line for line in captured.output),
+            captured.output,
+        )
+
     def test_get_stock_list_rejects_invalid_status(self) -> None:
         fetcher = self._make_fetcher()
 

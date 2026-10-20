@@ -19,6 +19,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 if "dotenv" not in sys.modules:
     dotenv_stub = types.ModuleType("dotenv")
     dotenv_stub.load_dotenv = lambda *args, **kwargs: None
+    dotenv_stub.dotenv_values = lambda *args, **kwargs: {}
     sys.modules["dotenv"] = dotenv_stub
 
 if "tushare" not in sys.modules:
@@ -104,7 +105,7 @@ def test_main_default_flow_keeps_original_filename():
         exit_code = fetch_tushare_stock_list.main([])
 
     assert exit_code == 0
-    fetch_a.assert_called_once_with(api)
+    fetch_a.assert_called_once_with(api, list_status="L")
     save_to_csv.assert_any_call(a_df, "stock_list_a.csv", "A股")
     fetch_hk.assert_called_once_with(api)
     fetch_us.assert_called_once_with(api)
@@ -169,6 +170,29 @@ def test_main_list_status_is_forwarded():
     fetch_a.assert_called_once_with(api, list_status="L,D")
 
 
+def test_main_non_l_status_writes_separate_artifact():
+    api = MagicMock()
+    a_df = pd.DataFrame({"ts_code": ["605081.SH"], "name": ["退市某某"]})
+    hk_df = pd.DataFrame({"ts_code": ["00001.HK"], "name": ["长和"]})
+    us_df = pd.DataFrame({"ts_code": ["AAPL"], "name": ["苹果"]})
+
+    with (
+        patch.object(fetch_tushare_stock_list, "get_tushare_api", return_value=api),
+        patch.object(fetch_tushare_stock_list, "fetch_a_stock_list", return_value=a_df),
+        patch.object(fetch_tushare_stock_list, "save_to_csv") as save_to_csv,
+        patch.object(fetch_tushare_stock_list, "fetch_hk_stock_list", return_value=hk_df),
+        patch.object(fetch_tushare_stock_list, "fetch_us_stock_list", return_value=us_df),
+        patch.object(fetch_tushare_stock_list, "generate_data_documentation") as generate_doc,
+        patch.object(fetch_tushare_stock_list, "random_sleep"),
+    ):
+        exit_code = fetch_tushare_stock_list.main(["--list-status", "D"])
+
+    assert exit_code == 0
+    save_to_csv.assert_any_call(a_df, "stock_list_a_D.csv", "A股")
+    assert all(call.args[1] != "stock_list_a.csv" for call in save_to_csv.call_args_list)
+    generate_doc.assert_not_called()
+
+
 def test_main_a_rk_flow_overwrites_a_filename_and_rt_k():
     api = MagicMock()
     a_df = pd.DataFrame({"ts_code": ["000001.SZ"], "name": ["XD西藏药"]})
@@ -189,7 +213,7 @@ def test_main_a_rk_flow_overwrites_a_filename_and_rt_k():
         exit_code = fetch_tushare_stock_list.main(["--a-rk"])
 
     assert exit_code == 0
-    fetch_a.assert_called_once_with(api)
+    fetch_a.assert_called_once_with(api, list_status="L")
     fix_a_stock_names.assert_called_once_with(api, a_df)
     fixed_save_call = next(
         call for call in save_to_csv.call_args_list if call.args[1] == "stock_list_a.csv"

@@ -697,14 +697,29 @@ class TushareFetcher(BaseFetcher):
             self._check_rate_limit()
 
             frames = []
+            failed_statuses: List[str] = []
             for status in statuses:
-                part = self._api.stock_basic(
-                    exchange='',
-                    list_status=status,
-                    fields=fields,
-                )
+                try:
+                    part = self._api.stock_basic(
+                        exchange='',
+                        list_status=status,
+                        fields=fields,
+                    )
+                except Exception as exc:
+                    # 单个状态失败不得丢弃已拉到的其他状态（AGENTS.md §7 fallback 约定）
+                    failed_statuses.append(status)
+                    logger.warning(
+                        f"Tushare 获取股票列表 list_status={status} 失败: {exc}"
+                    )
+                    continue
                 if part is not None and not part.empty:
                     frames.append(part)
+
+            if failed_statuses and frames:
+                logger.warning(
+                    "Tushare 股票列表部分状态拉取失败（%s），返回结果不完整",
+                    ",".join(failed_statuses),
+                )
 
             if not frames:
                 return None

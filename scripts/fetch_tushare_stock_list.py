@@ -31,7 +31,7 @@ import random
 import re
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Tuple
 
 import pandas as pd
 from dotenv import load_dotenv
@@ -601,6 +601,24 @@ us_stocks = pd.read_csv('data/stock_list_us.csv')
         print(f"[错误] 生成说明文档失败: {e}")
 
 
+def _normalized_statuses(list_status: str) -> List[str]:
+    return [s.strip().upper() for s in str(list_status).split(',') if s.strip()]
+
+
+def _a_output_names(list_status: str) -> Tuple[str, str]:
+    """A股产物的文件名与标题；只有单一 L 才沿用历史文件名。
+
+    历史上 A 股产物固定写 ``stock_list_a.csv``，并被 ``generate_index_from_csv.py``
+    当作「当前上市 A 股」读取。``--list-status`` 拉 D/P 时若写回同一路径，会把
+    上市清单覆盖成退市清单，且文件名不带任何口径标记，因此非 L 一律独立命名。
+    """
+    statuses = _normalized_statuses(list_status)
+    if statuses == ['L']:
+        return 'stock_list_a.csv', 'A股列表'
+    key = '-'.join(statuses) or 'UNKNOWN'
+    return f'stock_list_a_{key}.csv', f'A股列表（list_status={key}）'
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     """构建命令行参数。"""
     parser = argparse.ArgumentParser(description="Tushare 股票列表获取工具")
@@ -633,21 +651,16 @@ def main(argv: Optional[List[str]] = None):
     if not api:
         return 1
 
-    # 2. 获取 A股数据（默认 L 保持旧调用契约）
-    if args.list_status.strip().upper() == 'L':
-        a_df = fetch_a_stock_list(api)
-    else:
-        a_df = fetch_a_stock_list(api, list_status=args.list_status)
+    # 2. 获取 A股数据；list_status 透传（默认 L，保持旧调用契约）
+    a_filename, a_title = _a_output_names(args.list_status)
+    if args.a_rk:
+        a_title = f'{a_title}（修正后）'
+    a_df = fetch_a_stock_list(api, list_status=args.list_status)
     if a_df is not None:
-        a_filename = 'stock_list_a.csv'
-        a_title = 'A股列表'
-        a_market_name = 'A股'
-
         if args.a_rk:
             a_df = fix_a_stock_names_with_rt_k(api, a_df)
-            a_title = 'A股列表（修正后）'
 
-        save_to_csv(a_df, a_filename, a_market_name)
+        save_to_csv(a_df, a_filename, 'A股')
 
     # 3. 获取港股数据
     random_sleep()  # 休息后再获取港股
@@ -661,11 +674,17 @@ def main(argv: Optional[List[str]] = None):
     if us_df is not None:
         save_to_csv(us_df, 'stock_list_us.csv', '美股')
 
-    # 5. 生成数据说明文档
+    # 5. 生成数据说明文档（面向 stock_list_a.csv 的上市口径；非 L 口径不覆盖它）
     print("\n正在生成数据说明文档...")
-    a_filename = 'stock_list_a.csv'
-    a_title = 'A股列表（修正后）' if args.a_rk else 'A股列表'
-    generate_data_documentation(a_df, hk_df, us_df, a_filename=a_filename, a_title=a_title)
+    if _normalized_statuses(args.list_status) == ['L']:
+        generate_data_documentation(
+            a_df, hk_df, us_df, a_filename=a_filename, a_title=a_title,
+        )
+    else:
+        print(
+            f"[跳过] 非 L 口径（{args.list_status}）不覆盖 README_stock_list.md；"
+            f"A股产物：{a_filename}"
+        )
 
     # 6. 总结
     print("\n" + "=" * 60)
