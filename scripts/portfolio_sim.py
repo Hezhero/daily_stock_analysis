@@ -109,6 +109,11 @@ class SimConfig:
                 raise ValueError("target_positions is required when size_mode='deploy_aware'")
             if not 1 <= self.target_positions <= self.max_positions:
                 raise ValueError("target_positions must be in [1, max_positions]")
+        else:
+            if self.target_positions is not None:
+                raise ValueError("target_positions only applies when size_mode='deploy_aware'")
+            if self.cash_buffer_pct != 0.0:
+                raise ValueError("cash_buffer_pct only applies when size_mode='deploy_aware'")
         if not 0.0 <= self.cash_buffer_pct < 1.0:
             raise ValueError("cash_buffer_pct must be in [0, 1)")
 

@@ -696,6 +696,8 @@ def test_deploy_aware_sizing_changes_config_hash() -> None:
         {"size_mode": "deploy_aware", "target_positions": 11},
         {"size_mode": "deploy_aware", "target_positions": 5, "cash_buffer_pct": 1.0},
         {"size_mode": "bogus"},
+        {"target_positions": 5},
+        {"cash_buffer_pct": 0.05},
     ],
 )
 def test_invalid_sizing_config_is_rejected(kwargs: dict[str, Any]) -> None:

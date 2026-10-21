@@ -156,6 +156,7 @@ sys.path.insert(0, str(BASE_DIR))
 # T0.1 资金约束组合模拟（S2/S3 模块）：纯函数、无日志副作用；仅在 --portfolio-sim
 # 开启时被调用，默认路径既不导数据也不改变任何旧指标。
 from scripts.portfolio_sim import (  # noqa: E402
+    _SIZE_MODES,
     SimConfig,
     apply_declustered_resonance,
     apply_lead_expectation,
@@ -4305,19 +4306,22 @@ def _portfolio_sim_config() -> SimConfig:
                 cfg.min_resonance_families, override,
             )
             cfg = replace(cfg, min_resonance_families=override)
-    sizing_overrides: Dict[str, Any] = {}
+    requested_sizing: Dict[str, Any] = {}
     if _PORTFOLIO_SIM_SIZE_MODE is not None:
-        sizing_overrides["size_mode"] = _registered_experiment_override(
+        requested_sizing["size_mode"] = _registered_experiment_override(
             "size_mode", _PORTFOLIO_SIM_SIZE_MODE
         )
     if _PORTFOLIO_SIM_TARGET_POSITIONS is not None:
-        sizing_overrides["target_positions"] = _registered_experiment_override(
+        requested_sizing["target_positions"] = _registered_experiment_override(
             "target_positions", int(_PORTFOLIO_SIM_TARGET_POSITIONS)
         )
     if _PORTFOLIO_SIM_CASH_BUFFER_PCT is not None:
-        sizing_overrides["cash_buffer_pct"] = _registered_experiment_override(
+        requested_sizing["cash_buffer_pct"] = _registered_experiment_override(
             "cash_buffer_pct", float(_PORTFOLIO_SIM_CASH_BUFFER_PCT)
         )
+    sizing_overrides = {
+        key: value for key, value in requested_sizing.items() if value != getattr(cfg, key)
+    }
     if sizing_overrides:
         logger.warning(
             "消融覆盖（已登记实验参数）：%s（Card B v1 资金部署规则，非新默认值，不得固化）",
@@ -6116,11 +6120,11 @@ def main(argv=None):
                         help="ablation-only：覆盖家族去簇共振门槛（契约默认 2，不改变默认行为）；"
                              "1=关闭家族去簇，用于分离会计效应与家族过滤器效应")
     parser.add_argument("--portfolio-sim-size-mode", default=None,
-                        choices=("fixed_1n", "deploy_aware"),
+                        choices=_SIZE_MODES,
                         help="card-B-only：仓位预算规则（契约默认 fixed_1n=权益/持仓上限）；"
                              "deploy_aware=权益/目标持仓数，并使用闲置现金")
     parser.add_argument("--portfolio-sim-target-positions", type=int, default=None, metavar="N",
-                        help="card-B-only：deploy_aware 的预算分母（须 ≤ --portfolio-sim 的持仓上限）")
+                        help="card-B-only：deploy_aware 的预算分母（须 ≤ 模拟器 max_positions，默认 10）")
     parser.add_argument("--portfolio-sim-cash-buffer-pct", type=float, default=None, metavar="P",
                         help="card-B-only：deploy_aware 下按权益比例预留的现金缓冲（如 0.05）")
     parser.add_argument("--exit-atr-mult", type=float, default=None,

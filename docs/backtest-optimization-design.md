@@ -1066,14 +1066,15 @@ Week 4-5:
 
 | 卡 | 内容 | 优先级 | 状态 |
 | --- | --- | --- | --- |
-| A | `min_resonance_families = 1`，把家族共振门槛从冻结常量降为已登记实验参数 | 最高，过门槛即可翻转 | 消融已完成，待 bootstrap 门槛 |
-| B | 资金部署感知仓位，复用既有 `_TARGET_VOL_ANNUAL` / `_MAX_LEVERAGE`，攻击 77.7% 现金闲置的结构性根因 | 高，卡 A 之后第一张新实验 | 已登记，未开始 |
+| A | `min_resonance_families = 1`，把家族共振门槛从冻结常量降为已登记实验参数 | 最高，过门槛即可翻转 | 门槛判决不通过（2026-10-21），默认保持 2 |
+| B | 资金部署感知仓位：`size_mode=deploy_aware` / `target_positions=5` / `cash_buffer_pct=0.05`，按闲置现金而非固定 1/N 定预算，攻击 77.7% 现金闲置的结构性根因 | 高，卡 A 之后第一张新实验 | 门槛判决不通过（2026-10-21），默认保持 `fixed_1n` |
 | C | 并发信号选股与持仓上限排序，对应计划 v2 §5 的 Card A | 中，卡 B 之后 | 已登记，未开始 |
 | D | `tushare_moneyflow` 分层主力资金因子 | 最低，基线稳定后再跑 | 已登记，未排期 |
 
 ### 10.3 锁定顺序与翻转门槛
 
-- **卡 A**：消融已完成，过门槛即可翻转，不重跑消融。
+- **卡 A**：已判决不通过（§10.5），默认保持 `min_resonance_families = 2`，不重跑消融，不在 2 与 3 之间扫参。
+- **卡 B**：已判决不通过（§10.8），默认保持 `fixed_1n`；`deploy_aware` 仅保留为显式 CLI 开关，不在 4/6/8 之间扫参。
 - **新实验**：按卡 B 到卡 C 的顺序推进；卡 D 最低，不与前三张卡并行抢占验证预算。
 - **翻转门槛**：池化样本外每信号 Δ 的日期分块 bootstrap CI 通过，风险调整口径（CAGR / 夏普 / 最大回撤）不劣于基线；完整 WFO 仅保留给改信号或出场定义的改动。
 - **契约语义**：后续修订《指标契约》时，只冻结度量口径（成本 0.35% 往返、T+1 盯市、PIT 宇宙、去簇共振定义、`next_open` 入场），`min_resonance_families` 作为实验参数显式覆盖，并改变 `config_hash`。
@@ -1107,7 +1108,7 @@ Week 4-5:
 - **每策略成交笔数变化（PIT − L-only）**：`washout_break +26`（15→41）、`limit_up_pullback +11`（27→38）、`volume_surge_std +3`（0→3）；`holder_conc_break −24`（234→210）、`rsi_bullish_divergence −9`（49→40）、`monthly_macd_20ma −4`（24→20）、`ma_crossover −2`（144→142）、`volume_breakout −2`（2→0）；其余不变。**方向与判据预期一致：生存者偏差修复后，反转（超跌）与涨停族成交显著增加。**
 - **风险**：maxDD 由 13.11%→13.91%（+0.80pct，仍在门槛内）；PIT 增加反转/涨停族暴露，回撤略升属机制可解释，非门槛失败。
 - **L→D 迁移影响**：`601198.SH`/`601059.SH` 于 2026-10-19 由 `L` 移入 `D`（L 5577→5575）；同库 L-only 全回测**逐位复现** 2026-10-18 冻结基线（metrics 与 `config_hash` 完全一致），证明该迁移对 L-only 池绩效**零影响**。
-- **03/04/05 翻转重验**：卡 A/B/C 尚未翻转（均 `ready-for-agent`），本轮**无待重验项**；PIT 落地不改变其门槛口径。
+- **03/04/05 翻转重验**：卡 A、卡 B 已判决不通过（§10.5 / §10.8），卡 C 未开始，本轮**无待重验项**；PIT 落地不改变其门槛口径。
 - **遗留**：`T600018.SH`（`symbol` 7 字符 > `varchar(6)`）未入库，不在 205 退市码集内；`cyq_perf` 无权限（本地由 `daily + daily_basic` 计算，已绕过）；行业 PIT 仍受 §9.11 P3-❻（`tushare_index_member_all.out_date` 全空）阻塞，属独立问题。
 
 ### 10.5 卡 A 翻转门槛判决：不通过（2026-10-21，ticket 03）
@@ -1175,3 +1176,25 @@ python scripts/portfolio_gate.py \
 - **对照**：基线臂 = 同快照 `fixed_1n`（`acb32bd9…`，复用卡 A 基线产物）；若开跑时 `data_hash` 已偏离 `8a554269…`，基线同批重跑。
 - **判据**：`docs/backtest-flip-gate-spec.md` §4 的 6 项全过才算通过；通过才把 `deploy_aware` 写为默认，否则保持 `fixed_1n` 并记录失败原因。
 - **纪律**：不在 4/6/8 之间扫参；OOM 只允许原样重跑。
+
+### 10.8 卡 B 判决：不通过，默认保持 `fixed_1n`（2026-10-21）
+
+按 §10.7 预注册的单一主比较执行，规则、基线、命令、判据均未改动。
+
+| 指标 | 基线 `fixed_1n`（`acb32bd9…`） | 候选 `deploy_aware`（`d1d40cbc…`） |
+| --- | ---: | ---: |
+| OOS CAGR | 4.203% | **5.818%** |
+| Sharpe | 0.4442 | **0.4729** |
+| 最大回撤 | 13.907% | **16.819%**（劣化 +2.91pct） |
+| 成交笔数 | 560 | 440 |
+| 平均持仓数 | 2.231 | 1.769 |
+| 平均现金占比 | 77.69% | **73.11%** |
+| 成本拖累 | 51.35% | 61.99% |
+
+- **判决**：`overall_pass=false`，驳回项 `ci_excludes_zero` 与 `maxdd_non_inferior`；`cagr_non_inferior`、`sharpe_non_inferior`、`maxdd_cap`（16.82% ≤ 25%）、`min_trades`（440 ≥ 100）通过。
+- **真实驳回**：`maxdd_non_inferior` —— 预注册规则把单笔预算从 `equity_prev/10` 抬到 `equity_prev/5`，资金占用只从 22.3% 升到 26.9%，但持仓更集中（平均 2.23 → 1.77 只），回撤反而从 13.91% 恶化到 16.82%。CAGR/Sharpe 的改善不足以抵消回撤劣化，按 §10.7「通过才翻转默认」的口径不成立。
+- **估计量退化（须知项，不是本卡的翻案理由）**：`ci_excludes_zero` 的观测值恒为 `delta=0.000%`、`se=0`、CI `[0.000%, 0.000%]`、`degenerate=true`。原因是该门禁的估计量是 `pooled_oos_unpaired_mean_net_return_delta`（信号级净收益均值差），而卡 B 只改资金规模、不改信号选择——两臂 `signals.csv` 的 sha256 完全相同（`2A5DB331…`），信号级净收益逐行相同，Δ 在构造上就是 0。**该估计量无法裁决任何纯资金管理卡**；卡 A 那种改变信号集合的卡不受影响。
+  - 处理方式：**不**在看过结果后改判据、换估计量或补跑「对口径有利」的变体（§7：探索性判决不得用于翻转默认值）。默认值按拒绝维持 `fixed_1n`；门禁需支持组合层估计量（如 OOS 日收益的块 bootstrap）才谈得上裁决资金类卡，这属于门禁自身的后续工作，不在本卡范围内偷偷完成。
+- **产物**：候选 `result/gates/card-b/cand/portfolio_sim_20210514_20261016_pit.*`（`config_hash d1d40cbcfd66903d8d4c6e06bc579daee129a539`）；判决 `result/gates/card-b/v1/d1d40cbcfd66903d8d4c6e06bc579daee129a539.json`（`verdict_hash a0e4e7c7…`，`code_commit 1704cadd`，`tested_count=1`，`registry_id c70136ea5954`）；`result/gates/registry.jsonl` 现 2 行（`card-a`、`card-b`，均 `overall_pass=false`）。
+- **估计量参数**：`L=9`（两臂 99 分位持仓 bar 取上整的最大值）、`B=2000`、`n_dates=282`、`n_blocks=32`、`valid_resamples=2000`、`seed=15424593829408389888`；两臂 `n_signals=7771`（信号集合一致）。
+- **回滚**：无需回滚动作——默认值自始未改（`SimConfig().size_mode == "fixed_1n"`，`_config_hash` 仍为 `5eea05195af3d89432af8b2a049fde2517d6a53b`，有测试锁住）；`deploy_aware` 仅作为显式 CLI 开关存在，默认路径不变。
