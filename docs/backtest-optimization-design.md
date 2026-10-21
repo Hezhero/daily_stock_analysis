@@ -1114,8 +1114,10 @@ Week 4-5:
 
 > 按 `docs/backtest-flip-gate-spec.md` §7 的预注册单次主比较执行，`tested_count = 1`；判决产物与 registry 落在 `result/gates/`（本地产物，未入库）。
 
-- **比较对象**：`min_resonance_families` 2（基线）vs 1（候选）。其余全部相同：PIT 宇宙、窗口 `20210514~20261016`、21 策略、`next_open` 入场、ATR×3 + `sched_4d_085`、显式成本 0.35% 往返、去簇共振定义不变。
+- **比较对象**：`min_resonance_families` 2（基线）vs 1（候选）。其余全部相同：PIT 宇宙、21 策略、`next_open` 入场、ATR×3 + `sched_4d_085`、显式成本 0.35% 往返、去簇共振定义不变。
+- **窗口**：两臂的可交易面板与样本外窗口一致——`2021-01-04 ~ 2026-10-16` 权益序列、`oos_start=2022-01-17`、`n_days=1400`、`oos_days=1147`。产物文件名前缀不同（基线 `20210514`、候选 `20210406`）只是各臂**首个模拟信号日**不同造成的 stem 标签，不影响 OOS 窗一致性。
 - **两臂均重跑（各一次）**：2026-10-17 的 fam1 消融产物落在临时目录且**早于 ticket 02 的去簇信号产物**——没有 `signals.csv`，物理上喂不进门槛；因此按预注册重跑两臂，而不是拿旧消融数字直接裁决。
+- **与 §7 变体计数的关系**：那次 L-only 消融发生在本门槛存在之前，既无 `signals.json/csv` 产物也从未写入 `registry.jsonl`，因此**不构成 gate 变体**；本卡在门槛下的变体数仍为 1（`registry.jsonl` 仅一行），`preregistered_primary=true`。本次重跑不是"看过结果再换参数"的二次搜索——两臂设置、窗口、快照与判据都在跑之前写死。
 - **命令**：
 
 ```bash
@@ -1127,7 +1129,7 @@ python scripts/portfolio_gate.py \
   --candidate-summary result/gates/card-a/cand/portfolio_sim_20210406_20261016_pit.json \
   --candidate-signals result/gates/card-a/cand/portfolio_sim_20210406_20261016_pit_signals.csv \
   --card-id card-a --data-hash 8a5542694c0b1dd10c1de9bb0bd87447f3ec71e48d981b25392f833f6f2d313d \
-  --oos-end 2026-10-16 --code-commit 15089f56
+  --oos-end 2026-10-16 --code-commit 865620e2
 ```
 
 - **基线可复现性**：基线臂 `config_hash = acb32bd95d3c…`、漏斗 `raw=18477 / filled=560`、`signals.csv` 的 sha256 与 2026-10-19 冻结产物**逐字节一致**（`2A5DB331…`）。这确认候选臂的唯一差异就是家族门槛。

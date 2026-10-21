@@ -1,6 +1,6 @@
 # 03: 卡 A：翻转 min_resonance_families 默认值（过门槛才翻）
 
-**What to build:** 在 02 的翻转门槛下评估「≥1 家族」相对「≥2 家族」的消融。通过才把 `min_resonance_families` 的默认值从 2 改为 1（走 01 的登记覆盖语义），并把证据写入账本；不通过则保留 2 并记录失败原因。**不重跑消融。**
+**What to build:** 在 02 的翻转门槛下评估「≥1 家族」相对「≥2 家族」的消融（原票写着"不重跑消融"；实测旧消融产物缺 `signals` 账本、无法喂门槛，故按预注册重跑两臂——这是重跑**门槛输入**，不是二次搜索，见账本 §10.5「与 §7 变体计数的关系」）。通过才把 `min_resonance_families` 的默认值从 2 改为 1（走 01 的登记覆盖语义），并把证据写入账本；不通过则保留 2 并记录失败原因。
 
 **Blocked by:** 01, 02
 
@@ -17,8 +17,8 @@
 
 **落地：**
 
-- **门槛入口**：ticket 02 只交付了库函数，真实判决没有可复现入口。本次为 `scripts/portfolio_gate.py` 增加 argparse CLI（`--baseline-summary/--baseline-signals/--candidate-summary/--candidate-signals/--card-id/--data-hash/--out-dir/--oos-end/--code-commit/--exploratory/--tested-count`），出口码 `0=PASS / 1=FAIL / 2=输入不可用`，判决写 content-addressed JSON 并追加 `registry.jsonl`；`tests/test_portfolio_gate.py` 补 3 例 CLI 回归（PASS→0、FAIL→1、输入不可用→2）。
+- **门槛入口**：ticket 02 只交付了库函数，真实判决没有可复现入口。本次为 `scripts/portfolio_gate.py` 增加 argparse CLI（`--baseline-summary/--baseline-signals/--candidate-summary/--candidate-signals/--card-id/--data-hash/--out-dir/--oos-end/--code-commit`），出口码 `0=PASS / 1=FAIL / 2=输入不可用`，判决写 content-addressed JSON 并追加 `registry.jsonl`；变体计数由该卡自己的 `registry.jsonl` 派生，**不接受 CLI 覆盖**（避免 §7 的防数据窥探计数被重置）；`tests/test_portfolio_gate.py` 补 3 例 CLI 回归（PASS→0、FAIL→1、输入不可用→2）。
 - **两臂各重跑一次**：2026-10-17 的 fam1 消融产物落在临时目录且早于 ticket 02 的去簇信号产物（无 `signals.csv`），物理上无法喂门槛，因此按预注册重跑两臂，而不是复用旧消融数字。基线臂 `config_hash = acb32bd95d3c…`，其 `signals.csv` sha256 与 2026-10-19 冻结产物逐字节一致（`2A5DB331…`）。
-- **候选臂 `config_hash = 39272e93e83593933a35481ce751cbae36429314`**；两臂 OOS 窗一致（`2022-01-17 ~ 2026-10-16`、`n_days=1400`、`oos_days=1147`），`data_hash = 8a554269…`。
+- **候选臂 `config_hash = 39272e93e83593933a35481ce751cbae36429314`**；两臂 OOS 窗一致（`2022-01-17 ~ 2026-10-16`、`n_days=1400`、`oos_days=1147`），`data_hash = 8a554269…`；判决由 `865620e2` 的门禁代码产出。
 - **产物**：`result/gates/card-a/{base,cand}/`（两臂 `signals.csv` 与 summary JSON）、`result/gates/card-a/v1/39272e93….json`（verdict）、`result/gates/registry.jsonl`（`tested_count=1`）。均为本地未跟踪产物；命令与关键数字已固化在账本 §10.5。
 - **验证**：`python -m pytest tests/test_portfolio_gate.py -q` → 11 passed；`py_compile scripts/portfolio_gate.py` 通过；真实门禁执行一次，`EXIT=1`（FAIL 属预期结果，不是运行错误）。
