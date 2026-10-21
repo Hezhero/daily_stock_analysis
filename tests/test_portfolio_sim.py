@@ -15,6 +15,7 @@ from scripts.portfolio_sim import (
     STRATEGY_FAMILY,
     _CAND_COLUMNS,
     SimConfig,
+    _config_hash,
     apply_declustered_resonance,
     apply_lead_expectation,
     build_candidate_table,
@@ -627,3 +628,76 @@ def test_adv_tier_boundaries_drive_slippage() -> None:
     assert float(out.loc["HI", "slip_exit"]) == cfg.adv_tiers[0][1]
     assert float(out.loc["LO", "slip_entry"]) == cfg.adv_tiers[1][1]
     assert float(out.loc["LO", "slip_exit"]) == cfg.adv_tiers[1][1]
+
+
+def _three_same_day_cands(dates: Sequence[pd.Timestamp]) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            _cand(code, dates, strategy="holder_conc_break", family="fundamental", ind_l1=f"ind_{code}")
+            for code in ("AAA", "BBB", "CCC")
+        ]
+    )
+
+
+def test_frozen_config_hash_survives_sizing_defaults() -> None:
+    """Legacy default config must keep the frozen hash: baselines stay comparable."""
+    assert _config_hash(SimConfig()) == "5eea05195af3d89432af8b2a049fde2517d6a53b"
+
+
+def test_deploy_aware_sizing_divides_equity_by_target_positions() -> None:
+    dates = _dates(6)
+    bars = _bars(["AAA", "BBB", "CCC"], dates)
+    cfg = SimConfig(size_mode="deploy_aware", target_positions=5, cash_buffer_pct=0.0)
+
+    result = simulate(_three_same_day_cands(dates), bars, cfg)
+
+    assert len(result.trades) == 3
+    for notional in result.trades["entry_notional"]:
+        assert notional == pytest.approx(200_000.0, rel=0.01)  # 1,000,000 / 5
+    assert (result.equity["cash"] >= 0.0).all()
+
+
+def test_deploy_aware_sizing_keeps_cash_buffer_and_never_exceeds_cash() -> None:
+    dates = _dates(6)
+    bars = _bars(["AAA", "BBB", "CCC"], dates)
+    # target 2 => 500k per entry; a 10% buffer keeps 100k of the 1M equity in cash,
+    # so the third entry cannot be funded.
+    cfg = SimConfig(size_mode="deploy_aware", target_positions=2, cash_buffer_pct=0.10)
+
+    result = simulate(_three_same_day_cands(dates), bars, cfg)
+
+    assert len(result.trades) == 2
+    assert (result.equity["cash"] >= 0.0).all()
+    assert float(result.equity["cash"].min()) >= 0.0
+
+
+def test_deploy_aware_sizing_is_deterministic() -> None:
+    dates = _dates(6)
+    bars = _bars(["AAA", "BBB", "CCC"], dates)
+    cands = _three_same_day_cands(dates)
+    cfg = SimConfig(size_mode="deploy_aware", target_positions=5, cash_buffer_pct=0.05)
+
+    first = simulate(cands, bars, cfg)
+    second = simulate(cands, bars, cfg)
+
+    pd.testing.assert_frame_equal(first.trades, second.trades)
+    pd.testing.assert_frame_equal(first.equity, second.equity)
+
+
+def test_deploy_aware_sizing_changes_config_hash() -> None:
+    assert _config_hash(SimConfig(size_mode="deploy_aware", target_positions=5)) != _config_hash(SimConfig())
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"size_mode": "deploy_aware"},
+        {"size_mode": "deploy_aware", "target_positions": 0},
+        {"size_mode": "deploy_aware", "target_positions": 11},
+        {"size_mode": "deploy_aware", "target_positions": 5, "cash_buffer_pct": 1.0},
+        {"size_mode": "bogus"},
+    ],
+)
+def test_invalid_sizing_config_is_rejected(kwargs: dict[str, Any]) -> None:
+    with pytest.raises(ValueError):
+        SimConfig(**kwargs)

@@ -51,6 +51,10 @@ STRATEGY_FAMILY: dict[str, str] = {
 }
 
 
+_SIZE_MODES = ("fixed_1n", "deploy_aware")
+_HASH_OPTIONAL_KEYS = ("size_mode", "target_positions", "cash_buffer_pct")
+
+
 @dataclass(frozen=True)
 class SimConfig:
     initial_capital: float = 1_000_000.0
@@ -75,6 +79,10 @@ class SimConfig:
     max_dd_floor_pct: float = 25.0
     min_trades: int = 100
     max_holding_bars: int = 10
+    # Defaults are excluded from the config hash so frozen baseline hashes stay byte-identical.
+    size_mode: str = "fixed_1n"
+    target_positions: int | None = None
+    cash_buffer_pct: float = 0.0
     vote_exclude: Tuple[str, ...] = (
         "box_oscillation",
         "chan_theory",
@@ -94,6 +102,15 @@ class SimConfig:
             raise ValueError("lot_size must be positive")
         if not 0.0 <= self.cost_split <= 1.0:
             raise ValueError("cost_split must be in [0, 1]")
+        if self.size_mode not in _SIZE_MODES:
+            raise ValueError(f"size_mode must be one of {_SIZE_MODES}, got {self.size_mode!r}")
+        if self.size_mode == "deploy_aware":
+            if self.target_positions is None:
+                raise ValueError("target_positions is required when size_mode='deploy_aware'")
+            if not 1 <= self.target_positions <= self.max_positions:
+                raise ValueError("target_positions must be in [1, max_positions]")
+        if not 0.0 <= self.cash_buffer_pct < 1.0:
+            raise ValueError("cash_buffer_pct must be in [0, 1)")
 
 
 FAMILY_CAP: dict[str, int] = dict(SimConfig().family_cap)
@@ -401,8 +418,24 @@ def _empty_frame(columns: Tuple[str, ...]) -> pd.DataFrame:
 
 
 def _config_hash(cfg: SimConfig) -> str:
-    payload = json.dumps(asdict(cfg), sort_keys=True, default=str)
-    return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+    payload = asdict(cfg)
+    defaults = SimConfig()
+    for key in _HASH_OPTIONAL_KEYS:
+        if payload[key] == getattr(defaults, key):
+            payload.pop(key)
+    text = json.dumps(payload, sort_keys=True, default=str)
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()
+
+
+def _entry_budget(equity_prev: float, cash: float, cfg: SimConfig) -> float:
+    """Cash available for one entry under the configured sizing rule."""
+    if cfg.size_mode == "fixed_1n":
+        return min(equity_prev / cfg.max_positions, cash)
+    target = cfg.target_positions
+    if target is None:
+        raise ValueError("size_mode='deploy_aware' requires target_positions")
+    buffer = cfg.cash_buffer_pct * equity_prev
+    return max(0.0, min(equity_prev / target, cash - buffer))
 
 
 def simulate(cands: pd.DataFrame, bars: pd.DataFrame, cfg: SimConfig = SimConfig()) -> SimResult:
@@ -436,7 +469,7 @@ def simulate(cands: pd.DataFrame, bars: pd.DataFrame, cfg: SimConfig = SimConfig
             if reason is not None:
                 rejects[reason] += 1
                 continue
-            budget = min(equity_prev / cfg.max_positions, cash)
+            budget = _entry_budget(equity_prev, cash, cfg)
             px = cand.entry_px_raw * (1.0 + cand.slip_entry)
             if not math.isfinite(px) or px <= 0:
                 rejects["invalid_price"] += 1

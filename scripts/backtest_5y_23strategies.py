@@ -132,7 +132,7 @@ from typing_extensions import deprecated
 
 load_dotenv()
 
-from typing import Dict, List, Optional, Tuple, Callable
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -336,6 +336,9 @@ _PORTFOLIO_SIM_OUT = "result/"
 _PORTFOLIO_SIM_WINDOW: Optional[str] = None
 _PORTFOLIO_SIM_STRATEGIES: Optional[set] = None
 _PORTFOLIO_SIM_MIN_FAMILIES: Optional[int] = None
+_PORTFOLIO_SIM_SIZE_MODE: Optional[str] = None
+_PORTFOLIO_SIM_TARGET_POSITIONS: Optional[int] = None
+_PORTFOLIO_SIM_CASH_BUFFER_PCT: Optional[float] = None
 _PORTFOLIO_SIM_RESULT: Optional[Dict] = None
 
 # ─── 日志配置 ──────────────────────────────────────────────────────────────────
@@ -4233,18 +4236,21 @@ _METRIC_PROFILE_ADV_TIERS = (
 # 不是度量画像。默认值仍必须等于登记值（防止静默改默认），但允许经显式登记路径覆盖。
 # 覆盖 = 一次"已登记的重跑"（warning + config_hash 变化），不是新默认值。
 # 只有出现在这些登记表中的参数才允许被覆盖；未登记参数（含度量画像）不得覆盖。
-# 当前唯一接入覆盖入口的是 min_resonance_families（_PORTFOLIO_SIM_MIN_FAMILIES → Card A）；
-# 其余三项与 family_cap 只有默认值漂移守卫，尚无覆盖入口，新增入口须同步指标契约。
+# 当前接入覆盖入口的：min_resonance_families（Card A）、size_mode / target_positions /
+# cash_buffer_pct（Card B）；其余项与 family_cap 只有默认值漂移守卫，新增入口须同步指标契约。
 _REGISTERED_EXPERIMENT_DEFAULTS = {
     "min_resonance_families": 2,
     "max_positions": 10,
     "industry_cap": 2,
     "max_holding_bars": 10,
+    "size_mode": "fixed_1n",
+    "target_positions": None,
+    "cash_buffer_pct": 0.0,
 }
 _REGISTERED_EXPERIMENT_FAMILY_CAP = {"trend": 3}
 
 
-def _registered_experiment_override(param: str, value: int) -> int:
+def _registered_experiment_override(param: str, value: Any) -> Any:
     """返回已登记实验参数的覆盖值；未登记参数一律拒绝（登记表是唯一准入名单）。"""
     if param not in _REGISTERED_EXPERIMENT_DEFAULTS:
         raise ValueError(
@@ -4292,14 +4298,32 @@ def _portfolio_sim_config() -> SimConfig:
         override = _registered_experiment_override(
             "min_resonance_families", int(_PORTFOLIO_SIM_MIN_FAMILIES)
         )
-        if override == cfg.min_resonance_families:
-            return cfg
-        logger.warning(
-            "消融覆盖（已登记实验参数）：min_resonance_families 由契约默认 %d 改为 %d"
-            "（仅用于分离会计效应与家族过滤器效应，非新默认值，不得固化）",
-            cfg.min_resonance_families, override,
+        if override != cfg.min_resonance_families:
+            logger.warning(
+                "消融覆盖（已登记实验参数）：min_resonance_families 由契约默认 %d 改为 %d"
+                "（仅用于分离会计效应与家族过滤器效应，非新默认值，不得固化）",
+                cfg.min_resonance_families, override,
+            )
+            cfg = replace(cfg, min_resonance_families=override)
+    sizing_overrides: Dict[str, Any] = {}
+    if _PORTFOLIO_SIM_SIZE_MODE is not None:
+        sizing_overrides["size_mode"] = _registered_experiment_override(
+            "size_mode", _PORTFOLIO_SIM_SIZE_MODE
         )
-        cfg = replace(cfg, min_resonance_families=override)
+    if _PORTFOLIO_SIM_TARGET_POSITIONS is not None:
+        sizing_overrides["target_positions"] = _registered_experiment_override(
+            "target_positions", int(_PORTFOLIO_SIM_TARGET_POSITIONS)
+        )
+    if _PORTFOLIO_SIM_CASH_BUFFER_PCT is not None:
+        sizing_overrides["cash_buffer_pct"] = _registered_experiment_override(
+            "cash_buffer_pct", float(_PORTFOLIO_SIM_CASH_BUFFER_PCT)
+        )
+    if sizing_overrides:
+        logger.warning(
+            "消融覆盖（已登记实验参数）：%s（Card B v1 资金部署规则，非新默认值，不得固化）",
+            sizing_overrides,
+        )
+        cfg = replace(cfg, **sizing_overrides)
     return cfg
 
 
@@ -6091,6 +6115,14 @@ def main(argv=None):
                         choices=(1, 2),
                         help="ablation-only：覆盖家族去簇共振门槛（契约默认 2，不改变默认行为）；"
                              "1=关闭家族去簇，用于分离会计效应与家族过滤器效应")
+    parser.add_argument("--portfolio-sim-size-mode", default=None,
+                        choices=("fixed_1n", "deploy_aware"),
+                        help="card-B-only：仓位预算规则（契约默认 fixed_1n=权益/持仓上限）；"
+                             "deploy_aware=权益/目标持仓数，并使用闲置现金")
+    parser.add_argument("--portfolio-sim-target-positions", type=int, default=None, metavar="N",
+                        help="card-B-only：deploy_aware 的预算分母（须 ≤ --portfolio-sim 的持仓上限）")
+    parser.add_argument("--portfolio-sim-cash-buffer-pct", type=float, default=None, metavar="P",
+                        help="card-B-only：deploy_aware 下按权益比例预留的现金缓冲（如 0.05）")
     parser.add_argument("--exit-atr-mult", type=float, default=None,
                         help="全局 ATR 止损倍数覆盖（默认取 DEFAULT_EXIT_PARAMS；传旧值 2.5 可回退，P1 批次5）")
     parser.add_argument("--exit-trail", type=float, default=None,
@@ -6186,6 +6218,20 @@ def main(argv=None):
         parser.error("--portfolio-sim-strategies 需要同时启用 --portfolio-sim")
     elif args.portfolio_sim_min_families is not None:
         parser.error("--portfolio-sim-min-families 需要同时启用 --portfolio-sim")
+    elif args.portfolio_sim_size_mode is not None:
+        parser.error("--portfolio-sim-size-mode 需要同时启用 --portfolio-sim")
+    elif args.portfolio_sim_target_positions is not None:
+        parser.error("--portfolio-sim-target-positions 需要同时启用 --portfolio-sim")
+    elif args.portfolio_sim_cash_buffer_pct is not None:
+        parser.error("--portfolio-sim-cash-buffer-pct 需要同时启用 --portfolio-sim")
+    if args.portfolio_sim_size_mode == "deploy_aware" and args.portfolio_sim_target_positions is None:
+        parser.error("--portfolio-sim-size-mode deploy_aware 需要同时给出 --portfolio-sim-target-positions")
+    if (
+        args.portfolio_sim_target_positions is not None
+        or args.portfolio_sim_cash_buffer_pct is not None
+    ) and args.portfolio_sim_size_mode != "deploy_aware":
+        parser.error("--portfolio-sim-target-positions / --portfolio-sim-cash-buffer-pct 仅在 "
+                     "--portfolio-sim-size-mode deploy_aware 下生效")
 
     if _UNIVERSE == UNIVERSE_PIT:
         _PIT_UNIVERSE_WARNING = _check_pit_universe_availability()
@@ -6241,10 +6287,14 @@ def main(argv=None):
 
     # T0.1 S4 组合模拟开关（默认 False：所有新参数保持 no-op）
     global _PORTFOLIO_SIM_ENABLED, _PORTFOLIO_SIM_OUT, _PORTFOLIO_SIM_WINDOW, _PORTFOLIO_SIM_STRATEGIES, _PORTFOLIO_SIM_MIN_FAMILIES
+    global _PORTFOLIO_SIM_SIZE_MODE, _PORTFOLIO_SIM_TARGET_POSITIONS, _PORTFOLIO_SIM_CASH_BUFFER_PCT
     _PORTFOLIO_SIM_ENABLED = bool(args.portfolio_sim)
     _PORTFOLIO_SIM_OUT = args.portfolio_sim_out or "result/"
     _PORTFOLIO_SIM_WINDOW = args.portfolio_sim_window
     _PORTFOLIO_SIM_MIN_FAMILIES = args.portfolio_sim_min_families
+    _PORTFOLIO_SIM_SIZE_MODE = args.portfolio_sim_size_mode
+    _PORTFOLIO_SIM_TARGET_POSITIONS = args.portfolio_sim_target_positions
+    _PORTFOLIO_SIM_CASH_BUFFER_PCT = args.portfolio_sim_cash_buffer_pct
     _PORTFOLIO_SIM_STRATEGIES = (
         {name.strip() for name in str(args.portfolio_sim_strategies).split(",") if name.strip()}
         if args.portfolio_sim_strategies else None
@@ -6254,6 +6304,9 @@ def main(argv=None):
             f"组合模拟（T0.1）启用：out={_PORTFOLIO_SIM_OUT}, "
             f"window={_PORTFOLIO_SIM_WINDOW or 'full'}, "
             f"min_families={_PORTFOLIO_SIM_MIN_FAMILIES if _PORTFOLIO_SIM_MIN_FAMILIES is not None else 'contract(2)'}, "
+            f"size_mode={_PORTFOLIO_SIM_SIZE_MODE or 'contract(fixed_1n)'}, "
+            f"target_positions={_PORTFOLIO_SIM_TARGET_POSITIONS or 'n/a'}, "
+            f"cash_buffer_pct={_PORTFOLIO_SIM_CASH_BUFFER_PCT if _PORTFOLIO_SIM_CASH_BUFFER_PCT is not None else 'n/a'}, "
             f"strategies={','.join(sorted(_PORTFOLIO_SIM_STRATEGIES)) if _PORTFOLIO_SIM_STRATEGIES else 'all'}"
         )
 

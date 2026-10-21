@@ -13,3 +13,21 @@
 - [ ] 回滚路径保留（关闭部署感知开关即回到固定 1/N）；账本记录判决与 `config_hash`。
 
 **Notes:** 提高资金占用会放大回撤与集中度；T+1 下的现金缓冲不能压到零。与卡 C 共享资金约束基础设施，但分开跑以保持归因清晰。
+
+**预注册（2026-10-21，开跑前写定）：**
+
+- **卡号 / 变体**：`card-b`；主比较一次，`preregistered_primary = true`，`tested_count` 由 `result/gates/registry.jsonl` 派生。
+- **规则（v1，写死）**：`size_mode=deploy_aware`，`target_positions=5`，`cash_buffer_pct=0.05`；每笔预算 `max(0, min(equity_prev / 5, cash - 0.05 * equity_prev))`。不加杠杆（`_MAX_LEVERAGE=1.0` 不启用），不改 `max_positions` 与其它度量口径。
+- **基线**：同一数据快照的 `fixed_1n` 臂（`config_hash acb32bd9…`，即账本 §10.5 的卡 A 基线臂产物 `result/gates/card-a/base/`）；若开跑时数据快照已变（`data_hash` 不再等于 `8a554269…`），则基线也重跑，保证两臂同快照。
+- **候选命令**：
+
+```bash
+python scripts/backtest_5y_23strategies.py --portfolio-sim \
+  --portfolio-sim-size-mode deploy_aware \
+  --portfolio-sim-target-positions 5 \
+  --portfolio-sim-cash-buffer-pct 0.05 \
+  --portfolio-sim-out result/gates/card-b/cand
+```
+
+- **判据**：`docs/backtest-flip-gate-spec.md` §4 全部 6 项（`ci_excludes_zero` + CAGR/Sharpe/maxDD 三项不劣 + maxDD ≤25% + 成交 ≥100）。
+- **不做的**：不在 4/6/8 个目标持仓之间扫参；若 OOM 重跑，只重跑同一条命令，不调参。

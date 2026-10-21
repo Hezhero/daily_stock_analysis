@@ -1165,3 +1165,13 @@ python scripts/portfolio_gate.py \
 - **修订**：卡 B 的阻塞边改为 `01, 02`；启动顺序仍排在卡 A 之后（卡 A 已判决，顺序事实已满足）；判据、门槛与预注册内容一律不变。
 - **理由**：避免把排序约定误当依赖而冻结整条实验线，同时不改动任何卡的判据或变体计数。卡 A 仍不得重试（不在 2 与 3 之间扫参）。
 - **影响面**：仅文档与 ticket 的 `Blocked by`，不涉及代码、默认值、`config_hash` 或已登记判决。
+
+### 10.7 卡 B 预注册（2026-10-21，开跑前写定）
+
+> 按 `docs/backtest-flip-gate-spec.md` §7：判据、规则与命令在跑之前固定，跑完不得改动；改动即新变体。
+
+- **规则（v1）**：`size_mode=deploy_aware`、`target_positions=5`、`cash_buffer_pct=0.05`，即每笔预算 `max(0, min(equity_prev/5, cash − 0.05·equity_prev))`；不启用杠杆（`_MAX_LEVERAGE=1.0`），`max_positions`、成本、盯市、PIT、去簇与 `next_open` 入场全部不变。
+- **实现边界**：`SimConfig` 新增三个旋钮；三者处于默认值时不进入 `config_hash`，因此 L-only `5eea0519…` 与 PIT `acb32bd9…` 两个冻结哈希逐位不变（有回归测试锁住）。三个旋钮已加入 `_REGISTERED_EXPERIMENT_DEFAULTS`：覆盖 = warning + `config_hash` 变化，未登记参数仍拒绝覆盖。
+- **对照**：基线臂 = 同快照 `fixed_1n`（`acb32bd9…`，复用卡 A 基线产物）；若开跑时 `data_hash` 已偏离 `8a554269…`，基线同批重跑。
+- **判据**：`docs/backtest-flip-gate-spec.md` §4 的 6 项全过才算通过；通过才把 `deploy_aware` 写为默认，否则保持 `fixed_1n` 并记录失败原因。
+- **纪律**：不在 4/6/8 之间扫参；OOM 只允许原样重跑。

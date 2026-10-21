@@ -212,3 +212,33 @@ def test_s4_window_parser_rejects_bad_input(tmp_path: Path) -> None:
         pass
     else:
         raise AssertionError("reversed window must raise")
+
+
+def test_card_b_sizing_override_changes_hash_and_applies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    driver = _load_driver(tmp_path / "card-b")
+    baseline_hash = _config_hash(driver._portfolio_sim_config())
+
+    monkeypatch.setattr(driver, "_PORTFOLIO_SIM_SIZE_MODE", "deploy_aware")
+    monkeypatch.setattr(driver, "_PORTFOLIO_SIM_TARGET_POSITIONS", 5)
+    monkeypatch.setattr(driver, "_PORTFOLIO_SIM_CASH_BUFFER_PCT", 0.05)
+    with caplog.at_level(logging.WARNING):
+        cfg = driver._portfolio_sim_config()
+
+    assert cfg.size_mode == "deploy_aware"
+    assert cfg.target_positions == 5
+    assert cfg.cash_buffer_pct == 0.05
+    assert _config_hash(cfg) != baseline_hash
+    assert "size_mode" in caplog.text
+
+
+def test_card_b_sizing_defaults_keep_baseline_hash(tmp_path: Path) -> None:
+    driver = _load_driver(tmp_path / "card-b-defaults")
+
+    cfg = driver._portfolio_sim_config()
+
+    assert cfg.size_mode == "fixed_1n"
+    assert cfg.target_positions is None
+    assert cfg.cash_buffer_pct == 0.0
+    assert _config_hash(cfg) == T01_BASELINE_CONFIG_HASH
