@@ -1,4 +1,7 @@
 ## [Unreleased]
+- [文档] 卡 A 翻转门槛判决**不通过**：`min_resonance_families` 2→1 的池化样本外每信号净收益 Δ = +0.115%，95% CI [−0.059%, +0.304%] 含 0（`L=9`、`B=2000`、`n_dates=332`、`tested_count=1`），主判据 `ci_excludes_zero` 不过；组合护栏杆全部改善（CAGR 4.20%→7.48%、Sharpe 0.444→0.677、maxDD 13.91%→10.48%、成交 560→829）但不得替代主判据。默认值保持 2，不再在 2 与 3 之间扫参。详见 `docs/backtest-optimization-design.md` §10.5 与 ticket 03。
+- [改进] `scripts/portfolio_gate.py` 新增 CLI 入口：吃基线/候选两臂的 summary JSON + 去簇 `signals.csv`，输出 content-addressed 判决 JSON 并追加 `registry.jsonl`，出口码 `0=PASS / 1=FAIL / 2=输入不可用`；新增 `--oos-end` / `--code-commit` / `--exploratory` / `--tested-count`。
+- [测试] `tests/test_portfolio_gate.py` 补 3 例 CLI 回归（PASS→0、FAIL→1、输入不可用→2），并覆盖 verdict 与 registry 落盘断言。
 - [修复] `scripts/fetch_tushare_stock_list.py` 单次多值 `--list-status` 拉取时按口径独立命名产物：非 `L` 名单写 `stock_list_a_{KEY}.csv` 且跳过面向上市口径的 `generate_data_documentation`，不再覆盖 `stock_list_a.csv`（该文件被 `scripts/generate_index_from_csv.py` 当作「当前上市」消费），并删除冗余的 `'L'` 归一化分支改为单点透传。
 - [修复] `TushareFetcher.get_stock_list()` 多状态拉取时单个 `list_status` 抛错不再整体返回 `None`：保留已获取的帧、记录 `failed_statuses` 并打印「返回结果不完整」告警，与 §7「单一数据源失败不应拖垮整个流程」一致；新增部分帧降级回归。
 - [改进] `scripts/backtest_5y_23strategies.py` 的 `--universe` 帮助文案改用 `%(default)s` 由 `UNIVERSE_DEFAULT` 派生，默认口径切换后 help 不再失真；覆盖入口注释收窄到 `min_resonance_families`（Card A），其余三项与 `family_cap` 标注为漂移守卫。

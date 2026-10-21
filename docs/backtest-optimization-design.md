@@ -1109,3 +1109,49 @@ Week 4-5:
 - **L→D 迁移影响**：`601198.SH`/`601059.SH` 于 2026-10-19 由 `L` 移入 `D`（L 5577→5575）；同库 L-only 全回测**逐位复现** 2026-10-18 冻结基线（metrics 与 `config_hash` 完全一致），证明该迁移对 L-only 池绩效**零影响**。
 - **03/04/05 翻转重验**：卡 A/B/C 尚未翻转（均 `ready-for-agent`），本轮**无待重验项**；PIT 落地不改变其门槛口径。
 - **遗留**：`T600018.SH`（`symbol` 7 字符 > `varchar(6)`）未入库，不在 205 退市码集内；`cyq_perf` 无权限（本地由 `daily + daily_basic` 计算，已绕过）；行业 PIT 仍受 §9.11 P3-❻（`tushare_index_member_all.out_date` 全空）阻塞，属独立问题。
+
+### 10.5 卡 A 翻转门槛判决：不通过（2026-10-21，ticket 03）
+
+> 按 `docs/backtest-flip-gate-spec.md` §7 的预注册单次主比较执行，`tested_count = 1`；判决产物与 registry 落在 `result/gates/`（本地产物，未入库）。
+
+- **比较对象**：`min_resonance_families` 2（基线）vs 1（候选）。其余全部相同：PIT 宇宙、窗口 `20210514~20261016`、21 策略、`next_open` 入场、ATR×3 + `sched_4d_085`、显式成本 0.35% 往返、去簇共振定义不变。
+- **两臂均重跑（各一次）**：2026-10-17 的 fam1 消融产物落在临时目录且**早于 ticket 02 的去簇信号产物**——没有 `signals.csv`，物理上喂不进门槛；因此按预注册重跑两臂，而不是拿旧消融数字直接裁决。
+- **命令**：
+
+```bash
+python scripts/backtest_5y_23strategies.py --portfolio-sim --portfolio-sim-min-families 2 --portfolio-sim-out result/gates/card-a/base
+python scripts/backtest_5y_23strategies.py --portfolio-sim --portfolio-sim-min-families 1 --portfolio-sim-out result/gates/card-a/cand
+python scripts/portfolio_gate.py \
+  --baseline-summary  result/gates/card-a/base/portfolio_sim_20210514_20261016_pit.json \
+  --baseline-signals  result/gates/card-a/base/portfolio_sim_20210514_20261016_pit_signals.csv \
+  --candidate-summary result/gates/card-a/cand/portfolio_sim_20210406_20261016_pit.json \
+  --candidate-signals result/gates/card-a/cand/portfolio_sim_20210406_20261016_pit_signals.csv \
+  --card-id card-a --data-hash 8a5542694c0b1dd10c1de9bb0bd87447f3ec71e48d981b25392f833f6f2d313d \
+  --oos-end 2026-10-16 --code-commit 15089f56
+```
+
+- **基线可复现性**：基线臂 `config_hash = acb32bd95d3c…`、漏斗 `raw=18477 / filled=560`、`signals.csv` 的 sha256 与 2026-10-19 冻结产物**逐字节一致**（`2A5DB331…`）。这确认候选臂的唯一差异就是家族门槛。
+- **`config_hash`**：基线 `acb32bd95d3c94c9c575b00008409c483cd04064`（PIT、≥2）；候选 `39272e93e83593933a35481ce751cbae36429314`（PIT、≥1）。
+- **数据快照**：`data_hash = 8a5542694c0b1dd10c1de9bb0bd87447f3ec71e48d981b25392f833f6f2d313d`，由 7 张面板表的行数 + 最新日期 + `tushare_stock_basic` 状态分布（`D:340 / L:5575`）拼接后取 sha256；两臂同库同快照。OOS 窗两臂一致：`2022-01-17 ~ 2026-10-16`、`n_days=1400`、`oos_days=1147`。
+- **判决：FAIL** —— 主判据 `ci_excludes_zero` 不通过。每信号净收益 Δ = **+0.115%**，95% CI **[−0.059%, +0.304%]**（`se=0.092%`、`L=9`、`B=2000`、`n_dates=332`、`n_blocks=37`、`valid=2000`、`seed=10374700140155257347`）。CI 含 0，无法拒绝"家族门槛对每信号净收益无影响"。
+- **其余 5 项判据全部 PASS**（CAGR / Sharpe / maxDD 三项护栏杆 + maxDD ≤25% + 成交 ≥100）。
+- **结论**：**默认值保持 `min_resonance_families = 2`**，不翻转，不在 2 与 3 之间扫参（预注册纪律）。点估计为正、组合层护栏杆全面改善，但按规格不得用护栏杆替代主判据。
+
+| 指标 | ≥2 家族（基线） | ≥1 家族（候选） | Δ |
+| --- | ---: | ---: | ---: |
+| 样本外 CAGR | 4.20% | **7.48%** | +3.28pct |
+| 全期 CAGR | 3.93% | **7.60%** | +3.67pct |
+| 夏普 | 0.444 | **0.677** | +0.232 |
+| 最大回撤 | 13.91% | **10.48%** | −3.42pct |
+| 总收益 | 23.84% | **50.20%** | +26.36pct |
+| 胜率 | 43.93% | 45.36% | +1.43pct |
+| 成交笔数 | 560 | 829 | +269 |
+| 平均持仓 | 2.23 | 3.19 | +0.96 |
+| 闲置现金 | 77.69% | 68.14% | −9.55pct |
+| 成本拖累 | 51.35% | 74.37% | +23.02pct |
+| 换手 | 112.63 | 167.39 | +54.76 |
+| 期末权益 | 1,238,420 | 1,502,005 | +263,585 |
+
+- **成本与容量已计入判据**：门槛使用的是扣除入场/出场滑点与显式成本后的每信号净收益；成交 +269 笔带来的成本拖累 +23.02pct、换手 +54.76 都在判决内，未用毛收益比较。
+- **与 2026-10-17 消融数字的关系**：旧消融为 L-only、窗口 `20210406~20261016`（≥1 家族 CAGR 8.19% / 838 笔）；本次为 PIT、两臂同窗口同快照（≥1 家族 7.48% / 829 笔）。差异来自宇宙口径与数据快照，**不是**新的参数搜索，`tested_count` 仍为 1。
+- **后续含义**：实验卡登记表把卡 B 的启动条件写成"卡 A 过门槛后启动"，该条件当前未满足，是否照常启动卡 B 需人工决策；卡 A 不得以"再调一档"的方式重试。

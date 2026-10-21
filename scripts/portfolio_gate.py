@@ -14,10 +14,12 @@ the drawn date index is applied jointly to both arms.
 
 from __future__ import annotations
 
+import argparse
 import copy
 import hashlib
 import json
 import math
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence, Tuple, cast
@@ -813,6 +815,23 @@ def _fmt_metric(value: Any, digits: int = 4) -> str:
     return f"{number:.{digits}f}"
 
 
+def load_signals(path: str | Path) -> pd.DataFrame:
+    """Read a de-clustered signal table produced by the portfolio sim driver."""
+    frame = pd.read_csv(Path(path))
+    if frame.empty:
+        raise ValueError(f"signal table is empty: {path}")
+    return frame
+
+
+def load_summary(path: str | Path) -> dict[str, Any]:
+    """Read a portfolio sim run summary JSON."""
+    with Path(path).open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    if not isinstance(payload, dict):
+        raise ValueError(f"run summary must be a JSON object: {path}")
+    return payload
+
+
 def format_human(payload: Mapping[str, Any]) -> str:
     """Render a one-screen human-readable verdict."""
     gate = _require_mapping(payload, "gate", "payload")
@@ -903,3 +922,76 @@ def format_human(payload: Mapping[str, Any]) -> str:
     for limitation in limitations:
         lines.append(f"limitation: {limitation}")
     return "\n".join(lines)
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    """Build the CLI parser for evaluating one pre-registered card comparison."""
+    parser = argparse.ArgumentParser(
+        prog="portfolio_gate",
+        description=(
+            "Evaluate the date-block bootstrap flip gate on a baseline and a candidate "
+            "portfolio-sim run, then write a content-addressed verdict and registry row."
+        ),
+        epilog=(
+            "Exit codes: 0 = gate PASS, 1 = gate FAIL (a valid result, not an error), "
+            "2 = unusable inputs."
+        ),
+    )
+    parser.add_argument("--baseline-summary", required=True, help="baseline run summary JSON")
+    parser.add_argument("--baseline-signals", required=True, help="baseline de-clustered signals CSV")
+    parser.add_argument("--candidate-summary", required=True, help="candidate run summary JSON")
+    parser.add_argument("--candidate-signals", required=True, help="candidate de-clustered signals CSV")
+    parser.add_argument("--card-id", required=True, help="pre-registered card id, e.g. card-a")
+    parser.add_argument(
+        "--data-hash",
+        required=True,
+        help="caller-supplied data snapshot identity; part of the bootstrap seed",
+    )
+    parser.add_argument("--out-dir", default=DEFAULT_OUT_DIR, help="verdict + registry root")
+    parser.add_argument("--oos-end", default=None, help="override the OOS end date recorded in the verdict")
+    parser.add_argument("--code-commit", default="unknown", help="git commit the runs were produced from")
+    parser.add_argument(
+        "--exploratory",
+        action="store_true",
+        help="mark the verdict exploratory; such a verdict must not flip a default",
+    )
+    parser.add_argument(
+        "--tested-count",
+        type=int,
+        default=None,
+        help="already-tested variant count; defaults to the registry-derived count",
+    )
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """CLI entry point. Returns the process exit code (see the parser epilog)."""
+    args = build_arg_parser().parse_args(argv)
+    try:
+        payload = run_gate(
+            load_signals(args.baseline_signals),
+            load_signals(args.candidate_signals),
+            load_summary(args.baseline_summary),
+            load_summary(args.candidate_summary),
+            card_id=args.card_id,
+            data_hash=args.data_hash,
+            out_dir=args.out_dir,
+            oos_end=args.oos_end,
+            code_commit=args.code_commit,
+            preregistered_primary=not args.exploratory,
+            tested_count=args.tested_count,
+        )
+    except (OSError, ValueError) as exc:
+        print(f"portfolio_gate: {exc}", file=sys.stderr)
+        return 2
+
+    gate = cast(Mapping[str, Any], payload["gate"])
+    candidate = cast(Mapping[str, Any], cast(Mapping[str, Any], payload["inputs"])["candidate"])
+    verdict_path = Path(args.out_dir) / str(gate["card_id"]) / str(gate["version"]) / f"{candidate['config_hash']}.json"
+    print(format_human(payload))
+    print(f"verdict: {verdict_path}")
+    return 0 if payload["overall_pass"] else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

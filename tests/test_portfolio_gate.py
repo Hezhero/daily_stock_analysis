@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,7 @@ import pandas as pd
 from scripts.portfolio_gate import (
     block_length,
     build_observations,
+    main,
     moving_block_bootstrap,
     run_gate,
 )
@@ -246,3 +248,65 @@ def test_wfo_is_explicitly_not_required(tmp_path: Path) -> None:
     assert payload["wfo"]["folds"] is None
     assert "§8.1" in payload["wfo"]["reason"]
     assert "§4.5" in payload["wfo"]["reason"]
+
+
+def _write_run_artifacts(
+    directory: Path,
+    stem: str,
+    run: tuple[pd.DataFrame, dict[str, Any]],
+) -> tuple[Path, Path]:
+    """Persist a synthetic run as the CSV + JSON pair the CLI consumes."""
+    signals, summary = run
+    signals_path = directory / f"{stem}_signals.csv"
+    summary_path = directory / f"{stem}.json"
+    signals.to_csv(signals_path, index=False)
+    summary_path.write_text(json.dumps(summary, ensure_ascii=False), encoding="utf-8")
+    return summary_path, signals_path
+
+
+def _cli_args(summary_b: Path, signals_b: Path, summary_c: Path, signals_c: Path, out_dir: Path) -> list[str]:
+    return [
+        "--baseline-summary", str(summary_b),
+        "--baseline-signals", str(signals_b),
+        "--candidate-summary", str(summary_c),
+        "--candidate-signals", str(signals_c),
+        "--card-id", "card_a",
+        "--data-hash", "synthetic-data-hash",
+        "--out-dir", str(out_dir),
+    ]
+
+
+def test_cli_passing_gate_exits_zero_and_writes_verdict(tmp_path: Path, capsys: Any) -> None:
+    baseline = make_run(100, 4, 1, 0.0, 0.002, 0.0, seed=81)
+    candidate = make_run(100, 4, 1, 0.0, 0.002, 0.01, seed=82)
+    summary_b, signals_b = _write_run_artifacts(tmp_path, "base", baseline)
+    summary_c, signals_c = _write_run_artifacts(tmp_path, "cand", candidate)
+    out_dir = tmp_path / "gates"
+
+    exit_code = main(_cli_args(summary_b, signals_b, summary_c, signals_c, out_dir))
+
+    assert exit_code == 0
+    assert "OVERALL: PASS" in capsys.readouterr().out
+    verdicts = list((out_dir / "card_a" / "v1").glob("*.json"))
+    assert len(verdicts) == 1
+    assert (out_dir / "registry.jsonl").exists()
+
+
+def test_cli_failing_gate_exits_one(tmp_path: Path) -> None:
+    baseline = make_run(100, 4, 1, 0.0, 0.002, 0.01, seed=83)
+    candidate = make_run(100, 4, 1, 0.0, 0.002, -0.01, seed=84)
+    summary_b, signals_b = _write_run_artifacts(tmp_path, "base", baseline)
+    summary_c, signals_c = _write_run_artifacts(tmp_path, "cand", candidate)
+
+    exit_code = main(_cli_args(summary_b, signals_b, summary_c, signals_c, tmp_path / "gates"))
+
+    assert exit_code == 1
+
+
+def test_cli_reports_unusable_inputs(tmp_path: Path, capsys: Any) -> None:
+    missing = tmp_path / "missing.json"
+
+    exit_code = main(_cli_args(missing, missing, missing, missing, tmp_path / "gates"))
+
+    assert exit_code == 2
+    assert "portfolio_gate:" in capsys.readouterr().err
