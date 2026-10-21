@@ -504,15 +504,17 @@ def _canonical_hash(payload: Mapping[str, Any]) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def write_verdict(payload: Mapping[str, Any], out_dir: str | Path) -> str:
-    """Write the verdict to its content-addressed path and return the path."""
+def verdict_path(payload: Mapping[str, Any], out_dir: str | Path) -> Path:
+    """Content-addressed verdict location: <out_dir>/<card_id>/<gate_version>/<candidate_hash>.json."""
     gate = _require_mapping(payload, "gate", "payload")
     inputs = _require_mapping(payload, "inputs", "payload")
     candidate = _require_mapping(inputs, "candidate", "payload.inputs")
-    card_id = str(gate["card_id"])
-    gate_version = str(gate["version"])
-    candidate_hash = str(candidate["config_hash"])
-    path = Path(out_dir) / card_id / gate_version / f"{candidate_hash}.json"
+    return Path(out_dir) / str(gate["card_id"]) / str(gate["version"]) / f"{candidate['config_hash']}.json"
+
+
+def write_verdict(payload: Mapping[str, Any], out_dir: str | Path) -> str:
+    """Write the verdict to its content-addressed path and return the path."""
+    path = verdict_path(payload, out_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="\n") as handle:
         json.dump(
@@ -949,23 +951,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--out-dir", default=DEFAULT_OUT_DIR, help="verdict + registry root")
     parser.add_argument("--oos-end", default=None, help="override the OOS end date recorded in the verdict")
-    parser.add_argument("--code-commit", default="unknown", help="git commit the runs were produced from")
-    parser.add_argument(
-        "--exploratory",
-        action="store_true",
-        help="mark the verdict exploratory; such a verdict must not flip a default",
-    )
-    parser.add_argument(
-        "--tested-count",
-        type=int,
-        default=None,
-        help="already-tested variant count; defaults to the registry-derived count",
-    )
+    parser.add_argument("--code-commit", default="unknown", help="git commit the gate code was run from")
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """CLI entry point. Returns the process exit code (see the parser epilog)."""
+    """CLI entry point. Returns the process exit code (see the parser epilog).
+
+    The variant count is deliberately not settable from the CLI: it is derived from the
+    card's own ``registry.jsonl`` so a run cannot reset the count that guards against
+    data snooping (see docs/backtest-flip-gate-spec.md §7).
+    """
     args = build_arg_parser().parse_args(argv)
     try:
         payload = run_gate(
@@ -978,19 +974,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             out_dir=args.out_dir,
             oos_end=args.oos_end,
             code_commit=args.code_commit,
-            preregistered_primary=not args.exploratory,
-            tested_count=args.tested_count,
         )
+        resolved_verdict = verdict_path(payload, args.out_dir)
     except (OSError, ValueError) as exc:
         print(f"portfolio_gate: {exc}", file=sys.stderr)
         return 2
 
-    gate = cast(Mapping[str, Any], payload["gate"])
-    candidate = cast(Mapping[str, Any], cast(Mapping[str, Any], payload["inputs"])["candidate"])
-    verdict_path = Path(args.out_dir) / str(gate["card_id"]) / str(gate["version"]) / f"{candidate['config_hash']}.json"
     print(format_human(payload))
-    print(f"verdict: {verdict_path}")
-    return 0 if payload["overall_pass"] else 1
+    print(f"verdict: {resolved_verdict}")
+    return 0 if payload.get("overall_pass") else 1
 
 
 if __name__ == "__main__":

@@ -270,7 +270,7 @@ def _cli_args(summary_b: Path, signals_b: Path, summary_c: Path, signals_c: Path
         "--baseline-signals", str(signals_b),
         "--candidate-summary", str(summary_c),
         "--candidate-signals", str(signals_c),
-        "--card-id", "card_a",
+        "--card-id", "card-a",
         "--data-hash", "synthetic-data-hash",
         "--out-dir", str(out_dir),
     ]
@@ -287,20 +287,27 @@ def test_cli_passing_gate_exits_zero_and_writes_verdict(tmp_path: Path, capsys: 
 
     assert exit_code == 0
     assert "OVERALL: PASS" in capsys.readouterr().out
-    verdicts = list((out_dir / "card_a" / "v1").glob("*.json"))
+    verdicts = list((out_dir / "card-a" / "v1").glob("*.json"))
     assert len(verdicts) == 1
     assert (out_dir / "registry.jsonl").exists()
 
 
-def test_cli_failing_gate_exits_one(tmp_path: Path) -> None:
+def test_cli_failing_gate_exits_one(tmp_path: Path, capsys: Any) -> None:
     baseline = make_run(100, 4, 1, 0.0, 0.002, 0.01, seed=83)
     candidate = make_run(100, 4, 1, 0.0, 0.002, -0.01, seed=84)
     summary_b, signals_b = _write_run_artifacts(tmp_path, "base", baseline)
     summary_c, signals_c = _write_run_artifacts(tmp_path, "cand", candidate)
+    out_dir = tmp_path / "gates"
 
-    exit_code = main(_cli_args(summary_b, signals_b, summary_c, signals_c, tmp_path / "gates"))
+    exit_code = main(_cli_args(summary_b, signals_b, summary_c, signals_c, out_dir))
 
     assert exit_code == 1
+    assert "OVERALL: FAIL" in capsys.readouterr().out
+    verdicts = list((out_dir / "card-a" / "v1").glob("*.json"))
+    assert len(verdicts) == 1
+    written = json.loads(verdicts[0].read_text(encoding="utf-8"))
+    assert written["overall_pass"] is False
+    assert "ci_excludes_zero" in written["rejection_reasons"]
 
 
 def test_cli_reports_unusable_inputs(tmp_path: Path, capsys: Any) -> None:
