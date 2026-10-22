@@ -242,6 +242,121 @@ def test_verdict_hash_is_deterministic_and_order_independent(tmp_path: Path) -> 
     assert first["verdict_hash"] == third["verdict_hash"]
 
 
+FROZEN_SIGNAL_VERDICT_HASH = "2c70774a05b85794c04be3446289b01fde322766785e7d8631115803744f68b2"
+FROZEN_SIGNAL_TOP_LEVEL_KEYS = frozenset(
+    {
+        "criteria",
+        "estimator",
+        "gate",
+        "inputs",
+        "limitations",
+        "overall_pass",
+        "portfolio",
+        "rejection_reasons",
+        "variants",
+        "verdict_hash",
+        "warnings",
+        "wfo",
+    }
+)
+FROZEN_SIGNAL_ESTIMATOR_KEYS = frozenset(
+    {
+        "block_length",
+        "block_length_inputs",
+        "block_length_rule",
+        "ci_high",
+        "ci_level",
+        "ci_low",
+        "ci_method",
+        "date_index_rule",
+        "degenerate",
+        "delta",
+        "n_blocks",
+        "n_dates_union",
+        "name",
+        "numpy_version",
+        "resamples",
+        "resampling_unit",
+        "rng",
+        "seed",
+        "seed_derivation",
+        "se",
+        "signal_weighting",
+        "valid_resamples",
+    }
+)
+FROZEN_SIGNAL_CRITERIA_IDS = [
+    "ci_excludes_zero",
+    "cagr_non_inferior",
+    "sharpe_non_inferior",
+    "maxdd_non_inferior",
+    "maxdd_cap",
+    "min_trades",
+]
+FROZEN_REGISTRY_ROW_KEYS = frozenset(
+    {
+        "baseline_config_hash",
+        "block_length",
+        "candidate_config_hash",
+        "card_id",
+        "ci_high",
+        "ci_low",
+        "data_snapshot_hash",
+        "delta",
+        "gate_name",
+        "gate_version",
+        "oos_end",
+        "oos_start",
+        "overall_pass",
+        "recorded_at",
+        "registry_id",
+        "rejection_reasons",
+        "resamples",
+        "se",
+        "seed",
+        "verdict_hash",
+    }
+)
+
+
+def test_default_signal_verdict_is_frozen(tmp_path: Path) -> None:
+    """Pin the default (signal) verdict so silent drift cannot ship.
+
+    ``GATE_SPEC_HASH`` only covers the pre-registered spec text, so a change to
+    payload assembly, seed derivation or the registry row can alter every
+    published verdict while leaving it untouched. Freezing the observable
+    output keeps ``git bisect`` meaningful: the same synthetic inputs must keep
+    yielding the same hash, payload keys and registry fields.
+    """
+    baseline = make_run(100, 4, 1, 0.0, 0.002, 0.0, seed=61)
+    candidate = make_run(100, 4, 1, 0.0, 0.002, 0.01, seed=62)
+
+    payload = _run(baseline, candidate, tmp_path)
+
+    assert GATE_SPEC_HASH == FROZEN_GATE_SPEC_HASH
+    assert payload["verdict_hash"] == FROZEN_SIGNAL_VERDICT_HASH
+    assert set(payload) == FROZEN_SIGNAL_TOP_LEVEL_KEYS
+    assert set(payload["estimator"]) == FROZEN_SIGNAL_ESTIMATOR_KEYS
+    assert [criterion["id"] for criterion in payload["criteria"]] == FROZEN_SIGNAL_CRITERIA_IDS
+    assert set(payload["gate"]) == {
+        "card_id",
+        "code_commit",
+        "created_at",
+        "name",
+        "spec_hash",
+        "version",
+    }
+
+    registry_rows = [
+        json.loads(line)
+        for line in (tmp_path / "registry.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(registry_rows) == 1
+    assert set(registry_rows[0]) == FROZEN_REGISTRY_ROW_KEYS
+    assert registry_rows[0]["verdict_hash"] == FROZEN_SIGNAL_VERDICT_HASH
+
+
 def test_wfo_is_explicitly_not_required(tmp_path: Path) -> None:
     baseline = make_run(100, 4, 1, 0.0, 0.002, 0.0, seed=71)
     candidate = make_run(100, 4, 1, 0.0, 0.002, 0.01, seed=72)

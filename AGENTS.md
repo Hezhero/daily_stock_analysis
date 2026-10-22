@@ -109,8 +109,7 @@ uvicorn server:app --reload --host 0.0.0.0 --port 8000
 ### 后端验证
 
 ```bash
-pip install -r requirements.txt
-pip install flake8 pytest
+pip install -r .github/requirements-ci.txt   # 与 backend-gate 同款依赖（requirements.txt + flake8 + pytest + pytest-timeout）
 ./scripts/ci_gate.sh
 python -m pytest -m "not network"
 python -m py_compile <changed_python_files>

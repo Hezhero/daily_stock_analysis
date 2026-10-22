@@ -48,12 +48,20 @@ def ensure_symlink() -> None:
     ensure_file_exists(AGENTS, "canonical AGENTS.md")
     if not CLAUDE.exists():
         fail("CLAUDE.md is missing")
-    if not CLAUDE.is_symlink():
-        fail("CLAUDE.md must be a symlink to AGENTS.md")
+    if CLAUDE.is_symlink():
+        target = Path(CLAUDE.readlink())
+        if target != Path("AGENTS.md"):
+            fail(f"CLAUDE.md must point to AGENTS.md, found: {target}")
+        return
 
-    target = Path(CLAUDE.readlink())
-    if target != Path("AGENTS.md"):
-        fail(f"CLAUDE.md must point to AGENTS.md, found: {target}")
+    # Windows checkouts without symlink support materialise the tracked symlink
+    # (git mode 120000) as a plain file holding its target path. Accept that
+    # shape only when the file is that bare pointer: a real copy would let
+    # AGENTS.md and CLAUDE.md drift apart, which is what this check prevents.
+    pointer = CLAUDE.read_text(encoding="utf-8").strip()
+    if pointer != "AGENTS.md":
+        fail("CLAUDE.md must be a symlink to AGENTS.md (found a non-pointer file)")
+    print("[ai-assets] note: CLAUDE.md is a materialised symlink (core.symlinks=false)")
 
 
 def ensure_copilot_entry() -> None:
