@@ -1198,3 +1198,13 @@ python scripts/portfolio_gate.py \
 - **产物**：候选 `result/gates/card-b/cand/portfolio_sim_20210514_20261016_pit.*`（`config_hash d1d40cbcfd66903d8d4c6e06bc579daee129a539`）；判决 `result/gates/card-b/v1/d1d40cbcfd66903d8d4c6e06bc579daee129a539.json`（`verdict_hash a0e4e7c7…`，`code_commit 1704cadd`，`tested_count=1`，`registry_id c70136ea5954`）；`result/gates/registry.jsonl` 现 2 行（`card-a`、`card-b`，均 `overall_pass=false`）。
 - **估计量参数**：`L=9`（两臂 99 分位持仓 bar 取上整的最大值）、`B=2000`、`n_dates=282`、`n_blocks=32`、`valid_resamples=2000`、`seed=15424593829408389888`；两臂 `n_signals=7771`（信号集合一致）。
 - **回滚**：无需回滚动作——默认值自始未改（`SimConfig().size_mode == "fixed_1n"`，`_config_hash` 仍为 `5eea05195af3d89432af8b2a049fde2517d6a53b`，有测试锁住）；`deploy_aware` 仅作为显式 CLI 开关存在，默认路径不变。
+
+### 10.9 门禁组合层估计量立项（2026-10-21，ticket 08）
+
+- **问题**：v1 估计量是信号级净收益均值差。卡 B 只改资金规模，两臂 `signals.csv` 逐字节相同，Δ 在构造上恒为 0，CI `[0, 0]`、`degenerate=true`——**该退化与结果好坏无关**，任何纯资金管理卡都会被同一机制卡住（§10.8 已记录）。
+- **立项范围**：`scripts/portfolio_gate.py` 新增 `--estimator portfolio`（估计量 id `oos_daily_portfolio_cagr_block_delta`）：观测单元改为 OOS 交易日权益，点估计为 Δ 年化几何收益（百分点），联合非环绕移动块 bootstrap，块长 `max(21, ceil(max-arm p99 holding_bars))`，2000 次，percentile CI。冻结规格见 `docs/backtest-flip-gate-spec.md` §9，立项票见 ticket 08。
+- **默认不变**：默认估计量仍是 `signal`。既有 `GATE_SPEC_HASH`、card-a / card-b 判决文件、`registry.jsonl` 两行、`tested_count=1` 全部不动；新增估计量只在新运行中生效。
+- **不重判**：卡 A、卡 B 的 FAIL 结论保持。用新估计量重跑任何已判决卡都属于探索性变体，只记录、不翻转（§7 纪律）。
+- **变体计数**：计数改为按 `card_id` 跨估计量合并——同一张卡换估计量再跑一次，`tested_count` 必须 +1，不能借口径切换重置。
+- **后续使用**：卡 C（ticket 05）若采用组合层估计量，必须在开跑前写进其预注册；不得先跑 v1 看结果再换 v2。
+- **局限**：日收益块 bootstrap 只量化抽样噪声，不消除选择偏倚；容量仍无独立指标。

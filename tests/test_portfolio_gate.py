@@ -11,8 +11,12 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from scripts.portfolio_gate import (
+    GATE_SPEC_HASH,
+    PORTFOLIO_ESTIMATOR_ID,
+    PORTFOLIO_GATE_SPEC_HASH,
     block_length,
     build_observations,
     main,
@@ -317,3 +321,225 @@ def test_cli_reports_unusable_inputs(tmp_path: Path, capsys: Any) -> None:
 
     assert exit_code == 2
     assert "portfolio_gate:" in capsys.readouterr().err
+
+
+FROZEN_GATE_SPEC_HASH = "88e87917bde12c345dd4d166108527f8db3858844b9cb8000e149b820315a800"
+
+
+def make_equity_pair(
+    n_dates: int,
+    spread: float,
+    noise_sd: float,
+    seed: int,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Build two equity curves sharing one return-noise path, candidate shifted by spread."""
+    rng = np.random.default_rng(seed)
+    dates = pd.bdate_range("2022-01-03", periods=n_dates)
+    base_rets = rng.normal(0.0, noise_sd, size=n_dates)
+    base_rets[0] = 0.0
+    cand_rets = base_rets + spread
+    cand_rets[0] = 0.0
+
+    def curve(rets: np.ndarray) -> pd.DataFrame:
+        equity = 1_000_000.0 * np.cumprod(1.0 + rets)
+        return pd.DataFrame(
+            {
+                "date": dates,
+                "cash": 0.0,
+                "position_value": equity,
+                "equity": equity,
+                "n_positions": 0,
+                "exposure": 0.0,
+                "daily_ret": rets,
+                "drawdown": 0.0,
+            }
+        )
+
+    return curve(base_rets), curve(cand_rets)
+
+
+def _with_metrics(
+    run: tuple[pd.DataFrame, dict[str, Any]],
+    *,
+    cagr: float,
+    sharpe: float,
+    max_dd: float,
+    n_trades: int,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    signals, summary = copy.deepcopy(run)
+    summary["metrics"].update(
+        {"cagr_oos": cagr, "sharpe": sharpe, "maxDD_pct": max_dd, "n_trades": n_trades}
+    )
+    return signals, summary
+
+
+def _portfolio_run(
+    out_dir: Path,
+    baseline_equity: pd.DataFrame,
+    candidate_equity: pd.DataFrame,
+    *,
+    baseline_metrics: tuple[float, float, float, int] = (0.05, 1.0, 12.0, 200),
+    candidate_metrics: tuple[float, float, float, int] = (0.30, 1.5, 8.0, 200),
+    baseline_run: tuple[pd.DataFrame, dict[str, Any]] | None = None,
+    candidate_run: tuple[pd.DataFrame, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    baseline_signals, baseline_summary = _with_metrics(
+        baseline_run or make_run(300, 2, 1, 0.0, 0.002, 0.0, seed=101),
+        cagr=baseline_metrics[0],
+        sharpe=baseline_metrics[1],
+        max_dd=baseline_metrics[2],
+        n_trades=baseline_metrics[3],
+    )
+    candidate_signals, candidate_summary = _with_metrics(
+        candidate_run or make_run(300, 2, 1, 0.0, 0.002, 0.0, seed=102),
+        cagr=candidate_metrics[0],
+        sharpe=candidate_metrics[1],
+        max_dd=candidate_metrics[2],
+        n_trades=candidate_metrics[3],
+    )
+    return run_gate(
+        baseline_signals,
+        candidate_signals,
+        baseline_summary,
+        candidate_summary,
+        card_id="card_portfolio",
+        data_hash="synthetic-data-hash",
+        out_dir=out_dir,
+        estimator="portfolio",
+        equity_baseline=baseline_equity,
+        equity_candidate=candidate_equity,
+    )
+
+
+def test_portfolio_estimator_detects_better_equity_curve(tmp_path: Path) -> None:
+    baseline_equity, candidate_equity = make_equity_pair(300, spread=0.001, noise_sd=0.001, seed=7)
+
+    payload = _portfolio_run(tmp_path, baseline_equity, candidate_equity)
+
+    assert payload["gate"]["spec_hash"] == PORTFOLIO_GATE_SPEC_HASH
+    assert payload["estimator"]["name"] == PORTFOLIO_ESTIMATOR_ID
+    assert payload["estimator"]["delta_unit"] == "percentage_points_annualized_return"
+    assert payload["estimator"]["resampling_unit"] == "oos_trading_day"
+    assert payload["estimator"]["n_dates_union"] == 299
+    assert payload["estimator"]["cagr_candidate_pct"] > payload["estimator"]["cagr_baseline_pct"]
+    assert payload["estimator"]["delta"] > 0.0
+    assert payload["estimator"]["ci_low"] > 0.0
+    assert payload["overall_pass"] is True
+    assert any("selection bias" in warning for warning in payload["warnings"])
+
+
+def test_portfolio_estimator_identical_curves_are_degenerate(tmp_path: Path) -> None:
+    baseline_equity, _ = make_equity_pair(300, spread=0.0, noise_sd=0.001, seed=8)
+
+    payload = _portfolio_run(tmp_path, baseline_equity, baseline_equity.copy())
+
+    assert payload["estimator"]["delta"] == 0.0
+    assert payload["estimator"]["degenerate"] is True
+    assert payload["overall_pass"] is False
+    assert "ci_excludes_zero" in payload["rejection_reasons"]
+
+
+def test_portfolio_estimator_rejects_date_mismatch(tmp_path: Path) -> None:
+    baseline_equity, candidate_equity = make_equity_pair(300, spread=0.001, noise_sd=0.001, seed=9)
+
+    with pytest.raises(ValueError, match="lengths must match"):
+        _portfolio_run(tmp_path, baseline_equity, candidate_equity.iloc[:-1])
+
+
+def test_portfolio_block_length_floor_is_one_trading_month(tmp_path: Path) -> None:
+    baseline_equity, candidate_equity = make_equity_pair(300, spread=0.001, noise_sd=0.001, seed=10)
+
+    payload = _portfolio_run(tmp_path, baseline_equity, candidate_equity)
+
+    assert payload["estimator"]["block_length"] == 21
+    assert payload["estimator"]["block_length_rule"] == "max(21, ceil(p99 holding_bars of each arm))"
+    assert payload["estimator"]["block_length_inputs"] == {"baseline_p99": 1.0, "candidate_p99": 1.0}
+
+
+def test_portfolio_estimator_is_deterministic(tmp_path: Path) -> None:
+    baseline_equity, candidate_equity = make_equity_pair(300, spread=0.001, noise_sd=0.001, seed=11)
+
+    first = _portfolio_run(tmp_path / "first", baseline_equity, candidate_equity)
+    second = _portfolio_run(tmp_path / "second", baseline_equity, candidate_equity)
+
+    assert first["estimator"] == second["estimator"]
+    assert first["estimator"]["delta"] == second["estimator"]["delta"]
+    assert first["estimator"]["ci_low"] == second["estimator"]["ci_low"]
+    assert first["estimator"]["ci_high"] == second["estimator"]["ci_high"]
+
+
+def test_registry_counts_variants_per_card_across_estimators(tmp_path: Path) -> None:
+    baseline = make_run(100, 4, 1, 0.0, 0.002, 0.0, seed=111)
+    candidate = make_run(100, 4, 1, 0.0, 0.002, 0.01, seed=112)
+    baseline_equity, candidate_equity = make_equity_pair(100, spread=0.001, noise_sd=0.001, seed=12)
+
+    signal_payload = run_gate(
+        baseline[0],
+        candidate[0],
+        baseline[1],
+        candidate[1],
+        card_id="card_mixed",
+        data_hash="synthetic-data-hash",
+        out_dir=tmp_path,
+    )
+    portfolio_payload = run_gate(
+        baseline[0],
+        candidate[0],
+        baseline[1],
+        candidate[1],
+        card_id="card_mixed",
+        data_hash="synthetic-data-hash",
+        out_dir=tmp_path,
+        estimator="portfolio",
+        equity_baseline=baseline_equity,
+        equity_candidate=candidate_equity,
+    )
+
+    assert signal_payload["variants"]["tested_count"] == 1
+    assert portfolio_payload["variants"]["tested_count"] == 2
+
+
+def test_default_signal_estimator_payload_is_unchanged(tmp_path: Path) -> None:
+    baseline = make_run(100, 4, 1, 0.0, 0.002, 0.0, seed=121)
+    candidate = make_run(100, 4, 1, 0.0, 0.002, 0.01, seed=122)
+
+    payload = _run(baseline, candidate, tmp_path)
+
+    assert payload["estimator"]["name"] == "pooled_oos_unpaired_mean_net_return_delta"
+    assert payload["gate"]["spec_hash"] == FROZEN_GATE_SPEC_HASH
+    assert GATE_SPEC_HASH == FROZEN_GATE_SPEC_HASH
+    assert "delta_unit" not in payload["estimator"]
+
+
+def _write_equity(path: Path, equity: pd.DataFrame) -> Path:
+    equity.to_csv(path, index=False, encoding="utf-8-sig")
+    return path
+
+
+def test_cli_portfolio_requires_equity_args(tmp_path: Path, capsys: Any) -> None:
+    baseline = make_run(100, 4, 1, 0.0, 0.002, 0.0, seed=131)
+    candidate = make_run(100, 4, 1, 0.0, 0.002, 0.01, seed=132)
+    summary_b, signals_b = _write_run_artifacts(tmp_path, "base", baseline)
+    summary_c, signals_c = _write_run_artifacts(tmp_path, "cand", candidate)
+
+    exit_code = main(_cli_args(summary_b, signals_b, summary_c, signals_c, tmp_path / "gates") + ["--estimator", "portfolio"])
+
+    assert exit_code == 2
+    assert "requires equity_baseline and equity_candidate" in capsys.readouterr().err
+
+
+def test_cli_signal_rejects_equity_args(tmp_path: Path, capsys: Any) -> None:
+    baseline = make_run(100, 4, 1, 0.0, 0.002, 0.0, seed=133)
+    candidate = make_run(100, 4, 1, 0.0, 0.002, 0.01, seed=134)
+    summary_b, signals_b = _write_run_artifacts(tmp_path, "base", baseline)
+    summary_c, signals_c = _write_run_artifacts(tmp_path, "cand", candidate)
+    baseline_equity, _ = make_equity_pair(100, spread=0.0, noise_sd=0.001, seed=13)
+    equity_path = _write_equity(tmp_path / "equity.csv", baseline_equity)
+
+    exit_code = main(
+        _cli_args(summary_b, signals_b, summary_c, signals_c, tmp_path / "gates")
+        + ["--baseline-equity", str(equity_path)]
+    )
+
+    assert exit_code == 2
+    assert "only accepted when estimator='portfolio'" in capsys.readouterr().err

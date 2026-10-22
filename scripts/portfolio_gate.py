@@ -30,6 +30,8 @@ import pandas as pd
 GATE_NAME = "portfolio_flip_gate"
 GATE_VERSION = "v1"
 ESTIMATOR_ID = "pooled_oos_unpaired_mean_net_return_delta"
+PORTFOLIO_ESTIMATOR_ID = "oos_daily_portfolio_cagr_block_delta"
+ESTIMATORS: Tuple[str, ...] = ("signal", "portfolio")
 
 RESAMPLES = 2000
 CI_LEVEL = 0.95
@@ -78,6 +80,32 @@ _GATE_SPEC: Mapping[str, Any] = {
 
 GATE_SPEC_HASH = hashlib.sha256(
     json.dumps(_GATE_SPEC, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+).hexdigest()
+
+# Frozen portfolio-level estimator description, selected only with ``--estimator
+# portfolio``. Kept separate so the signal-level spec hash above stays stable.
+PORTFOLIO_BLOCK_MIN = 21
+TRADING_DAYS_PER_YEAR = 252
+
+_PORTFOLIO_GATE_SPEC: Mapping[str, Any] = {
+    "gate_name": GATE_NAME,
+    "gate_version": GATE_VERSION,
+    "estimator_id": PORTFOLIO_ESTIMATOR_ID,
+    "observations": "OOS trading days of the portfolio equity curve keyed by date",
+    "daily_return": "equity_t / equity_{t-1} - 1 on the full series, then sliced to oos_start..oos_end",
+    "estimand": "CAGR(candidate) - CAGR(baseline), annualized geometric return difference in percentage points",
+    "resampling": "non-circular moving-block bootstrap over the shared OOS trading-day axis",
+    "date_index_rule": "k=ceil(n_dates/L); starts uniform over 1..(n_dates-L+1); joint across arms",
+    "block_length_rule": "max(21, ceil(p99 holding_bars of each arm))",
+    "ci_method": "percentile",
+    "ci_quantiles": list(CI_QUANTILES),
+    "resamples": RESAMPLES,
+    "trading_days_per_year": TRADING_DAYS_PER_YEAR,
+    "rng": "numpy.random.PCG64",
+}
+
+PORTFOLIO_GATE_SPEC_HASH = hashlib.sha256(
+    json.dumps(_PORTFOLIO_GATE_SPEC, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 ).hexdigest()
 
 _LIMITATIONS: Tuple[str, ...] = (
@@ -338,6 +366,135 @@ def moving_block_bootstrap(
     }
 
 
+def build_portfolio_returns(
+    equity: pd.DataFrame,
+    oos_start: Any,
+    oos_end: Any,
+) -> pd.DataFrame:
+    """Compute daily equity returns on the full series, then slice to the OOS window."""
+    _require_columns(equity, ("date", "equity"), "equity")
+    frame = equity.loc[:, ["date", "equity"]].copy()
+    frame["date"] = pd.to_datetime(frame["date"], errors="raise")
+    frame["equity"] = pd.to_numeric(frame["equity"], errors="raise")
+    frame = frame.sort_values("date", kind="mergesort").reset_index(drop=True)
+    if bool(frame["date"].duplicated().any()):
+        raise ValueError("equity contains duplicate dates")
+    values = frame["equity"].to_numpy(dtype=np.float64)
+    if not bool(np.isfinite(values).all()) or bool((values <= 0.0).any()):
+        raise ValueError("equity must be finite and positive")
+
+    start = pd.Timestamp(oos_start)
+    end = pd.Timestamp(oos_end)
+    if bool(pd.isna(start)) or bool(pd.isna(end)):
+        raise ValueError("oos_start and oos_end must be valid dates")
+
+    frame["ret"] = frame["equity"] / frame["equity"].shift(1) - 1.0
+    sliced = frame.loc[(frame["date"] >= start) & (frame["date"] <= end), ["date", "ret"]]
+    sliced = sliced.dropna(subset=["ret"]).reset_index(drop=True)
+    if sliced.empty:
+        raise ValueError("OOS window contains no equity returns")
+    return sliced
+
+
+def _cagr_pct(returns: np.ndarray) -> float:
+    growth = float(np.prod(1.0 + returns))
+    if not math.isfinite(growth) or growth <= 0.0:
+        raise ValueError("per-arm growth factor must be finite and positive")
+    return float((growth ** (TRADING_DAYS_PER_YEAR / len(returns)) - 1.0) * 100.0)
+
+
+def portfolio_block_bootstrap(
+    base_returns: pd.DataFrame,
+    cand_returns: pd.DataFrame,
+    block: int,
+    resamples: int,
+    seed: int,
+) -> dict[str, Any]:
+    """Joint non-circular moving-block bootstrap of the annualized return delta."""
+    if int(block) < 1:
+        raise ValueError("block length must be >= 1")
+    if int(resamples) < 1:
+        raise ValueError("resamples must be >= 1")
+    _require_columns(base_returns, ("date", "ret"), "baseline returns")
+    _require_columns(cand_returns, ("date", "ret"), "candidate returns")
+
+    n_dates = int(len(base_returns))
+    if n_dates < 1:
+        raise ValueError("baseline returns are empty")
+    if int(len(cand_returns)) != n_dates:
+        raise ValueError("baseline and candidate OOS return lengths must match")
+    base_dates = base_returns["date"].to_numpy(dtype="datetime64[ns]")
+    cand_dates = cand_returns["date"].to_numpy(dtype="datetime64[ns]")
+    if not bool(np.array_equal(base_dates, cand_dates)):
+        raise ValueError("baseline and candidate OOS date arrays must match exactly")
+
+    block = int(block)
+    if n_dates < block:
+        raise ValueError(f"n_dates ({n_dates}) must be >= block length ({block})")
+
+    base_ret = base_returns["ret"].to_numpy(dtype=np.float64)
+    cand_ret = cand_returns["ret"].to_numpy(dtype=np.float64)
+    if not bool(np.isfinite(base_ret).all()) or not bool(np.isfinite(cand_ret).all()):
+        raise ValueError("portfolio returns must be finite")
+
+    cagr_baseline_pct = _cagr_pct(base_ret)
+    cagr_candidate_pct = _cagr_pct(cand_ret)
+    point_delta = cagr_candidate_pct - cagr_baseline_pct
+
+    n_blocks = int(math.ceil(n_dates / block))
+    start_high = n_dates - block + 2  # integers in [1, n_dates - L + 1]
+    rng = np.random.Generator(np.random.PCG64(int(seed)))
+    deltas = np.empty(int(resamples), dtype=np.float64)
+    valid = 0
+
+    for _ in range(int(resamples)):
+        starts = rng.integers(low=1, high=start_high, size=n_blocks)
+        index = np.concatenate(
+            [np.arange(start - 1, start - 1 + block, dtype=np.int64) for start in starts]
+        )[:n_dates]
+        base_growth = float(np.prod(1.0 + base_ret[index]))
+        cand_growth = float(np.prod(1.0 + cand_ret[index]))
+        if (
+            not math.isfinite(base_growth)
+            or not math.isfinite(cand_growth)
+            or base_growth <= 0.0
+            or cand_growth <= 0.0
+        ):
+            continue
+        base_cagr_pct = (base_growth ** (TRADING_DAYS_PER_YEAR / n_dates) - 1.0) * 100.0
+        cand_cagr_pct = (cand_growth ** (TRADING_DAYS_PER_YEAR / n_dates) - 1.0) * 100.0
+        deltas[valid] = cand_cagr_pct - base_cagr_pct
+        valid += 1
+
+    valid_deltas = deltas[:valid]
+    if valid < 1:
+        degenerate = True
+        ci_low = float("nan")
+        ci_high = float("nan")
+        se = float("nan")
+    else:
+        degenerate = bool(float(np.ptp(valid_deltas)) == 0.0)
+        ci_low, ci_high = (float(value) for value in np.percentile(valid_deltas, CI_QUANTILES))
+        se = float(np.std(valid_deltas, ddof=1)) if valid > 1 else 0.0
+
+    return {
+        "delta": point_delta,
+        "ci_low": ci_low,
+        "ci_high": ci_high,
+        "se": se,
+        "n_dates": n_dates,
+        "n_blocks": n_blocks,
+        "valid_resamples": int(valid),
+        "degenerate": bool(degenerate),
+        "resamples": int(resamples),
+        "block_length": block,
+        "ci_level": CI_LEVEL,
+        "cagr_baseline_pct": cagr_baseline_pct,
+        "cagr_candidate_pct": cagr_candidate_pct,
+        "delta_unit": "percentage_points_annualized_return",
+    }
+
+
 def evaluate_criteria(
     delta_ci: Mapping[str, Any],
     baseline_metrics: Mapping[str, Any],
@@ -459,6 +616,7 @@ def _registered_variant_ids(
     card_id: str,
     gate_version: str,
 ) -> set[str]:
+    """Distinct registry ids for one card across gate versions and estimators."""
     if not registry_path.exists():
         return set()
     identifiers: set[str] = set()
@@ -467,10 +625,13 @@ def _registered_variant_ids(
             if not line.strip():
                 continue
             entry = json.loads(line)
-            if entry.get("card_id") == card_id and entry.get("gate_version") == gate_version:
-                identifier = entry.get("registry_id")
-                if isinstance(identifier, str) and identifier:
-                    identifiers.add(identifier)
+            # Entries written before the portfolio estimator have no estimator_id
+            # field and count as signal-level runs for the same card.
+            if entry.get("card_id") != card_id:
+                continue
+            identifier = entry.get("registry_id")
+            if isinstance(identifier, str) and identifier:
+                identifiers.add(identifier)
     return identifiers
 
 
@@ -554,8 +715,24 @@ def run_gate(
     tested_count: int | None = None,
     run_id_baseline: str | None = None,
     run_id_candidate: str | None = None,
+    estimator: str = "signal",
+    equity_baseline: pd.DataFrame | None = None,
+    equity_candidate: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     """Evaluate the gate, write the verdict, and append the variant registry row."""
+    if estimator not in ESTIMATORS:
+        raise ValueError(f"estimator must be one of {ESTIMATORS}, got {estimator!r}")
+    if estimator == "portfolio":
+        if equity_baseline is None or equity_candidate is None:
+            raise ValueError("estimator='portfolio' requires equity_baseline and equity_candidate")
+        estimator_id = PORTFOLIO_ESTIMATOR_ID
+        spec_hash = PORTFOLIO_GATE_SPEC_HASH
+    else:
+        if equity_baseline is not None or equity_candidate is not None:
+            raise ValueError("equity inputs are only accepted when estimator='portfolio'")
+        estimator_id = ESTIMATOR_ID
+        spec_hash = GATE_SPEC_HASH
+
     baseline_metrics = _require_mapping(summary_baseline, "metrics", "baseline summary")
     candidate_metrics = _require_mapping(summary_candidate, "metrics", "candidate summary")
     baseline_config = _require_mapping(summary_baseline, "config", "baseline summary")
@@ -601,10 +778,18 @@ def run_gate(
                 "baseline and candidate report different oos_start values; "
                 f"the gate uses baseline {oos_start}"
             )
+    if estimator == "portfolio":
+        warnings.append(
+            "The portfolio-level estimator quantifies sampling noise in the OOS daily "
+            "equity curve only; it does not remove selection bias and does not account "
+            "for capacity."
+        )
 
     obs_baseline = build_observations(signals_baseline, oos_start, cost_baseline)
     obs_candidate = build_observations(signals_candidate, oos_start, cost_candidate)
     length, p99_baseline, p99_candidate = block_length(obs_baseline, obs_candidate)
+    if estimator == "portfolio":
+        length = max(PORTFOLIO_BLOCK_MIN, int(length))
 
     seed = derive_seed(
         gate_version,
@@ -616,9 +801,18 @@ def run_gate(
         resolved_oos_end,
         length,
         RESAMPLES,
-        ESTIMATOR_ID,
+        estimator_id,
     )
-    bootstrap = moving_block_bootstrap(obs_baseline, obs_candidate, length, RESAMPLES, seed)
+    if estimator == "portfolio":
+        bootstrap = portfolio_block_bootstrap(
+            build_portfolio_returns(cast(pd.DataFrame, equity_baseline), oos_start, resolved_oos_end),
+            build_portfolio_returns(cast(pd.DataFrame, equity_candidate), oos_start, resolved_oos_end),
+            length,
+            RESAMPLES,
+            seed,
+        )
+    else:
+        bootstrap = moving_block_bootstrap(obs_baseline, obs_candidate, length, RESAMPLES, seed)
     n_filled_baseline = _n_filled(summary_baseline, baseline_metrics, "baseline")
     n_filled_candidate = _n_filled(summary_candidate, candidate_metrics, "candidate")
     criteria_candidate_metrics = dict(candidate_metrics)
@@ -648,7 +842,7 @@ def run_gate(
                 "oos_end": resolved_oos_end,
                 "block_length": int(length),
                 "resamples": RESAMPLES,
-                "estimator_id": ESTIMATOR_ID,
+                "estimator_id": estimator_id,
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -668,7 +862,7 @@ def run_gate(
         "gate": {
             "name": GATE_NAME,
             "version": gate_version,
-            "spec_hash": GATE_SPEC_HASH,
+            "spec_hash": spec_hash,
             "card_id": card_id,
             "created_at": created_at,
             "code_commit": code_commit,
@@ -693,7 +887,7 @@ def run_gate(
             "oos_end": resolved_oos_end,
         },
         "estimator": {
-            "name": ESTIMATOR_ID,
+            "name": estimator_id,
             "delta": float(bootstrap["delta"]),
             "ci_level": CI_LEVEL,
             "ci_method": "percentile",
@@ -726,7 +920,7 @@ def run_gate(
                 "oos_end": resolved_oos_end,
                 "block_length": int(length),
                 "resamples": RESAMPLES,
-                "estimator_id": ESTIMATOR_ID,
+                "estimator_id": estimator_id,
                 "join": "pipe-joined ordered inputs; sha256 digest first 8 bytes as big-endian uint64",
             },
             "rng": "numpy.random.PCG64",
@@ -763,6 +957,22 @@ def run_gate(
         "warnings": warnings,
         "limitations": list(_LIMITATIONS),
     }
+    if estimator == "portfolio":
+        payload["estimator"].update(
+            {
+                "block_length_rule": "max(21, ceil(p99 holding_bars of each arm))",
+                "resampling_unit": "oos_trading_day",
+                "date_index_rule": (
+                    "k=ceil(n_dates/L); each replicate draws k starts uniformly from "
+                    "1..(n_dates-L+1) and applies the index jointly to both equity arms; "
+                    "blocks may repeat; equal-weighted by trading day"
+                ),
+                "signal_weighting": "not_applicable",
+                "delta_unit": "percentage_points_annualized_return",
+                "cagr_baseline_pct": float(bootstrap["cagr_baseline_pct"]),
+                "cagr_candidate_pct": float(bootstrap["cagr_candidate_pct"]),
+            }
+        )
     payload["verdict_hash"] = _canonical_hash(payload)
 
     write_verdict(payload, out_dir)
@@ -825,6 +1035,26 @@ def load_signals(path: str | Path) -> pd.DataFrame:
     return frame
 
 
+def load_equity(path: str | Path) -> pd.DataFrame:
+    """Read a portfolio equity CSV into a date-sorted ``date``/``equity`` frame."""
+    frame = pd.read_csv(Path(path), encoding="utf-8-sig")
+    _require_columns(frame, ("date", "equity"), "equity")
+    frame = frame.loc[:, ["date", "equity"]].copy()
+    frame["date"] = pd.to_datetime(frame["date"], errors="raise")
+    frame["equity"] = pd.to_numeric(frame["equity"], errors="raise")
+    if bool(frame["date"].isna().any()):
+        raise ValueError(f"equity contains an invalid date: {path}")
+    frame = frame.sort_values("date", kind="mergesort").reset_index(drop=True)
+    if bool(frame["date"].duplicated().any()):
+        raise ValueError(f"equity contains duplicate dates: {path}")
+    values = frame["equity"].to_numpy(dtype=np.float64)
+    if not bool(np.isfinite(values).all()):
+        raise ValueError(f"equity contains non-finite values: {path}")
+    if bool((values <= 0.0).any()):
+        raise ValueError(f"equity must be positive: {path}")
+    return frame
+
+
 def load_summary(path: str | Path) -> dict[str, Any]:
     """Read a portfolio sim run summary JSON."""
     with Path(path).open("r", encoding="utf-8") as handle:
@@ -850,6 +1080,7 @@ def format_human(payload: Mapping[str, Any]) -> str:
     rejection_reasons = payload.get("rejection_reasons", [])
     warnings = payload.get("warnings", [])
     limitations = payload.get("limitations", [])
+    delta_scale = 1.0 if estimator.get("delta_unit") == "percentage_points_annualized_return" else 100.0
 
     lines = [
         f"{str(gate['name']).upper()} v{gate['version']}  [{str(gate['card_id'])}]",
@@ -871,11 +1102,11 @@ def format_human(payload: Mapping[str, Any]) -> str:
             f"seed={estimator['seed']} rng={estimator['rng']}"
         ),
         (
-            f"delta={_fmt_pct(estimator['delta'], scale=100.0)}  "
+            f"delta={_fmt_pct(estimator['delta'], scale=delta_scale)}  "
             f"{int(round(float(estimator['ci_level']) * 100))}% CI "
-            f"[{_fmt_pct(estimator['ci_low'], scale=100.0)}, "
-            f"{_fmt_pct(estimator['ci_high'], scale=100.0)}]  "
-            f"se={_fmt_pct(estimator['se'], scale=100.0)}  "
+            f"[{_fmt_pct(estimator['ci_low'], scale=delta_scale)}, "
+            f"{_fmt_pct(estimator['ci_high'], scale=delta_scale)}]  "
+            f"se={_fmt_pct(estimator['se'], scale=delta_scale)}  "
             f"n_dates={estimator['n_dates_union']} n_blocks={estimator['n_blocks']} "
             f"valid={estimator['valid_resamples']}"
         ),
@@ -952,6 +1183,22 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--out-dir", default=DEFAULT_OUT_DIR, help="verdict + registry root")
     parser.add_argument("--oos-end", default=None, help="override the OOS end date recorded in the verdict")
     parser.add_argument("--code-commit", default="unknown", help="git commit the gate code was run from")
+    parser.add_argument(
+        "--estimator",
+        choices=ESTIMATORS,
+        default="signal",
+        help="estimand: signal-level pooled mean difference (default) or portfolio-level OOS CAGR delta",
+    )
+    parser.add_argument(
+        "--baseline-equity",
+        default=None,
+        help="baseline OOS daily equity CSV; required only with --estimator portfolio",
+    )
+    parser.add_argument(
+        "--candidate-equity",
+        default=None,
+        help="candidate OOS daily equity CSV; required only with --estimator portfolio",
+    )
     return parser
 
 
@@ -964,6 +1211,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     """
     args = build_arg_parser().parse_args(argv)
     try:
+        equity_baseline = load_equity(args.baseline_equity) if args.baseline_equity is not None else None
+        equity_candidate = load_equity(args.candidate_equity) if args.candidate_equity is not None else None
         payload = run_gate(
             load_signals(args.baseline_signals),
             load_signals(args.candidate_signals),
@@ -974,6 +1223,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             out_dir=args.out_dir,
             oos_end=args.oos_end,
             code_commit=args.code_commit,
+            estimator=args.estimator,
+            equity_baseline=equity_baseline,
+            equity_candidate=equity_candidate,
         )
         resolved_verdict = verdict_path(payload, args.out_dir)
     except (OSError, ValueError) as exc:
