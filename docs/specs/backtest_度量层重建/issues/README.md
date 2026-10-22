@@ -14,7 +14,7 @@
 | [06](06-card-d-moneyflow-factor.md) | 卡 D：`tushare_moneyflow` 分层主力资金因子 | ready-for-agent | 01–05 |
 | [07](07-pit-universe.md) | PIT 宇宙落地（roadmap T0.4） | ready-for-human（默认已切 `pit`） | — |
 | [08](08-gate-portfolio-level-estimator.md) | 门禁组合层估计量（不重判既有卡） | ready-for-human | — |
-| [09](09-local-full-suite-baseline.md) | 本地全量 pytest 基线不可用 | needs-triage | — |
+| [09](09-local-full-suite-baseline.md) | 本地全量 pytest 基线不可用 | ready-for-human | — |
 
 ## 开新票前的两句提醒
 

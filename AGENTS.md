@@ -115,6 +115,8 @@ python -m pytest -m "not network"
 python -m py_compile <changed_python_files>
 ```
 
+> 平台边界：`python -m pytest -m "not network"` 只在 POSIX 上构成全量基线。native Windows 下，Codex App Server 相关用例（`os.killpg`/`getpgid`）、`time.tzset` 时区用例按契约跳过，`fxmacrodata-public-client` 又只从 GitHub Release 分发 wheel（PyPI 无包），因此本机全量结果偏红不代表改动引入回归；需要全量基线时在 WSL 或 Docker 里跑同一条命令。新增依赖时优先选择 PyPI 可解析的包，避免让本地基线依赖单一分发渠道。
+
 ### Web / Desktop
 
 ```bash
@@ -176,6 +178,7 @@ gh run view <run_id> --log-failed
   - 适用范围：`main.py`、`src/`、`data_provider/`、`api/`、`bot/`、`tests/`
   - 优先执行：`./scripts/ci_gate.sh`
   - 最低要求：`python -m py_compile <changed_python_files>`
+  - native Windows 上 `./scripts/ci_gate.sh` 只作定向信号，不构成全量基线；完整验证在 WSL/Docker 执行（见 §4 平台边界）。
   - 若影响 API、任务编排、报告生成、通知发送、数据源 fallback、认证、调度，交付说明中要写明是否覆盖了对应路径。
 
 - Web 前端改动：

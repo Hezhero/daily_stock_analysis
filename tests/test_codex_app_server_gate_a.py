@@ -34,6 +34,12 @@ from src.agent.codex_tool_process import CodexToolProcessRunner
 from src.agent.tools.execution import ToolAccessContext
 from src.agent.tools.registry import ToolDefinition, ToolParameter, ToolPolicy, ToolRegistry
 
+# POSIX process-group contract; resolve_command() rejects native Windows. Same guard as test_agent_backend_status_service.py.
+pytestmark = pytest.mark.skipif(
+    os.name == "nt",
+    reason="Codex App Server Agent excludes native Windows",
+)
+
 
 _FAKE_APP_SERVER = r"""
 import json

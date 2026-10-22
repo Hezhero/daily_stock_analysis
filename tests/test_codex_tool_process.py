@@ -12,12 +12,19 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.pool import QueuePool
 
 from src.agent.codex_tool_process import MAX_TOOL_RESULT_BYTES, CodexToolProcessRunner
 from src.agent.stock_scope import StockScope
 from src.agent.tools.execution import ToolAccessContext
+
+# os.killpg/getpgid-based reaping, reachable only from the Codex App Server path (rejected on native Windows).
+pytestmark = pytest.mark.skipif(
+    os.name == "nt",
+    reason="Codex App Server Agent excludes native Windows",
+)
 
 
 def _ok_result(tool_name: str, payload: dict) -> dict:

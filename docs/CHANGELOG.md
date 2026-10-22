@@ -1,4 +1,7 @@
 ## [Unreleased]
+- [修复] 删除 `tests/test_baostock_history_xr.py`：被测模块已在 `c28b4343`（统一改用 tushare）删除，测试遗留到 HEAD，导致 `pytest` 全量在任意平台都以 collection error 中断（CI 同样命中）。
+- [测试] `tests/test_intelligence_api.py` 把 `ENV_FILE` 指向临时目录下的不存在路径，隔离开发者根目录 `.env` 的 `ADMIN_AUTH_ENABLED=true`，10 个 401 用例恢复通过；Codex App Server 与 `time.tzset` 用例按 `resolve_command()` 的既有能力边界加平台 skip（native Windows 跳过，CI 仍执行）。
+- [文档] `AGENTS.md` §4/§6 写明 native Windows 不构成全量基线（POSIX 专有接口 + `fxmacrodata-public-client` 仅 GitHub Release 分发），完整验证走 WSL/Docker；票 09 回填实测归因表。
 - [测试] `tests/test_portfolio_gate.py` 新增 `test_default_signal_verdict_is_frozen`：用固定合成输入冻结默认 `signal` 路径的 `verdict_hash`、payload 顶层与估计量键集、判据顺序、`gate` 与 `registry.jsonl` 行字段。`GATE_SPEC_HASH` 只覆盖预注册规格文本，无法发现 payload 组装、种子派生或 registry 结构的静默漂移。
 - [chore] `.github/workflows/ci.yml` 增加 `push: branches: [hzh]` 触发，直推分支不再缺少 CI 结论；`scripts/check_ai_assets.py` 在 `core.symlinks=false` 的检出上接受被落地成指针文本的 `CLAUDE.md`（内容必须恰为 `AGENTS.md`），治理检查在 Windows 本地可运行。
 - [文档] `AGENTS.md` 验证矩阵的依赖安装改为指向 `.github/requirements-ci.txt`（与 `backend-gate` 同款，含 flake8 / pytest-timeout），避免按文档装完仍缺 flake8 导致 `ci_gate.sh` 不可用；新增票 09（本地全量 pytest 基线不可用）与 `issues/README.md` 票索引。

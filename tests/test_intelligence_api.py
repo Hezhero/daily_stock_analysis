@@ -24,6 +24,10 @@ class IntelligenceApiTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self._temp_dir = tempfile.TemporaryDirectory()
         os.environ["DATABASE_PATH"] = os.path.join(self._temp_dir.name, "api_intel.db")
+        # Auth reads ADMIN_AUTH_ENABLED from the repo-root .env; point ENV_FILE at a
+        # missing path so a developer's enabled auth cannot turn requests into 401.
+        self._previous_env_file = os.environ.get("ENV_FILE")
+        os.environ["ENV_FILE"] = os.path.join(self._temp_dir.name, "no-such.env")
         Config._instance = None
         DatabaseManager.reset_instance()
         self._dns_patcher = patch(
@@ -38,6 +42,10 @@ class IntelligenceApiTestCase(unittest.TestCase):
         DatabaseManager.reset_instance()
         Config._instance = None
         os.environ.pop("DATABASE_PATH", None)
+        if self._previous_env_file is None:
+            os.environ.pop("ENV_FILE", None)
+        else:
+            os.environ["ENV_FILE"] = self._previous_env_file
         self._temp_dir.cleanup()
 
     def _mock_response(self):

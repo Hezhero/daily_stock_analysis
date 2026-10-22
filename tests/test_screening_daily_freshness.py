@@ -18,6 +18,12 @@ from src.services.screening.models import Pick
 from src.services.screening.risk import apply_risk_overlay
 from src.services import screening_service
 
+# Timezone switching here relies on time.tzset(), which native Windows lacks.
+pytestmark = pytest.mark.skipif(
+    os.name != "posix",
+    reason="TZ switching requires time.tzset, unavailable on native Windows",
+)
+
 
 def _freeze_time(monkeypatch, value):
     now = datetime.fromisoformat(value)
