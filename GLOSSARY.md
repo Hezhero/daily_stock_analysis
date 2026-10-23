@@ -52,6 +52,13 @@
 （`exit_date < t`）的候选的平均 `realized_ret`。它要求至少 `SimConfig.expectation_min_trades`
 （30）笔历史才有效，用 `np.searchsorted` 保证严格因果，因此是排序用的**领先**期望而不是事后期望。
 
+## 候选排序
+
+`portfolio_sim._ordered_candidates()` 给出的入场优先序，决定同日并发候选谁先占用仓位。当前默认顺序为
+`lead_exp ↓ → n_families ↓ → strength ↓ → code ↑ → strategy ↑`（`kind="mergesort"`、
+`na_position="last"` 保证稳定）。前两位奖励的东西不同：`lead_exp` 奖励策略的历史手感，
+`n_families` 奖励当日多家族共识。卡 C 检验的就是把这两位对调；后四位、`max_positions` 与两个家族/行业上限不变。
+
 ## 盯市(MTM)
 
 每个交易日收盘按持仓市值重估账户，`equity = cash + position_value`，把持仓内的浮盈亏路径计入
@@ -81,7 +88,7 @@ point-in-time 股票池：按 `delist_date` 等时点信息构造，使窗口内
 
 一张显式登记的待验证改动卡，必须写明改动内容、判据、证据门槛与回滚方式，避免实验被悄悄混进
 默认值。当前登记表包括卡 A（`min_resonance_families = 1`，消融已完成、待 bootstrap 门槛）、
-卡 B（资金部署感知仓位）、卡 C（并发信号选股 / 持仓上限排序）与低优先级的卡 D（moneyflow 因子）。
+卡 B（资金部署感知仓位）、卡 C（候选排序前两位对调：共振优先 vs 期望优先）与低优先级的卡 D（moneyflow 因子）。
 
 ## 度量契约
 

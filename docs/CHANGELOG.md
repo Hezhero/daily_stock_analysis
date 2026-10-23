@@ -1,4 +1,5 @@
 ## [Unreleased]
+- [文档] 卡 C（ticket 05）预注册定稿并更正范围：并发选股、`max_positions`、`family_cap={trend:3}`、`industry_cap=2` 与候选排序 `lead_exp↓ → n_families↓ → strength↓ → code↑ → strategy↑` 均已在 `scripts/portfolio_sim.py` 落地，本卡唯一改动是**对调前两位**（`n_families` 优先）；候选臂一句话可描述、两臂 `signals.csv` 必须逐字节相同，否则该次运行作废。估计量按 §9 预注册为 v2 `oos_daily_portfolio_cagr_block_delta`——这是推论而非偏好：`signals.csv` 产于 decluster 后/collapse 前，v1 的 Δ 在构造上恒为 0（与卡 B 同一退化机制）。判据沿用 §4 五项、δ=0 不放宽；并发上限即 `max_positions=10`，不新增每日闸门；翻默认属独立后续票（会作废 L-only/PIT 两个冻结哈希）。
 - [修复] 删除 `tests/test_baostock_history_xr.py`：被测模块已在 `c28b4343`（统一改用 tushare）删除，测试遗留到 HEAD，导致 `pytest` 全量在任意平台都以 collection error 中断（CI 同样命中）。
 - [测试] `tests/test_intelligence_api.py` 把 `ENV_FILE` 指向临时目录下的不存在路径，隔离开发者根目录 `.env` 的 `ADMIN_AUTH_ENABLED=true`，10 个 401 用例恢复通过；Codex App Server 与 `time.tzset` 用例按 `resolve_command()` 的既有能力边界加平台 skip（native Windows 跳过，CI 仍执行）。
 - [文档] `AGENTS.md` §4/§6 写明 native Windows 不构成全量基线（POSIX 专有接口 + `fxmacrodata-public-client` 仅 GitHub Release 分发），完整验证走 WSL/Docker；票 09 回填实测归因表。

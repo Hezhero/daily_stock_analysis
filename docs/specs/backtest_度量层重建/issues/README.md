@@ -10,7 +10,7 @@
 | [02](02-bootstrap-flip-gate.md) | 翻转门槛：池化样本外 Δ 的日期分块 bootstrap CI | ready-for-human | — |
 | [03](03-card-a-flip-min-resonance-families.md) | 卡 A：翻转 `min_resonance_families` 默认值 | ready-for-human（FAIL，默认保持 2） | 01, 02 |
 | [04](04-card-b-deployment-aware-sizing.md) | 卡 B：资金部署感知仓位 | ready-for-human（FAIL，默认保持 `fixed_1n`） | 01, 02 |
-| [05](05-card-c-concurrent-signal-selection.md) | 卡 C：并发信号选股 / 持仓上限排序 | **ready-for-agent** | 01, 02, 04 |
+| [05](05-card-c-concurrent-signal-selection.md) | 卡 C：候选排序前两位对调（共振优先 vs 期望优先） | **ready-for-agent**（预注册已固定） | 01, 02, 04 |
 | [06](06-card-d-moneyflow-factor.md) | 卡 D：`tushare_moneyflow` 分层主力资金因子 | ready-for-agent | 01–05 |
 | [07](07-pit-universe.md) | PIT 宇宙落地（roadmap T0.4） | ready-for-human（默认已切 `pit`） | — |
 | [08](08-gate-portfolio-level-estimator.md) | 门禁组合层估计量（不重判既有卡） | ready-for-human | — |

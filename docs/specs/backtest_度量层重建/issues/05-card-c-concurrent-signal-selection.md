@@ -1,14 +1,80 @@
-# 05: 卡 C：并发信号选股 / 持仓上限排序
+# 05: 卡 C：同日并发候选排序——共振优先 vs 期望优先
 
-**What to build:** 在候选折叠与成交之间引入「同日并发信号选股 / 持仓上限排序」：当同日并发信号超过可用仓位时，按去簇共振 + 期望排序取 TopN，并保留趋势簇 ≤3、行业 ≤2 的上限。规则在开跑前写死，只做一次预注册主比较。
+**What to build:** 把同日并发候选的排序优先级从「期望优先」翻成「共振优先」，其余键、上限、口径全部不动，只做一次预注册主比较。
 
 **Blocked by:** 01, 02, 04
 
 **Status:** ready-for-agent
 
-- [ ] 排序规则在开跑前固定并登记；不接受「看过结果再换排序键」的迭代，记录已测变体数。
-- [ ] 度量口径、成本、盯市、PIT 与入场方式不变；`config_hash` 随规则变化。
-- [ ] 经 02 门槛：组合 CAGR、Sharpe、maxDD 不劣于基线；成交笔数 ≥100；报告平均现金占比、换手与成本拖累。
-- [ ] 改善若只存在于个别年份或个别 regime，不采纳；回滚恢复原排序规则，账本记录。
+## 现状更正（2026-10-23）
 
-**Notes:** 排序规则自带选择自由度，最易过拟合；本卡必须在开跑前固定规则，且只做一次主比较。
+票初稿写的是「在候选折叠与成交之间引入同日并发信号选股 / 持仓上限排序，并保留趋势簇 ≤3、行业 ≤2」。核对代码后，这些**已经在跑**：
+
+- `_entry_reject()`（`scripts/portfolio_sim.py:344-355`）已实现 `max_positions → already_held → family_cap → industry_cap → unbuyable → no_price_data` 六个拒绝条件。
+- `_ordered_candidates()`（`:325-332`）已有排序：`entry_date ↑ → lead_exp ↓ → n_families ↓ → strength ↓ → code ↑ → strategy ↑`。
+- `simulate()`（`:470-494`）按该顺序贪心填充，撞上限记 reject。
+- `n_families` 由 `apply_declustered_resonance()`（`:950-962`）算好，即「去簇共振数」。
+
+所以本卡唯一还没做的改动，是**换排序的前两位优先级**。照初稿「引入排序」去实现会得到一个 no-op：两臂 `signals.csv` 与 `equity.csv` 都会相同，ΔCAGR 恒为 0，白烧一次 `tested_count`。
+
+## 预注册（开跑前固定；跑完不得更换口径）
+
+| 项 | 冻结值 |
+| --- | --- |
+| 基线臂 | 现状不动：`lead_exp ↓ → n_families ↓ → strength ↓ → code ↑ → strategy ↑` |
+| 候选臂 | `n_families ↓ → lead_exp ↓ → strength ↓ → code ↑ → strategy ↑`；仅交换前两位，后四位、`kind="mergesort"` 与 `na_position="last"` 保持不变 |
+| 新旋钮 | `SimConfig.rank_mode ∈ {"lead_exp_first", "resonance_first"}`，默认 `"lead_exp_first"`；同时加入 `_REGISTERED_EXPERIMENT_DEFAULTS`（`scripts/backtest_5y_23strategies.py:4242`）与 `_HASH_OPTIONAL_KEYS`（`scripts/portfolio_sim.py:55`）。默认值不进 `config_hash`，因此 L-only `5eea05195af3d89432af8b2a049fde2517d6a53b` 与 PIT `acb32bd95d3c94c9c575b00008409c483cd04064` 两个冻结哈希必须逐位不变 |
+| 并发上限 N | 即 `max_positions = 10`。本卡**不**新增「每日最多开 N 笔」闸门：同时改优先级与每日闸门会让过门归因不清，且与现金预算产生交互 |
+| 不变项 | 度量口径（0.35% 往返成本、T+1 盯市、PIT 宇宙、`next_open` 入场）、`family_cap={trend:3}`、`industry_cap=2`、`min_resonance_families=2`、`max_holding_bars=10`、`size_mode=fixed_1n`、`target_positions=None`、`cash_buffer_pct=0.0` |
+| 估计量 | v2 `oos_daily_portfolio_cagr_block_delta`（`docs/backtest-flip-gate-spec.md` §9）。**这是推论而非偏好**：`signals.csv` 产于 decluster 后、collapse 前（`scripts/backtest_5y_23strategies.py:4500-4502`、写入 `payload["signals"]` `:4512`/`:4523`），本卡不改信号池，v1 的 Δ 在构造上恒为 0（与卡 B 同一退化机制） |
+| 主判据 | ΔCAGR 的 `ci_low > 0`（§9:124） |
+| 护栏 | 同 §4 五项，阈值不放宽：`cagr_non_inferior`、`sharpe_non_inferior`、`maxdd_non_inferior`（均 δ=0）、`maxdd_cap ≤ 25.0`、`min_trades n_filled ≥ 100` |
+| δ | 预注册 δ=0，不新增非劣性 margin。§4:57-59 已声明 δ=0 是描述性方向护栏、非形式化非劣性检验；引入 margin 属改 §4，不在本卡范围 |
+| 变体计数 | 本卡首次主比较，`tested_count` 应为 **1**（与卡 A/B 同）。不试第三种顺序（如 `strength` 优先）；任何额外顺序都是探索性变体，只记录、不作翻转依据 |
+| 臂数与重跑 | 两臂**各重跑一次**。不复用卡 A 的基线产物：v2 需要 `_equity.csv`，且卡 A 两臂窗口起点不同（`20210406` vs `20210514`），v2 要求两臂 OOS 日期集合完全一致 |
+
+## 自检断言（跑完立即校验，失败即中止）
+
+1. 两臂 `signals.csv` 的 sha256 **必须相同**。若不同，说明改动泄漏到了信号池，卡 C 的前提被破坏，该次运行作废（不得改口径后继续）。
+2. 候选臂 `config_hash` 必须 ≠ 基线臂，且不等于 `5eea0519…` / `acb32bd9…`。
+3. 基线臂 `config_hash` 必须仍等于 `acb32bd9…`（PIT 口径默认配置），以此证明 `rank_mode` 的默认值确实没进哈希。
+4. 门禁 `--estimator portfolio` 下两臂 OOS 日期集合必须完全一致；不一致时门禁直接报错，不得取交集或补零。
+
+## 采纳与驳回
+
+- **通过**（主判据 + 五项护栏全过）：记录判决 JSON 与 `registry.jsonl`，默认值**不在本卡内翻**。
+- **驳回**（任一 FAIL）：默认值保持 `lead_exp_first`，不改默认、不换口径、不扫参。
+- **翻默认是独立后续动作**：一旦把 `rank_mode` 默认改成 `resonance_first`，该值将进入 `config_hash`，`5eea0519…` 与 `acb32bd9…` 两个冻结基线哈希随之失效，需要新开票重算基线并更新 `_REGISTERED_EXPERIMENT_DEFAULTS` 的期望值。不得在卡 C 里顺手做掉。
+
+## 运行命令（两臂各一次）
+
+```bash
+# 基线臂（不带 rank_mode，走默认 lead_exp_first）
+python scripts/backtest_5y_23strategies.py --portfolio-sim \
+  --portfolio-sim-out result/gates/card-c/base
+
+# 候选臂
+python scripts/backtest_5y_23strategies.py --portfolio-sim \
+  --portfolio-sim-rank-mode resonance_first \
+  --portfolio-sim-out result/gates/card-c/cand
+
+# 门禁：v2 组合层估计量
+python scripts/portfolio_gate.py \
+  --baseline-summary  result/gates/card-c/base/<stem>.json \
+  --baseline-signals  result/gates/card-c/base/<stem>_signals.csv \
+  --candidate-summary result/gates/card-c/cand/<stem>.json \
+  --candidate-signals result/gates/card-c/cand/<stem>_signals.csv \
+  --baseline-equity   result/gates/card-c/base/<stem>_equity.csv \
+  --candidate-equity  result/gates/card-c/cand/<stem>_equity.csv \
+  --estimator portfolio \
+  --card-id card-c --data-hash <快照标识> --code-commit <实现提交>
+```
+
+已知别扭项：`--baseline-signals` / `--candidate-signals` 在 CLI 上是 `required=True`（`scripts/portfolio_gate.py:1174-1176`），即使 v2 不读它们也必须传。照传即可，本卡不修改该 CLI 语义。
+
+- [ ] `rank_mode` 旋钮落地（`SimConfig` + 登记表 + `_HASH_OPTIONAL_KEYS` + CLI `--portfolio-sim-rank-mode`），默认值下两个冻结哈希逐位不变。
+- [ ] 两臂各跑一次，四条自检断言全过。
+- [ ] 门禁 `--estimator portfolio` 产出判决 JSON 与 `registry.jsonl`（`tested_count=1`），报告平均现金占比、换手与成本拖累。
+- [ ] 改善若只存在于个别年份或个别 regime，不采纳。
+
+**Notes:** 排序键自带选择自由度，最易过拟合；本卡把自由度压到最低——只翻两位、只跑一次、候选臂一句话可描述、两臂信号池必须逐字节相同。任何「再试试另一种顺序」都属变体，须记录且不得用作翻转依据。
