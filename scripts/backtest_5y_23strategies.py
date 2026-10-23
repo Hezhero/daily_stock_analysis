@@ -156,6 +156,7 @@ sys.path.insert(0, str(BASE_DIR))
 # T0.1 资金约束组合模拟（S2/S3 模块）：纯函数、无日志副作用；仅在 --portfolio-sim
 # 开启时被调用，默认路径既不导数据也不改变任何旧指标。
 from scripts.portfolio_sim import (  # noqa: E402
+    _RANK_MODES,
     _SIZE_MODES,
     SimConfig,
     apply_declustered_resonance,
@@ -340,6 +341,7 @@ _PORTFOLIO_SIM_MIN_FAMILIES: Optional[int] = None
 _PORTFOLIO_SIM_SIZE_MODE: Optional[str] = None
 _PORTFOLIO_SIM_TARGET_POSITIONS: Optional[int] = None
 _PORTFOLIO_SIM_CASH_BUFFER_PCT: Optional[float] = None
+_PORTFOLIO_SIM_RANK_MODE: Optional[str] = None
 _PORTFOLIO_SIM_RESULT: Optional[Dict] = None
 
 # ─── 日志配置 ──────────────────────────────────────────────────────────────────
@@ -4238,7 +4240,8 @@ _METRIC_PROFILE_ADV_TIERS = (
 # 覆盖 = 一次"已登记的重跑"（warning + config_hash 变化），不是新默认值。
 # 只有出现在这些登记表中的参数才允许被覆盖；未登记参数（含度量画像）不得覆盖。
 # 当前接入覆盖入口的：min_resonance_families（Card A）、size_mode / target_positions /
-# cash_buffer_pct（Card B）；其余项与 family_cap 只有默认值漂移守卫，新增入口须同步指标契约。
+# cash_buffer_pct（Card B）、rank_mode（Card C）；其余项与 family_cap 只有默认值漂移守卫，
+# 新增入口须同步指标契约。
 _REGISTERED_EXPERIMENT_DEFAULTS = {
     "min_resonance_families": 2,
     "max_positions": 10,
@@ -4247,6 +4250,7 @@ _REGISTERED_EXPERIMENT_DEFAULTS = {
     "size_mode": "fixed_1n",
     "target_positions": None,
     "cash_buffer_pct": 0.0,
+    "rank_mode": "lead_exp_first",
 }
 _REGISTERED_EXPERIMENT_FAMILY_CAP = {"trend": 3}
 
@@ -4328,6 +4332,15 @@ def _portfolio_sim_config() -> SimConfig:
             sizing_overrides,
         )
         cfg = replace(cfg, **sizing_overrides)
+    if _PORTFOLIO_SIM_RANK_MODE is not None:
+        rank_override = _registered_experiment_override("rank_mode", _PORTFOLIO_SIM_RANK_MODE)
+        if rank_override != cfg.rank_mode:
+            logger.warning(
+                "消融覆盖（已登记实验参数）：rank_mode 由契约默认 %r 改为 %r"
+                "（Card C 同日并发排序实验，仅交换前两位排序键，非新默认值，不得固化）",
+                cfg.rank_mode, rank_override,
+            )
+            cfg = replace(cfg, rank_mode=rank_override)
     return cfg
 
 
@@ -6127,6 +6140,10 @@ def main(argv=None):
                         help="card-B-only：deploy_aware 的预算分母（须 ≤ 模拟器 max_positions，默认 10）")
     parser.add_argument("--portfolio-sim-cash-buffer-pct", type=float, default=None, metavar="P",
                         help="card-B-only：deploy_aware 下按权益比例预留的现金缓冲（如 0.05）")
+    parser.add_argument("--portfolio-sim-rank-mode", default=None,
+                        choices=_RANK_MODES,
+                        help="card-C-only：同日并发候选排序优先级（契约默认 lead_exp_first=期望优先）；"
+                             "resonance_first=共振优先（仅交换前两位排序键，其余键与上限不变）")
     parser.add_argument("--exit-atr-mult", type=float, default=None,
                         help="全局 ATR 止损倍数覆盖（默认取 DEFAULT_EXIT_PARAMS；传旧值 2.5 可回退，P1 批次5）")
     parser.add_argument("--exit-trail", type=float, default=None,
@@ -6228,6 +6245,8 @@ def main(argv=None):
         parser.error("--portfolio-sim-target-positions 需要同时启用 --portfolio-sim")
     elif args.portfolio_sim_cash_buffer_pct is not None:
         parser.error("--portfolio-sim-cash-buffer-pct 需要同时启用 --portfolio-sim")
+    elif args.portfolio_sim_rank_mode is not None:
+        parser.error("--portfolio-sim-rank-mode 需要同时启用 --portfolio-sim")
     if args.portfolio_sim_size_mode == "deploy_aware" and args.portfolio_sim_target_positions is None:
         parser.error("--portfolio-sim-size-mode deploy_aware 需要同时给出 --portfolio-sim-target-positions")
     if (
@@ -6292,6 +6311,7 @@ def main(argv=None):
     # T0.1 S4 组合模拟开关（默认 False：所有新参数保持 no-op）
     global _PORTFOLIO_SIM_ENABLED, _PORTFOLIO_SIM_OUT, _PORTFOLIO_SIM_WINDOW, _PORTFOLIO_SIM_STRATEGIES, _PORTFOLIO_SIM_MIN_FAMILIES
     global _PORTFOLIO_SIM_SIZE_MODE, _PORTFOLIO_SIM_TARGET_POSITIONS, _PORTFOLIO_SIM_CASH_BUFFER_PCT
+    global _PORTFOLIO_SIM_RANK_MODE
     _PORTFOLIO_SIM_ENABLED = bool(args.portfolio_sim)
     _PORTFOLIO_SIM_OUT = args.portfolio_sim_out or "result/"
     _PORTFOLIO_SIM_WINDOW = args.portfolio_sim_window
@@ -6299,6 +6319,7 @@ def main(argv=None):
     _PORTFOLIO_SIM_SIZE_MODE = args.portfolio_sim_size_mode
     _PORTFOLIO_SIM_TARGET_POSITIONS = args.portfolio_sim_target_positions
     _PORTFOLIO_SIM_CASH_BUFFER_PCT = args.portfolio_sim_cash_buffer_pct
+    _PORTFOLIO_SIM_RANK_MODE = args.portfolio_sim_rank_mode
     _PORTFOLIO_SIM_STRATEGIES = (
         {name.strip() for name in str(args.portfolio_sim_strategies).split(",") if name.strip()}
         if args.portfolio_sim_strategies else None
@@ -6311,6 +6332,7 @@ def main(argv=None):
             f"size_mode={_PORTFOLIO_SIM_SIZE_MODE or 'contract(fixed_1n)'}, "
             f"target_positions={_PORTFOLIO_SIM_TARGET_POSITIONS or 'n/a'}, "
             f"cash_buffer_pct={_PORTFOLIO_SIM_CASH_BUFFER_PCT if _PORTFOLIO_SIM_CASH_BUFFER_PCT is not None else 'n/a'}, "
+            f"rank_mode={_PORTFOLIO_SIM_RANK_MODE or 'contract(lead_exp_first)'}, "
             f"strategies={','.join(sorted(_PORTFOLIO_SIM_STRATEGIES)) if _PORTFOLIO_SIM_STRATEGIES else 'all'}"
         )
 

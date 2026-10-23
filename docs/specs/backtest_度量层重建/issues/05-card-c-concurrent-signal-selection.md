@@ -10,10 +10,10 @@
 
 票初稿写的是「在候选折叠与成交之间引入同日并发信号选股 / 持仓上限排序，并保留趋势簇 ≤3、行业 ≤2」。核对代码后，这些**已经在跑**：
 
-- `_entry_reject()`（`scripts/portfolio_sim.py:344-355`）已实现 `max_positions → already_held → family_cap → industry_cap → unbuyable → no_price_data` 六个拒绝条件。
-- `_ordered_candidates()`（`:325-332`）已有排序：`entry_date ↑ → lead_exp ↓ → n_families ↓ → strength ↓ → code ↑ → strategy ↑`。
-- `simulate()`（`:470-494`）按该顺序贪心填充，撞上限记 reject。
-- `n_families` 由 `apply_declustered_resonance()`（`:950-962`）算好，即「去簇共振数」。
+- `_entry_reject()`（`scripts/portfolio_sim.py:356-377`）已实现 `max_positions → already_held → family_cap → industry_cap → unbuyable → no_price_data` 六个拒绝条件。
+- `_ordered_candidates()`（`:342-353`）已有排序：`entry_date ↑ → lead_exp ↓ → n_families ↓ → strength ↓ → code ↑ → strategy ↑`。
+- `simulate()`（`:467` 起；排序入口 `:476`）按该顺序贪心填充，撞上限记 reject。
+- `n_families` 由 `apply_declustered_resonance()`（`:958-986`）算好，即「去簇共振数」。
 
 所以本卡唯一还没做的改动，是**换排序的前两位优先级**。照初稿「引入排序」去实现会得到一个 no-op：两臂 `signals.csv` 与 `equity.csv` 都会相同，ΔCAGR 恒为 0，白烧一次 `tested_count`。
 
@@ -23,7 +23,7 @@
 | --- | --- |
 | 基线臂 | 现状不动：`lead_exp ↓ → n_families ↓ → strength ↓ → code ↑ → strategy ↑` |
 | 候选臂 | `n_families ↓ → lead_exp ↓ → strength ↓ → code ↑ → strategy ↑`；仅交换前两位，后四位、`kind="mergesort"` 与 `na_position="last"` 保持不变 |
-| 新旋钮 | `SimConfig.rank_mode ∈ {"lead_exp_first", "resonance_first"}`，默认 `"lead_exp_first"`；同时加入 `_REGISTERED_EXPERIMENT_DEFAULTS`（`scripts/backtest_5y_23strategies.py:4242`）与 `_HASH_OPTIONAL_KEYS`（`scripts/portfolio_sim.py:55`）。默认值不进 `config_hash`，因此 L-only `5eea05195af3d89432af8b2a049fde2517d6a53b` 与 PIT `acb32bd95d3c94c9c575b00008409c483cd04064` 两个冻结哈希必须逐位不变 |
+| 新旋钮 | `SimConfig.rank_mode ∈ {"lead_exp_first", "resonance_first"}`，默认 `"lead_exp_first"`；同时加入 `_REGISTERED_EXPERIMENT_DEFAULTS`（`scripts/backtest_5y_23strategies.py:4245`）与 `_HASH_OPTIONAL_KEYS`（`scripts/portfolio_sim.py:56`）。默认值不进 `config_hash`，因此 L-only `5eea05195af3d89432af8b2a049fde2517d6a53b` 与 PIT `acb32bd95d3c94c9c575b00008409c483cd04064` 两个冻结哈希必须逐位不变 |
 | 并发上限 N | 即 `max_positions = 10`。本卡**不**新增「每日最多开 N 笔」闸门：同时改优先级与每日闸门会让过门归因不清，且与现金预算产生交互 |
 | 不变项 | 度量口径（0.35% 往返成本、T+1 盯市、PIT 宇宙、`next_open` 入场）、`family_cap={trend:3}`、`industry_cap=2`、`min_resonance_families=2`、`max_holding_bars=10`、`size_mode=fixed_1n`、`target_positions=None`、`cash_buffer_pct=0.0` |
 | 估计量 | v2 `oos_daily_portfolio_cagr_block_delta`（`docs/backtest-flip-gate-spec.md` §9）。**这是推论而非偏好**：`signals.csv` 产于 decluster 后、collapse 前（`scripts/backtest_5y_23strategies.py:4500-4502`、写入 `payload["signals"]` `:4512`/`:4523`），本卡不改信号池，v1 的 Δ 在构造上恒为 0（与卡 B 同一退化机制） |
@@ -44,7 +44,7 @@
 
 - **通过**（主判据 + 五项护栏全过）：记录判决 JSON 与 `registry.jsonl`，默认值**不在本卡内翻**。
 - **驳回**（任一 FAIL）：默认值保持 `lead_exp_first`，不改默认、不换口径、不扫参。
-- **翻默认是独立后续动作**：一旦把 `rank_mode` 默认改成 `resonance_first`，该值将进入 `config_hash`，`5eea0519…` 与 `acb32bd9…` 两个冻结基线哈希随之失效，需要新开票重算基线并更新 `_REGISTERED_EXPERIMENT_DEFAULTS` 的期望值。不得在卡 C 里顺手做掉。
+- **翻默认是独立后续动作**：`rank_mode` 在 `_HASH_OPTIONAL_KEYS` 中，而 `_config_hash()` 只 pop「等于当前 `SimConfig()` 默认值」的键（`scripts/portfolio_sim.py:446-453`），因此**只改默认值不会让哈希变化**。后续票翻默认时必须同时做三件事：① 把 `rank_mode` 移出 `_HASH_OPTIONAL_KEYS`；② 更新 `_REGISTERED_EXPERIMENT_DEFAULTS` 的期望值；③ 重算 `5eea0519…` 与 `acb32bd9…` 两个冻结基线哈希并在新票里固化。缺 ① 则基线静默复用。不得在卡 C 里顺手做这件事。
 
 ## 运行命令（两臂各一次）
 
@@ -72,9 +72,16 @@ python scripts/portfolio_gate.py \
 
 已知别扭项：`--baseline-signals` / `--candidate-signals` 在 CLI 上是 `required=True`（`scripts/portfolio_gate.py:1174-1176`），即使 v2 不读它们也必须传。照传即可，本卡不修改该 CLI 语义。
 
-- [ ] `rank_mode` 旋钮落地（`SimConfig` + 登记表 + `_HASH_OPTIONAL_KEYS` + CLI `--portfolio-sim-rank-mode`），默认值下两个冻结哈希逐位不变。
+- [x] `rank_mode` 旋钮落地（`SimConfig` + 登记表 + `_HASH_OPTIONAL_KEYS` + CLI `--portfolio-sim-rank-mode`），默认值下两个冻结哈希逐位不变。
 - [ ] 两臂各跑一次，四条自检断言全过。
 - [ ] 门禁 `--estimator portfolio` 产出判决 JSON 与 `registry.jsonl`（`tested_count=1`），报告平均现金占比、换手与成本拖累。
 - [ ] 改善若只存在于个别年份或个别 regime，不采纳。
+
+## 落地（代码部分）
+
+- **旋钮**：`SimConfig.rank_mode ∈ {"lead_exp_first","resonance_first"}`，默认 `lead_exp_first`；`_RANK_KEYS` 只让前两位排序键互换，`kind="mergesort"` / `na_position="last"` / 其余四位键不变。`rank_mode` 已入 `_HASH_OPTIONAL_KEYS`（默认值不进哈希）与 `_REGISTERED_EXPERIMENT_DEFAULTS`（默认值漂移守卫 + 显式覆盖告警）。
+- **驱动**：`--portfolio-sim-rank-mode`（`choices=_RANK_MODES`，需同时启用 `--portfolio-sim`）；覆盖时 warning 并改 `config_hash`，日志新增 `rank_mode` 一项。
+- **验证**：`pytest tests/test_portfolio_gate.py tests/test_portfolio_sim.py tests/test_portfolio_sim_integration.py tests/test_backtest_pit_universe.py -q` → **85 passed**（本卡新增 6 例，其余为既有回归）；`py_compile` 通过；`--help` 列出该 flag；`config_hash` 默认仍为 L-only `5eea0519…` / PIT `acb32bd9…`。
+- **未做（留在本票剩余项）**：两臂真实回测（≈1.5h/臂）与 `--estimator portfolio` 门禁判决未执行；因此票 06 仍被本票阻塞，`Status` 保持 `ready-for-agent`。
 
 **Notes:** 排序键自带选择自由度，最易过拟合；本卡把自由度压到最低——只翻两位、只跑一次、候选臂一句话可描述、两臂信号池必须逐字节相同。任何「再试试另一种顺序」都属变体，须记录且不得用作翻转依据。

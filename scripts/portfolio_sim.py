@@ -52,7 +52,8 @@ STRATEGY_FAMILY: dict[str, str] = {
 
 
 _SIZE_MODES = ("fixed_1n", "deploy_aware")
-_HASH_OPTIONAL_KEYS = ("size_mode", "target_positions", "cash_buffer_pct")
+_RANK_MODES = ("lead_exp_first", "resonance_first")
+_HASH_OPTIONAL_KEYS = ("size_mode", "target_positions", "cash_buffer_pct", "rank_mode")
 
 
 @dataclass(frozen=True)
@@ -83,6 +84,8 @@ class SimConfig:
     size_mode: str = "fixed_1n"
     target_positions: int | None = None
     cash_buffer_pct: float = 0.0
+    # Card C ordering knob: only the first two same-day sort keys move (see _RANK_KEYS).
+    rank_mode: str = "lead_exp_first"
     vote_exclude: Tuple[str, ...] = (
         "box_oscillation",
         "chan_theory",
@@ -116,6 +119,8 @@ class SimConfig:
                 raise ValueError("cash_buffer_pct only applies when size_mode='deploy_aware'")
         if not 0.0 <= self.cash_buffer_pct < 1.0:
             raise ValueError("cash_buffer_pct must be in [0, 1)")
+        if self.rank_mode not in _RANK_MODES:
+            raise ValueError(f"rank_mode must be one of {_RANK_MODES}, got {self.rank_mode!r}")
 
 
 FAMILY_CAP: dict[str, int] = dict(SimConfig().family_cap)
@@ -322,10 +327,27 @@ def _to_cand(row: Any) -> _Cand:
     )
 
 
-def _ordered_candidates(cands: pd.DataFrame) -> list[_Cand]:
+_RANK_KEYS = {
+    "lead_exp_first": (
+        ["entry_date", "lead_exp", "n_families", "strength", "code", "strategy"],
+        [True, False, False, False, True, True],
+    ),
+    "resonance_first": (
+        ["entry_date", "n_families", "lead_exp", "strength", "code", "strategy"],
+        [True, False, False, False, True, True],
+    ),
+}
+
+
+def _ordered_candidates(cands: pd.DataFrame, rank_mode: str = "lead_exp_first") -> list[_Cand]:
+    """Sort the same-day candidate pool by the configured rank mode."""
+    try:
+        by, ascending = _RANK_KEYS[rank_mode]
+    except KeyError:
+        raise ValueError(f"rank_mode must be one of {_RANK_MODES}, got {rank_mode!r}") from None
     ordered = cands.sort_values(
-        by=["entry_date", "lead_exp", "n_families", "strength", "code", "strategy"],
-        ascending=[True, False, False, False, True, True],
+        by=by,
+        ascending=ascending,
         kind="mergesort",
         na_position="last",
     )
@@ -452,7 +474,7 @@ def simulate(cands: pd.DataFrame, bars: pd.DataFrame, cfg: SimConfig = SimConfig
         raise ValueError("bars contain no dates")
 
     by_day: dict[datetime, list[_Cand]] = defaultdict(list)
-    for cand in _ordered_candidates(cands):
+    for cand in _ordered_candidates(cands, cfg.rank_mode):
         by_day[cand.entry_date].append(cand)
 
     family_cap = dict(cfg.family_cap)

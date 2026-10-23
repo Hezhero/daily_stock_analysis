@@ -242,3 +242,33 @@ def test_card_b_sizing_defaults_keep_baseline_hash(tmp_path: Path) -> None:
     assert cfg.target_positions is None
     assert cfg.cash_buffer_pct == 0.0
     assert _config_hash(cfg) == T01_BASELINE_CONFIG_HASH
+
+
+def test_card_c_rank_override_changes_hash_and_applies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Overriding the rank mode warns once and changes the config hash."""
+    driver = _load_driver(tmp_path / "card-c")
+    baseline_hash = _config_hash(driver._portfolio_sim_config())
+
+    monkeypatch.setattr(driver, "_PORTFOLIO_SIM_RANK_MODE", "resonance_first")
+    with caplog.at_level(logging.WARNING):
+        cfg = driver._portfolio_sim_config()
+
+    assert cfg.rank_mode == "resonance_first"
+    assert _config_hash(cfg) != baseline_hash
+    assert "rank_mode" in caplog.text
+
+
+def test_card_c_rank_default_keeps_both_frozen_hashes(tmp_path: Path) -> None:
+    """Both frozen baseline hashes survive the new knob at its default."""
+    driver = _load_driver(tmp_path / "card-c-defaults")
+
+    cfg = driver._portfolio_sim_config()
+
+    assert cfg.rank_mode == "lead_exp_first"
+    assert _config_hash(cfg) == T01_BASELINE_CONFIG_HASH
+    assert (
+        driver._universe_config_hash(T01_BASELINE_CONFIG_HASH, "pit")
+        == "acb32bd95d3c94c9c575b00008409c483cd04064"
+    )

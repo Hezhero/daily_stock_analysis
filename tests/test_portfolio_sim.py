@@ -688,6 +688,68 @@ def test_deploy_aware_sizing_changes_config_hash() -> None:
     assert _config_hash(SimConfig(size_mode="deploy_aware", target_positions=5)) != _config_hash(SimConfig())
 
 
+def _rank_mode_cands(dates: Sequence[pd.Timestamp]) -> pd.DataFrame:
+    """Three same-day candidates whose lead_exp and resonance orders disagree."""
+    return pd.DataFrame(
+        [
+            _cand("AAA", dates, lead_exp=0.10, n_families=1, ind_l1="ind_a"),
+            _cand("BBB", dates, lead_exp=0.01, n_families=3, ind_l1="ind_b"),
+            _cand("CCC", dates, lead_exp=0.05, n_families=2, ind_l1="ind_c"),
+        ]
+    )
+
+
+def test_rank_mode_only_swaps_first_two_sort_keys() -> None:
+    """Flipping the mode picks BBB instead of AAA; the later tie-breaks are untouched."""
+    dates = _dates(6)
+    bars = _bars(["AAA", "BBB", "CCC"], dates)
+    cands = _rank_mode_cands(dates)
+
+    lead = simulate(cands, bars, SimConfig(max_positions=1))
+    resonance = simulate(cands, bars, SimConfig(max_positions=1, rank_mode="resonance_first"))
+
+    assert list(lead.trades["code"]) == ["AAA"]
+    assert list(resonance.trades["code"]) == ["BBB"]
+    assert lead.rejects == resonance.rejects == Counter({"max_positions": 2})
+
+
+def test_resonance_first_rank_mode_is_deterministic_under_input_shuffle() -> None:
+    """Mergesort on the frozen key list keeps ties stable across row order."""
+    dates = _dates(8)
+    codes = [f"R{i}" for i in range(6)]
+    bars = _bars(codes, dates)
+    rows = [
+        _cand(
+            code,
+            dates,
+            strategy="washout_break",
+            family="reversal",
+            entry_idx=1 + (idx % 3),
+            exit_idx=5 + (idx % 2),
+            ind_l1=f"ind_{idx}",
+            strength=float(idx + 1),
+            lead_exp=float(6 - idx),
+            n_families=2 + (idx % 3),
+        )
+        for idx, code in enumerate(codes)
+    ]
+    cfg = SimConfig(rank_mode="resonance_first")
+
+    ordered = simulate(pd.DataFrame(rows), bars, cfg)
+    shuffled = simulate(pd.DataFrame(rows).sample(frac=1.0, random_state=42), bars, cfg)
+
+    pd.testing.assert_frame_equal(ordered.equity, shuffled.equity)
+    assert list(ordered.trades["code"]) == list(shuffled.trades["code"])
+    assert ordered.rejects == shuffled.rejects
+
+
+def test_rank_mode_default_keeps_frozen_hash_and_override_changes_it() -> None:
+    """The default stays out of ``config_hash``; an explicit non-default changes it."""
+    assert SimConfig().rank_mode == "lead_exp_first"
+    assert _config_hash(SimConfig(rank_mode="lead_exp_first")) == "5eea05195af3d89432af8b2a049fde2517d6a53b"
+    assert _config_hash(SimConfig(rank_mode="resonance_first")) != _config_hash(SimConfig())
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [
@@ -698,8 +760,10 @@ def test_deploy_aware_sizing_changes_config_hash() -> None:
         {"size_mode": "bogus"},
         {"target_positions": 5},
         {"cash_buffer_pct": 0.05},
+        {"rank_mode": "strength_first"},
     ],
 )
-def test_invalid_sizing_config_is_rejected(kwargs: dict[str, Any]) -> None:
+def test_invalid_sim_config_is_rejected(kwargs: dict[str, Any]) -> None:
+    """Every ``SimConfig.__post_init__`` guard rejects out-of-contract kwargs."""
     with pytest.raises(ValueError):
         SimConfig(**kwargs)
