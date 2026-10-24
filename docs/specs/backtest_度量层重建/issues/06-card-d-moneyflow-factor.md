@@ -17,7 +17,7 @@
 
 - **字段**：`tushare_moneyflow.buy_lg_amount` / `sell_lg_amount` / `buy_elg_amount` /
   `sell_elg_amount` / `net_mf_amount`（单位：万元）。驱动侧已在 `load_data()` 里 JOIN 并派生
-  `net_big_amount = buy_lg + buy_elg − sell_lg − sell_elg`（`scripts/backtest_5y_23strategies.py:865-866`），
+  `net_big_amount = buy_lg + buy_elg − sell_lg − sell_elg`（`scripts/backtest_5y_23strategies.py:871-872`），
   本卡**直接复用**该列，不新增 SQL、不新增数据转换入口。
 - **覆盖率**（本地 PG `tushare`，逐表 `count(col)/count(*)`）：2020–2026 各年 `buy_lg_amount` /
   `buy_elg_amount` / `net_mf_amount` 非空率均为 **100%**；2026 年截至 **2026-10-16**（188 个交易日，
@@ -32,7 +32,7 @@
 | 项 | 冻结值 |
 | --- | --- |
 | 卡号 / 变体 | `card-d`；主比较一次，`preregistered_primary = true`，`tested_count = 1` |
-| 基线臂 | 默认策略池（`STRATEGIES` 23 项，其中 `chan_theory`/`dragon_head`/`box_oscillation` 默认停用 → 有效 20 项）；PIT 宇宙；`entry_timing=next_open`；`min_resonance_families=2`；`size_mode=fixed_1n`；`rank_mode=lead_exp_first`；`max_positions=10`；`max_holding_bars=10` |
+| 基线臂 | 默认策略池（`STRATEGIES` 24 项，其中 `chan_theory`/`dragon_head`/`box_oscillation` 默认停用 → 有效 21 项）；PIT 宇宙；`entry_timing=next_open`；`min_resonance_families=2`；`size_mode=fixed_1n`；`rank_mode=lead_exp_first`；`max_positions=10`；`max_holding_bars=10` |
 | 候选臂 | 基线 + `smart_money_flow`（`sig_smart_money_flow`，`net_big_amount` 连续 3 日 > 0 + 小单净流出 + 站上 MA20 + 阳线），仅由 `--enable-smart-money-flow` 注册 |
 | 估计量 | v1 `pooled-per-signal-mean-diff`（`--estimator signal`，默认路径）；块长 `max-arm-p99-bars`；重抽 2000；percentile CI 2.5/97.5；signal-weighted；日期轴 `union-signal-dates` |
 | 为什么用 v1 | 本卡改变信号集合，v2 组合层估计量的预注册边界排除此类卡（`docs/backtest-flip-gate-spec.md` §9）。偏离「改信号走 WFO」的授权与边界见 `docs/adr/0004-card-d-signal-gate-without-wfo.md` |

@@ -57,6 +57,8 @@ def test_default_registry_excludes_smart_money_flow(tmp_path: Path) -> None:
     driver = _load_driver(tmp_path / "default")
     assert driver.SMART_MONEY_FLOW_STRATEGY not in driver.STRATEGIES
     assert driver.SMART_MONEY_FLOW_STRATEGY not in driver.STRATEGY_MASKS
+    assert len(driver.STRATEGIES) == 24
+    assert len(driver.STRATEGY_MASKS) == 24
 
 
 def test_factor_family_is_fundamental_and_default_map_is_untouched(tmp_path: Path) -> None:
@@ -80,6 +82,7 @@ def test_register_is_idempotent_and_reuses_existing_signal_function(tmp_path: Pa
     assert len(driver.STRATEGIES) == baseline + 1
     assert driver.STRATEGIES[driver.SMART_MONEY_FLOW_STRATEGY] is driver.sig_smart_money_flow
     assert driver.STRATEGY_MASKS[driver.SMART_MONEY_FLOW_STRATEGY] == "standard"
+    assert set(driver.STRATEGIES) == set(driver.STRATEGY_MASKS) == set(STRATEGY_FAMILY)
 
 
 def test_signal_requires_three_day_inflow_and_retail_outflow(tmp_path: Path) -> None:
@@ -95,9 +98,12 @@ def test_signal_requires_three_day_inflow_and_retail_outflow(tmp_path: Path) -> 
     assert not driver.sig_smart_money_flow(retail_in).any()
 
 
-def test_signal_fails_closed_when_layered_column_is_missing(tmp_path: Path) -> None:
-    driver = _load_driver(tmp_path / "missing")
-    frame = _moneyflow_frame([1.0, 1.0, 1.0], with_column=False)
+@pytest.mark.parametrize("missing", ["net_big_amount", "buy_sm_amount", "sell_sm_amount"])
+def test_signal_fails_closed_when_a_layered_column_is_missing(tmp_path: Path, missing: str) -> None:
+    driver = _load_driver(tmp_path / f"missing-{missing}")
+    frame = _moneyflow_frame([1.0, 1.0, 1.0], with_column=missing != "net_big_amount")
+    if missing != "net_big_amount":
+        frame = frame.drop(columns=[missing])
     assert driver.sig_smart_money_flow(frame).tolist() == [False, False, False]
 
 

@@ -3217,10 +3217,11 @@ def sig_smart_money_flow(df):
     """策略29：主力分层持续流入（P2-9 已废弃，2026-08-24 实测胜率 37.8% 弱于其余策略）。
 
     曾逻辑：net_big_amount（大单+超大单净额）连续 3 日 > 0、小单净流出、
-    收盘站上 MA20 且阳线。保留函数定义仅便于对照与回滚；不再注册进 STRATEGIES。
-    数据缺失（net_big_amount 列不存在）时返回全 False，不误触发。
+    收盘站上 MA20 且阳线。默认不注册；Card D 经 `--enable-smart-money-flow` 显式启用。
+    所需分层列任一缺失时返回全 False，不误触发。
     """
-    if "net_big_amount" not in df.columns:
+    moneyflow_columns = ("net_big_amount", "buy_sm_amount", "sell_sm_amount")
+    if any(column not in df.columns for column in moneyflow_columns):
         return pd.Series(False, index=df.index)
     net_big = df["net_big_amount"]
     g = df.groupby("code")["net_big_amount"]
@@ -3298,9 +3299,16 @@ def _register_smart_money_flow() -> None:
 
     复用已废弃的 `sig_smart_money_flow()` 与 `load_data()` 已派生的 `net_big_amount`
     （大单+超大单净额），不新增 SQL、数据转换或平行的策略实现。因子族按资金面归入
-    `fundamental`，与 `inst_smart_break` 同类。
+    `fundamental`。
 
-    只在 main() 显式传 `--enable-smart-money-flow` 时调用，保证默认策略池（23 项）与
+    只注册三个动态字典（`STRATEGIES` / `STRATEGY_MASKS` / `STRATEGY_FAMILY`）。模块级
+    派生结构（`STRATEGY_ALLOWED_REGIMES`、`REGIME_ALL_WEATHER`、`CONFLUENCE_EXEMPT`、
+    `DEFENSIVE_HALF_POS_STRATEGIES`、`STRATEGY_SCORE_FUNCS`）**不**包含该策略，因此
+    `--regime-filter` 不会硬屏蔽它、`--regime-soft` 把它当作需强势确认的弱信号、
+    `--confluence-only` 要求它满足基本面催化剂、强度恒为 1.0。Card D 的判决就是在这套
+    语义下测得的；要改变这些语义必须另立预注册变体，不得在判决后回写。
+
+    只在 main() 显式传 `--enable-smart-money-flow` 时调用，保证默认策略池（24 项）与
     冻结基线逐位不变；重复调用幂等，便于测试与重复进入 main()。
     """
     if SMART_MONEY_FLOW_STRATEGY in STRATEGIES:
@@ -6277,6 +6285,13 @@ def main(argv=None):
         parser.error("--portfolio-sim-rank-mode 需要同时启用 --portfolio-sim")
     elif args.enable_smart_money_flow:
         parser.error("--enable-smart-money-flow 需要同时启用 --portfolio-sim")
+    requested_strategies = {
+        name.strip() for name in str(args.portfolio_sim_strategies or "").split(",") if name.strip()
+    }
+    if SMART_MONEY_FLOW_STRATEGY in requested_strategies and not args.enable_smart_money_flow:
+        parser.error(
+            "--portfolio-sim-strategies 指定 smart_money_flow 时需同时启用 --enable-smart-money-flow"
+        )
     if args.portfolio_sim_size_mode == "deploy_aware" and args.portfolio_sim_target_positions is None:
         parser.error("--portfolio-sim-size-mode deploy_aware 需要同时给出 --portfolio-sim-target-positions")
     if (
@@ -6372,7 +6387,7 @@ def main(argv=None):
             f"target_positions={_PORTFOLIO_SIM_TARGET_POSITIONS or 'n/a'}, "
             f"cash_buffer_pct={_PORTFOLIO_SIM_CASH_BUFFER_PCT if _PORTFOLIO_SIM_CASH_BUFFER_PCT is not None else 'n/a'}, "
             f"rank_mode={_PORTFOLIO_SIM_RANK_MODE or 'contract(lead_exp_first)'}, "
-            f"smart_money_flow={_ENABLE_SMART_MONEY_FLOW}, "
+            f"smart_money_flow={SMART_MONEY_FLOW_STRATEGY in STRATEGIES}, "
             f"strategies={','.join(sorted(_PORTFOLIO_SIM_STRATEGIES)) if _PORTFOLIO_SIM_STRATEGIES else 'all'}"
         )
 

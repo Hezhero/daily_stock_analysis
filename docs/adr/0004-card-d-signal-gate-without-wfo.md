@@ -26,10 +26,15 @@ v1 信号级估计量在构造上则**支持两臂信号集不同**：它明确"
 - 只适用于卡 D 这一次主比较；不得据此把 v1 推广到其他改信号／出场的卡。
 - 判决**不翻转任何默认值**。PASS 只说明"值得另开一张票讨论是否把因子纳入默认策略池"；
   FAIL 则保持因子默认关闭。采纳本身仍需独立后续动作。
-- 判决产物必须显式记录 `wfo: {required: false, folds: null, reason: "deferred to T0.3; user-authorized v1 signal gate for card D"}`，
-  不得静默省略。
+- 判决产物由 `scripts/portfolio_gate.py` 生成，其 `wfo.reason` 是 v1 的通用文案，无法在
+  不改哈希的前提下替换。因此**不以产物文案为授权依据**：本 ADR 与账本 §10.11 的标注为准，
+  二者必须写明"WFO 延后至 T0.3，卡 D 由用户授权的 v1 信号级门槛裁决"。
 - 卡 D 的因子默认关闭（`--enable-smart-money-flow` 显式 opt-in），因此即使判决为 PASS，
   生产默认消费路径在本票内也不改变。
+- 因子只注册 `STRATEGIES` / `STRATEGY_MASKS` / `STRATEGY_FAMILY` 三个动态字典；模块级派生结构
+  （`STRATEGY_ALLOWED_REGIMES`、`REGIME_ALL_WEATHER`、`CONFLUENCE_EXEMPT`、
+  `DEFENSIVE_HALF_POS_STRATEGIES`、`STRATEGY_SCORE_FUNCS`）保持不含它。判决在这套语义下测得，
+  事后不得为了"补齐一致性"回写这些集合——那会改变被测的处理，属于未预注册变体。
 - 一旦 T0.3 的 WFO 引擎落地，任何"把该因子纳入默认策略池"的决定都必须先用 WFO 重跑；
   本 ADR 不构成对该要求的豁免。
 

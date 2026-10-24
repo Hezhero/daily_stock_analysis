@@ -480,6 +480,25 @@ def _signals(bars: pd.DataFrame, marks: Sequence[tuple[str, Any]]) -> pd.Series:
     return signal
 
 
+def test_build_candidate_table_ignores_extra_columns_and_row_order() -> None:
+    """Card D OOM fix: subsetting the panel must not change candidates."""
+    dates = _dates(6)
+    bars = _panel_bars(["AAA", "BBB"], dates)
+    book = {
+        "fc_pos_break": _signals(bars, [("AAA", dates[0]), ("BBB", dates[1])]),
+        "ma_crossover": _signals(bars, [("BBB", dates[0]), ("AAA", dates[3])]),
+    }
+    expected = build_candidate_table(bars, book, cfg=SimConfig(adv_window=1))
+
+    wide = bars.copy()
+    for extra in range(30):
+        wide[f"unused_{extra}"] = np.arange(len(wide), dtype=float)
+    wide = wide.sample(frac=1.0, random_state=7)
+    actual = build_candidate_table(wide, book, cfg=SimConfig(adv_window=1))
+
+    pd.testing.assert_frame_equal(expected, actual)
+
+
 def test_build_candidate_table_row_count_and_columns() -> None:
     dates = _dates(6)
     bars = _panel_bars(["AAA", "BBB"], dates)
