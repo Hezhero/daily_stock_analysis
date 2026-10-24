@@ -344,6 +344,12 @@ _PORTFOLIO_SIM_CASH_BUFFER_PCT: Optional[float] = None
 _PORTFOLIO_SIM_RANK_MODE: Optional[str] = None
 _PORTFOLIO_SIM_RESULT: Optional[Dict] = None
 
+# ─── Card D 实验开关（--enable-smart-money-flow，默认关闭） ────────────────────────
+# 复用 sig_smart_money_flow / net_big_amount，不新增数据路径；只有 main() 显式开启时
+# 才把 smart_money_flow 注入策略注册表，因此默认策略池与冻结哈希逐位不变。
+_ENABLE_SMART_MONEY_FLOW = False
+SMART_MONEY_FLOW_STRATEGY = "smart_money_flow"
+
 # ─── 日志配置 ──────────────────────────────────────────────────────────────────
 _LOG_DIR = Path(os.environ.get("LOG_DIR") or "logs")
 if not _LOG_DIR.is_absolute():
@@ -3287,6 +3293,25 @@ STRATEGIES = {
 }
 
 
+def _register_smart_money_flow() -> None:
+    """Card D opt-in：把分层主力资金因子注入策略注册表（默认不注册）。
+
+    复用已废弃的 `sig_smart_money_flow()` 与 `load_data()` 已派生的 `net_big_amount`
+    （大单+超大单净额），不新增 SQL、数据转换或平行的策略实现。因子族按资金面归入
+    `fundamental`，与 `inst_smart_break` 同类。
+
+    只在 main() 显式传 `--enable-smart-money-flow` 时调用，保证默认策略池（23 项）与
+    冻结基线逐位不变；重复调用幂等，便于测试与重复进入 main()。
+    """
+    if SMART_MONEY_FLOW_STRATEGY in STRATEGIES:
+        return
+    from scripts.portfolio_sim import STRATEGY_FAMILY
+
+    STRATEGIES[SMART_MONEY_FLOW_STRATEGY] = sig_smart_money_flow
+    STRATEGY_MASKS[SMART_MONEY_FLOW_STRATEGY] = "standard"
+    STRATEGY_FAMILY[SMART_MONEY_FLOW_STRATEGY] = "fundamental"
+
+
 # 信号强度注册表（P1-5）：策略名 -> 归一化打分函数（0~1，满分归一）。
 # 未注册的策略触发时强度恒为 1.0；仅用于推荐排序加权，不影响信号判定。
 STRATEGY_SCORE_FUNCS: Dict[str, Callable] = {
@@ -6144,6 +6169,9 @@ def main(argv=None):
                         choices=_RANK_MODES,
                         help="card-C-only：同日并发候选排序优先级（契约默认 lead_exp_first=期望优先）；"
                              "resonance_first=共振优先（仅交换前两位排序键，其余键与上限不变）")
+    parser.add_argument("--enable-smart-money-flow", action="store_true",
+                        help="card-D-only：把 net_big_amount 分层主力资金因子（smart_money_flow）"
+                             "加入策略池（默认关闭；需同时启用 --portfolio-sim）")
     parser.add_argument("--exit-atr-mult", type=float, default=None,
                         help="全局 ATR 止损倍数覆盖（默认取 DEFAULT_EXIT_PARAMS；传旧值 2.5 可回退，P1 批次5）")
     parser.add_argument("--exit-trail", type=float, default=None,
@@ -6247,6 +6275,8 @@ def main(argv=None):
         parser.error("--portfolio-sim-cash-buffer-pct 需要同时启用 --portfolio-sim")
     elif args.portfolio_sim_rank_mode is not None:
         parser.error("--portfolio-sim-rank-mode 需要同时启用 --portfolio-sim")
+    elif args.enable_smart_money_flow:
+        parser.error("--enable-smart-money-flow 需要同时启用 --portfolio-sim")
     if args.portfolio_sim_size_mode == "deploy_aware" and args.portfolio_sim_target_positions is None:
         parser.error("--portfolio-sim-size-mode deploy_aware 需要同时给出 --portfolio-sim-target-positions")
     if (
@@ -6312,6 +6342,7 @@ def main(argv=None):
     global _PORTFOLIO_SIM_ENABLED, _PORTFOLIO_SIM_OUT, _PORTFOLIO_SIM_WINDOW, _PORTFOLIO_SIM_STRATEGIES, _PORTFOLIO_SIM_MIN_FAMILIES
     global _PORTFOLIO_SIM_SIZE_MODE, _PORTFOLIO_SIM_TARGET_POSITIONS, _PORTFOLIO_SIM_CASH_BUFFER_PCT
     global _PORTFOLIO_SIM_RANK_MODE
+    global _ENABLE_SMART_MONEY_FLOW
     _PORTFOLIO_SIM_ENABLED = bool(args.portfolio_sim)
     _PORTFOLIO_SIM_OUT = args.portfolio_sim_out or "result/"
     _PORTFOLIO_SIM_WINDOW = args.portfolio_sim_window
@@ -6320,6 +6351,14 @@ def main(argv=None):
     _PORTFOLIO_SIM_TARGET_POSITIONS = args.portfolio_sim_target_positions
     _PORTFOLIO_SIM_CASH_BUFFER_PCT = args.portfolio_sim_cash_buffer_pct
     _PORTFOLIO_SIM_RANK_MODE = args.portfolio_sim_rank_mode
+    _ENABLE_SMART_MONEY_FLOW = bool(args.enable_smart_money_flow)
+    if _ENABLE_SMART_MONEY_FLOW:
+        _register_smart_money_flow()
+        logger.warning(
+            "Card D 实验因子启用：%s 已注入策略池（net_big_amount 分层主力资金；"
+            "非生产默认，判决前不得固化）",
+            SMART_MONEY_FLOW_STRATEGY,
+        )
     _PORTFOLIO_SIM_STRATEGIES = (
         {name.strip() for name in str(args.portfolio_sim_strategies).split(",") if name.strip()}
         if args.portfolio_sim_strategies else None
@@ -6333,6 +6372,7 @@ def main(argv=None):
             f"target_positions={_PORTFOLIO_SIM_TARGET_POSITIONS or 'n/a'}, "
             f"cash_buffer_pct={_PORTFOLIO_SIM_CASH_BUFFER_PCT if _PORTFOLIO_SIM_CASH_BUFFER_PCT is not None else 'n/a'}, "
             f"rank_mode={_PORTFOLIO_SIM_RANK_MODE or 'contract(lead_exp_first)'}, "
+            f"smart_money_flow={_ENABLE_SMART_MONEY_FLOW}, "
             f"strategies={','.join(sorted(_PORTFOLIO_SIM_STRATEGIES)) if _PORTFOLIO_SIM_STRATEGIES else 'all'}"
         )
 
