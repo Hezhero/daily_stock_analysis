@@ -1,6 +1,8 @@
 # 翻转门槛规格 v1：池化样本外 Δ 的日期分块 bootstrap CI
 
 > 适用对象：实验卡 A/B/C 这类"参数或资金配置"变更。改信号或改出场定义的改动仍走完整 WFO。
+> 唯一例外：卡 D（信号变更）经用户显式授权使用 v1 作一次性预注册比较，边界与后果见
+> `docs/adr/0004-card-d-signal-gate-without-wfo.md`；该例外不推广到其他改信号／出场的卡。
 > 本文件是 ticket 02（`docs/specs/backtest_度量层重建/issues/02-bootstrap-flip-gate.md`）的实现契约与预注册记录。
 > 实现落点：`scripts/portfolio_gate.py`。决策背景见 `docs/adr/0003-*.md`。
 

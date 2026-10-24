@@ -1233,3 +1233,31 @@ python scripts/portfolio_gate.py \
 - **执行偏差（记录在案，不改变口径）**：① 首跑基线臂在 `build_candidate_table` 处 OOM（申请 2.37 GiB），未改脚本、未调参，清空半成品后原地重跑；② 重跑时机器日期已跨到 2026-10-24（周六），两臂被非交易日守卫秒退且 `exit=0`，故两臂追加 `--force`（只绕过当日交易日检查，数据快照未变：PG `max(trade_date)=2026-10-16`）；③ 两臂加 `--no-handoff`，避免触发 `main.py` 子进程与真实推送；④ 门禁显式传 `--oos-end 2026-10-16`，因两臂 summary 的 `window=null` 且 `metrics` 无 `oos_end`。
 - **回滚**：无需回滚动作——默认值自始未改（`SimConfig().rank_mode == "lead_exp_first"`，`_config_hash` 仍为 `5eea05195af3d89432af8b2a049fde2517d6a53b`，有测试锁住）；`resonance_first` 仅作为显式 CLI 开关存在。
 - **后续**：翻默认是独立动作，不在卡 C 内完成——须把 `rank_mode` 移出 `_HASH_OPTIONAL_KEYS`、更新 `_REGISTERED_EXPERIMENT_DEFAULTS` 期望值、并重算 L-only/PIT 两个冻结哈希后在新票里固化；本卡不扫第三种排序（任何额外顺序都属探索性变体，只记录不翻转）。
+
+### 10.11 卡 D 判决：不通过，分层资金因子保持默认关闭（2026-10-24，ticket 06）
+
+- **授权与口径**：卡 D 改变信号集合（新增策略），按 spec 与 experiment-cards §4.5 本应走 WFO，但 T0.3 明确不在本阶段。经用户显式授权，本卡使用 v1 信号级 bootstrap 门槛作**一次预注册主比较**，边界与后果见 `docs/adr/0004-card-d-signal-gate-without-wfo.md`；v2 组合层估计量不适用（§9 只允许"信号集合相同"的卡）。判决**不翻转任何默认值**。
+- **实现（opt-in）**：新增 `_register_smart_money_flow()`，仅在 `--enable-smart-money-flow`（且必须 `--portfolio-sim`）时把 `smart_money_flow` 注入 `STRATEGIES` / `STRATEGY_MASKS` / `STRATEGY_FAMILY`。复用既有 `sig_smart_money_flow()` 与 `load_data()` 已派生的 `net_big_amount`（`buy_lg+buy_elg−sell_lg−sell_elg`），不新增 SQL、数据转换或平行实现。默认策略池、家族映射（24 项）与冻结 `config_hash` 逐位不变。
+- **数据契约**：本地 PG 中 `buy_lg_amount` / `buy_elg_amount` / `net_mf_amount` 在 2020–2026 各年非空率均为 **100%**；2026 截至 **2026-10-16**（188 交易日，992,590 行）。缺失按 0 参与 `net_big_amount`；整列缺失时 `sig_smart_money_flow()` 返回全 False。
+- **增量与相关性（原始信号，未过买入/质量掩码）**：`smart_money_flow` 139,170 条 vs `inst_smart_break` 99,660 条；交集 9,327，Jaccard **0.041**，Pearson r **0.061**——不构成重复信息。因子信号中 **74.3%** 已通过 `net_mf_amount` 过滤，25.7%（35,817 条）不通过，说明它不止复述现有资金流方向。
+
+| 指标 | 基线（默认 20 个有效策略） | 候选（+ `smart_money_flow`） |
+| --- | ---: | ---: |
+| OOS CAGR | 4.203% | **6.480%** |
+| Sharpe | 0.4442 | **0.6106** |
+| 最大回撤 | 13.907% | 14.034% |
+| 成交笔数 | 560 | 568 |
+| 平均持仓数 | 2.231 | 2.256 |
+| 平均现金占比 | 77.69% | 77.43% |
+| 换手（年化） | 112.63 | 114.06 |
+| 成本拖累 | 51.35% | 51.54% |
+| 胜率 | 43.93% | 44.19% |
+
+- **判决**：`overall_pass=false`，驳回项 **`ci_excludes_zero`**（Δ = **+0.008pct**，95% CI **[−0.023%, +0.036%]**，`se=0.015`，`L=9`、`B=2000`、`valid=2000`、`n_dates=283`、`n_blocks=32`、`seed=17512258841837435284`、`degenerate=false`）与 **`maxdd_non_inferior`**（14.034% > 13.907%）。通过项：`cagr_non_inferior`、`sharpe_non_inferior`、`maxdd_cap`（14.034% ≤ 25%）、`min_trades`（568 ≥ 100）。
+- **解读**：组合层 CAGR/Sharpe 明显改善（+2.28pct / +0.166），但**信号级每信号均值 Δ 几乎为零**，且最大回撤略升。即组合收益改善来自新增信号对同日共振/排序与成交结构的间接影响，而不是因子本身带来了更高的每信号期望；按预注册的主判据与回撤护栏，不能采纳。
+- **四条自检**：① 两臂 `config_hash` 均为 `acb32bd95d3c94c9c575b00008409c483cd04064`（因子不是 `SimConfig` 字段，哈希**预期相同**）；② `signals.csv` sha256 基线 `2A5DB331…`（与卡 A/B/C 逐位一致）≠ 候选 `dcbeecd5…`，基线 0 行 `smart_money_flow`、候选 141 行；③ 两臂 equity 均 1400 行、`2021-01-04 → 2026-10-16`、日期集合一致；④ 两臂 `reconciled=true`，漏斗 `raw` 18477→18637、`built` 17873→18029、`declustered` 9904→10099、`lead_eligible` 9388→9553、`collapsed` 1522→1546、`filled` 560→568。
+- **产物**：`result/gates/card-d/{base,cand}/portfolio_sim_20210514_20261016_pit.*`；判决 `result/gates/card-d/v1/acb32bd95d3c94c9c575b00008409c483cd04064.json`（`verdict_hash 0068779f…`、`spec_hash 88e87917bde1…`、`code_commit 975353b1`、`tested_count=1`、`preregistered_primary=true`、`registry_id d0fbec7ff6d1…`）；`result/gates/registry.jsonl` 现 4 行，其中 `card-d` 一行 `rejection_reasons=["ci_excludes_zero","maxdd_non_inferior"]`。
+- **已知标注偏差**：判决产物里的 `wfo.reason` 是 v1 的通用文案（"this parameter/capital change"），对卡 D 属误标；本卡是**信号变更**，实际授权与边界见 ADR 0004。为避免改动产物哈希，未回写判决 JSON，以此处记录为准。
+- **执行偏差（不影响测量口径）**：① 基线臂前两次在 `build_candidate_table → _canonical_panel` 处 OOM（申请 2.37 GiB），根因是 105 列全量 `copy/reset_index` 只用到 16 列；在 `975353b1` 中先裁剪面板列再排序去重，基线重跑后 `signals.csv` sha256、`config_hash`、漏斗与卡 C 基线**逐位一致**，证明修复不改变结果。② 首次成功跑完后进程在收尾报告处因 Windows GBK 编码无法写出 `↔` 而 `exit≠0`；产物在崩溃前已完整写出，候选臂改用 `PYTHONIOENCODING=utf-8` 后正常退出。③ 两臂均 `--force`（当天为周六）、`--no-handoff`；门禁显式 `--oos-end 2026-10-16`。
+- **回滚**：默认值自始未改——不传 `--enable-smart-money-flow` 时策略不注册、`STRATEGY_FAMILY` 仍 24 项、`config_hash` 仍为冻结值（有测试锁住）。要彻底移除只删该 CLI 开关与 `_register_smart_money_flow()`；数据层 `net_big_amount` 与 `sig_smart_money_flow` 为既有代码，保持原样。
+- **后续**：本卡不翻转默认、不扫 3 日窗口/小单条件等变体。若未来要把因子纳入默认池，必须等 T0.3 的 WFO 落地后按其 §8.1 口径重跑，并单独立项。

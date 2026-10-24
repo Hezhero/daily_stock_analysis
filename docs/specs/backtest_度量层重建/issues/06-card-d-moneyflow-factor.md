@@ -4,12 +4,12 @@
 
 **Blocked by:** 01, 02, 03, 04, 05
 
-**Status:** ready-for-agent
+**Status:** ready-for-human（预注册主比较已执行，判决 FAIL，因子保持默认关闭；见文末判决与账本 §10.11）
 
-- [ ] 分层字段的覆盖率与缺失处理被记录；不改生产默认消费路径。
-- [ ] 相对现有 `net_mf_amount` 有增量贡献；与 `inst_smart_break` 的相关性检查通过。
-- [ ] 经 02 门槛；不通过则移除因子或关闭开关，旧数据路径与旧策略保持可运行。
-- [ ] 复用既有策略注册与数据转换入口，不新增平行实现；账本记录判决与 `config_hash`。
+- [x] 分层字段的覆盖率与缺失处理被记录；不改生产默认消费路径。
+- [x] 相对现有 `net_mf_amount` 有增量贡献；与 `inst_smart_break` 的相关性检查通过。
+- [x] 经 02 门槛；判决 FAIL，因子保持默认关闭，旧数据路径与旧策略可运行。
+- [x] 复用既有策略注册与数据转换入口，不新增平行实现；账本记录判决与 `config_hash`。
 
 **Notes:** 分层资金流可能存在字段缺失、口径变更与行业分布偏差，且与既有资金流因子高度相关；本卡不抢在 A/B/C 之前，避免在基线未稳时引入数据质量问题。
 
@@ -74,3 +74,33 @@ python scripts/portfolio_gate.py \
   --data-hash 8a5542694c0b1dd10c1de9bb0bd87447f3ec71e48d981b25392f833f6f2d313d \
   --code-commit <实现提交> --oos-end 2026-10-16
 ```
+
+## 判决（2026-10-24，按预注册执行；未改规则/基线/判据）
+
+- **卡号 / 变体**：`card-d`；主比较一次，`preregistered_primary = true`，`tested_count = 1`；未扫窗口/参数变体。
+- **运行标识**：`code_commit = 975353b1`；`data_snapshot_hash = 8a5542694c0b1dd10c1de9bb0bd87447f3ec71e48d981b25392f833f6f2d313d`；OOS `2022-01-17 → 2026-10-16`；产物 stem `portfolio_sim_20210514_20261016_pit`。
+- **估计量**：v1 `pooled_oos_unpaired_mean_net_return_delta`；`L=9`（两臂 p99 `holding_bars=9`）、`B=2000`、`valid=2000`、`n_dates=283`、`n_blocks=32`、`seed=17512258841837435284`、`rng=PCG64`、`degenerate=false`。
+- **Δ**：+0.008pct，95% CI **[−0.023%, +0.036%]**，`se=0.015`。
+
+| 指标 | 基线（默认策略池） | 候选（+ `smart_money_flow`） |
+| --- | ---: | ---: |
+| OOS CAGR | 4.203% | **6.480%** |
+| Sharpe | 0.4442 | **0.6106** |
+| 最大回撤 | 13.907% | 14.034% |
+| 成交笔数 | 560 | 568 |
+| 平均持仓数 | 2.231 | 2.256 |
+| 平均现金占比 | 77.69% | 77.43% |
+| 换手（年化） | 112.63 | 114.06 |
+| 成本拖累 | 51.35% | 51.54% |
+
+- **判决结果**：**FAIL**。驳回项：`ci_excludes_zero`（CI 下界未过零）、`maxdd_non_inferior`（14.034% > 13.907%）。通过项：`cagr_non_inferior`、`sharpe_non_inferior`、`maxdd_cap`、`min_trades`。
+- **解读**：组合层 CAGR/Sharpe 改善，但信号级每信号期望几乎不变、回撤略升；改善来自新增信号对同日共振/成交结构的间接影响，不是因子本身的可复用 edge。按预注册不采纳。
+- **四条自检**：
+  1. 两臂 `config_hash = acb32bd95d3c94c9c575b00008409c483cd04064`（预期相同：因子不是 `SimConfig` 字段）。
+  2. `signals.csv` sha256：基线 `2A5DB331…`（与卡 A/B/C 一致）≠ 候选 `dcbeecd5…`；基线 0 行 / 候选 141 行 `smart_money_flow`。
+  3. 两臂 equity 各 1400 行、`2021-01-04 → 2026-10-16`，日期集合一致。
+  4. 两臂 `reconciled=true`；漏斗 `raw` 18477→18637、`declustered` 9904→10099、`collapsed` 1522→1546、`filled` 560→568。
+- **增量 / 相关性**：原始信号 139,170 vs `inst_smart_break` 99,660；Jaccard **0.041**、Pearson r **0.061**；74.3% 因子信号已过 `net_mf_amount`，35,817 条不过——非重复信息。
+- **证据**：`result/gates/card-d/v1/acb32bd95d3c94c9c575b00008409c483cd04064.json`（`verdict_hash 0068779f…`、`spec_hash 88e87917bde1…`、`registry_id d0fbec7ff6d1…`）；`result/gates/registry.jsonl` 追加一行。
+- **标注偏差**：判决 JSON 的 `wfo.reason` 是 v1 通用文案，对卡 D 误标为 "parameter/capital change"；实际授权见 `docs/adr/0004-card-d-signal-gate-without-wfo.md`。为保哈希未回写产物。
+- **结论**：不翻转默认，`smart_money_flow` 仅保留为 `--enable-smart-money-flow` 显式 opt-in；不扫因子变体。任何后续采纳须等 T0.3 的 WFO 落地后重跑。
