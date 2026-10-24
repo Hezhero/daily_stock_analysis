@@ -1208,3 +1208,28 @@ python scripts/portfolio_gate.py \
 - **变体计数**：计数改为按 `card_id` 跨估计量合并——同一张卡换估计量再跑一次，`tested_count` 必须 +1，不能借口径切换重置。
 - **后续使用**：卡 C（ticket 05）若采用组合层估计量，必须在开跑前写进其预注册；不得先跑 v1 看结果再换 v2。
 - **局限**：日收益块 bootstrap 只量化抽样噪声，不消除选择偏倚；容量仍无独立指标。
+
+### 10.10 卡 C 判决：不通过，默认保持 `lead_exp_first`（2026-10-24）
+
+按 ticket 05 预注册的单一主比较执行（v2 组合层估计量 `oos_daily_portfolio_cagr_block_delta`），规则、基线、命令、判据均未改动。
+
+| 指标 | 基线 `lead_exp_first`（`acb32bd9…`） | 候选 `resonance_first`（`b742d01b…`） |
+| --- | ---: | ---: |
+| OOS CAGR | 4.203% | **5.581%** |
+| Sharpe | 0.4442 | **0.5623** |
+| 最大回撤 | 13.907% | 13.579% |
+| 成交笔数 | 560 | 558 |
+| 平均持仓数 | 2.231 | 2.229 |
+| 平均现金占比 | 77.69% | 77.71% |
+| 换手（年化） | 112.63 | 112.79 |
+| 成本拖累 | 51.35% | 51.22% |
+
+- **判决**：`overall_pass=false`，唯一驳回项 `ci_excludes_zero`（ΔCAGR = +1.377pct，95% CI [−0.883%, +3.909%]，下界未过零）；`cagr_non_inferior`、`sharpe_non_inferior`、`maxdd_non_inferior`、`maxdd_cap`（13.579% ≤ 25%）、`min_trades`（558 ≥ 100）全过。即**点估计方向一致（CAGR/Sharpe 均改善、回撤还略降）但抽样噪声不足以排除零**，按「通过才翻转默认」的口径不成立。
+- **改动确实只在排序层**：两臂 `signals.csv` sha256 完全相同（`2A5DB331…`，与卡 A/B 参考值一致），漏斗 `raw=18477 / built=17873 / declustered=9904 / lead_eligible=9388 / collapsed=1522` 全同，仅 `filled` 560 → 558（`rejects_total` 17917 → 17919），`reconciled=true`。同日排序竞争只影响 collapse 之后的成交取舍，成交少 2 笔而收益略高。
+- **哈希守卫**：基线 `config_hash` 仍为 `acb32bd95d3c94c9c575b00008409c483cd04064`（PIT 冻结值），候选 `b742d01b88fc3545a6182726e0d7db7f2996b385`，证明 `rank_mode` 默认值未进 `_config_hash`、显式覆盖才改哈希。
+- **年度拆解（描述性，事后观察，不参与判决）**：候选减基线的年度收益差（pct）2022 **+6.40**、2023 **−2.32**、2024 **+2.03**、2025 +0.37、2026 −0.28。改善并非全期一致，2023 反向；即便 `ci_excludes_zero` 通过，按预注册「改善若只存在于个别年份或个别 regime，不采纳」也须谨慎。
+- **估计量参数**：`L=21`（两臂 p99 `holding_bars=9`，取 `max(21, ceil(9))`）、`B=2000`、`valid_resamples=2000`、`n_dates=1148`、`n_blocks=55`、`seed=3768749268696168765`、`degenerate=false`；两臂 `n_signals=7771`、`n_dates=282`，equity 各 1400 行（`2021-01-04 → 2026-10-16`）且日期集合完全一致。
+- **产物**：`result/gates/card-c/{base,cand}/portfolio_sim_20210514_20261016_pit.*`；判决 `result/gates/card-c/v1/b742d01b88fc3545a6182726e0d7db7f2996b385.json`（`verdict_hash 324bdd1f…`、`spec_hash 13f03e36d023…`、`code_commit 5b4bfe16`、`tested_count=1`、`registry_id c8dfe79373f5…`）；`result/gates/registry.jsonl` 现 3 行（`card-a`、`card-b`、`card-c`，均 `overall_pass=false`）。
+- **执行偏差（记录在案，不改变口径）**：① 首跑基线臂在 `build_candidate_table` 处 OOM（申请 2.37 GiB），未改脚本、未调参，清空半成品后原地重跑；② 重跑时机器日期已跨到 2026-10-24（周六），两臂被非交易日守卫秒退且 `exit=0`，故两臂追加 `--force`（只绕过当日交易日检查，数据快照未变：PG `max(trade_date)=2026-10-16`）；③ 两臂加 `--no-handoff`，避免触发 `main.py` 子进程与真实推送；④ 门禁显式传 `--oos-end 2026-10-16`，因两臂 summary 的 `window=null` 且 `metrics` 无 `oos_end`。
+- **回滚**：无需回滚动作——默认值自始未改（`SimConfig().rank_mode == "lead_exp_first"`，`_config_hash` 仍为 `5eea05195af3d89432af8b2a049fde2517d6a53b`，有测试锁住）；`resonance_first` 仅作为显式 CLI 开关存在。
+- **后续**：翻默认是独立动作，不在卡 C 内完成——须把 `rank_mode` 移出 `_HASH_OPTIONAL_KEYS`、更新 `_REGISTERED_EXPERIMENT_DEFAULTS` 期望值、并重算 L-only/PIT 两个冻结哈希后在新票里固化；本卡不扫第三种排序（任何额外顺序都属探索性变体，只记录不翻转）。
