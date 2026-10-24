@@ -816,7 +816,8 @@ def build_candidate_table(
     _require_columns(bars, _BAR_COLUMNS + _PANEL_COLUMNS, "bars")
     _require_columns(bars, dyn, "bars")
 
-    frame, positions = _canonical_panel(bars)
+    panel_columns = list(dict.fromkeys([*_BAR_COLUMNS, *_PANEL_COLUMNS, *dyn]))
+    frame, positions = _canonical_panel(bars.loc[:, panel_columns])
     views = _code_views(frame)
     starts: dict[str, int] = {}
     cursor = 0
