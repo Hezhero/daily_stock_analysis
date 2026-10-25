@@ -4,6 +4,9 @@
 
 **Blocked by:** None (can start immediately)
 
+**Gate:** `none`
+**Signal set:** `none`
+
 **Status:** ready-for-human
 
 - [x] 观测单元为 `(strategy, signal_date, code)`；`next_open` 入场、扣成本后的净收益、记录实际持有期；直接池化样本外信号，不平均各折指标。

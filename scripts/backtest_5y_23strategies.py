@@ -351,6 +351,16 @@ _ENABLE_SMART_MONEY_FLOW = False
 SMART_MONEY_FLOW_STRATEGY = "smart_money_flow"
 
 # ─── 日志配置 ──────────────────────────────────────────────────────────────────
+def _configure_stdio_utf8(streams=None) -> None:
+    """Force report streams to UTF-8 so cp936 consoles cannot crash on −/❶/↔."""
+    for stream in streams if streams is not None else (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+
+
+_configure_stdio_utf8()
+
 _LOG_DIR = Path(os.environ.get("LOG_DIR") or "logs")
 if not _LOG_DIR.is_absolute():
     _LOG_DIR = BASE_DIR / _LOG_DIR

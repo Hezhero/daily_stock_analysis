@@ -77,6 +77,8 @@ jobs:
           python-version: '3.11'
       - name: 🤖 Check AI governance assets
         run: python scripts/check_ai_assets.py
+      - name: Check spec ticket contracts
+        run: python scripts/check_spec_tickets.py
 
   backend-tests:
     name: backend-tests (${{ matrix.shard }}/3)

@@ -61,6 +61,12 @@ def test_default_registry_excludes_smart_money_flow(tmp_path: Path) -> None:
     assert len(driver.STRATEGY_MASKS) == 24
 
 
+def test_default_strategy_registries_share_keys(tmp_path: Path) -> None:
+    driver = _load_driver(tmp_path / "registry")
+    assert set(driver.STRATEGIES) == set(driver.STRATEGY_MASKS) == set(STRATEGY_FAMILY)
+    assert len(driver.STRATEGIES) == 24
+
+
 def test_factor_family_is_fundamental_and_default_map_is_untouched(tmp_path: Path) -> None:
     driver = _load_driver(tmp_path / "family")
     assert "smart_money_flow" not in STRATEGY_FAMILY

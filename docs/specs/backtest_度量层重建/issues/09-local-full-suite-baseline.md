@@ -4,6 +4,9 @@
 
 **Blocked by:** None。
 
+**Gate:** `none`
+**Signal set:** `none`
+
 **Status:** ready-for-human（剩余项需要先定口径，见末节）
 
 ## 实测归因（2026-10-22，`daily_stock_analysis` 环境，native Windows）

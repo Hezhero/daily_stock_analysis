@@ -4,6 +4,9 @@
 
 **Blocked by:** None (can start immediately)
 
+**Gate:** `none`
+**Signal set:** `none`
+
 **Status:** ready-for-human
 
 - [x] 默认配置跑出的 `config_hash` 仍为已发布基线值，指标逐位不变。

@@ -4,6 +4,9 @@
 
 **Blocked by:** 01, 02, 04
 
+**Gate:** `v2-portfolio`
+**Signal set:** `unchanged`
+
 **Status:** ready-for-human（预注册比较已执行，判决 FAIL，默认保持 `lead_exp_first`；见文末判决）
 
 ## 现状更正（2026-10-23）

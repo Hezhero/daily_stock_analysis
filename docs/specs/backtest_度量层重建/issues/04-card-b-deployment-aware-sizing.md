@@ -4,6 +4,9 @@
 
 **Blocked by:** 01, 02（03 为排序约定，非依赖：卡 A 判决已出且不通过，不阻塞本卡；见账本 §10.6）
 
+**Gate:** `v1-signal`
+**Signal set:** `unchanged`
+
 **Status:** ready-for-human（预注册比较已执行，判决 FAIL，默认保持 `fixed_1n`；见文末判决与账本 §10.8）
 
 - [x] 以 `SimConfig` 三个旋钮（`size_mode` / `target_positions` / `cash_buffer_pct`）实现，不新增平行模拟路径；v1 未启用波动率目标缩放（`_TARGET_VOL_ANNUAL` 保持 0.0），`_MAX_LEVERAGE` 保持 1.0，不引入杠杆。

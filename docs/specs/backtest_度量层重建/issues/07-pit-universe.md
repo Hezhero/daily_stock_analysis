@@ -4,6 +4,9 @@
 
 **Blocked by:** ~~data availability~~ → 已解除（数据层已回填并验收，2026-10-19）
 
+**Gate:** `none`
+**Signal set:** `none`
+
 **Status:** ready-for-human（默认已切 `pit`；L-only/PIT 全回测对照已完成并入账本 §10.4）
 
 - [x] 用 `delist_date` 等时点信息构造 PIT 池；窗口内退市的股票在其可交易期间进入样本，而非被整体剔除。（驱动层已落地：`--universe pit` 按 `[list_date+120d, delist_date]` 建谓词；退市股清单与行情回填由数据层并行推进）

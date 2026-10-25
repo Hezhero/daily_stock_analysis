@@ -4,6 +4,10 @@
 
 **Blocked by:** 01, 02
 
+**Gate:** `v1-signal`
+**Signal set:** `changed`
+**Gate rationale:** `docs/backtest-flip-gate-spec.md` §2（两臂各用自己信号集；`min_resonance_families` 改变去簇结果）
+
 **Status:** ready-for-human（判决 FAIL，默认值保持 2，见账本 §10.5）
 
 - [x] 用 02 对 ≥1 vs ≥2 的消融产出明确的通过／不通过判决。

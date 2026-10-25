@@ -4,6 +4,9 @@
 
 **Blocked by:** None（02 已落地）。**本票不重判 card-a / card-b。**
 
+**Gate:** `none`
+**Signal set:** `none`
+
 **Status:** ready-for-human
 
 - [x] `--estimator {signal,portfolio}`，默认 `signal`；默认路径的 `GATE_SPEC_HASH`、估计量字段、判决结构与既有产物逐位不变。

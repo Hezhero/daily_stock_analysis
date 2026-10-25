@@ -4,6 +4,10 @@
 
 **Blocked by:** 01, 02, 03, 04, 05
 
+**Gate:** `v1-signal`
+**Signal set:** `changed`
+**Gate rationale:** `docs/adr/0004-card-d-signal-gate-without-wfo.md`（改信号本应走 WFO，T0.3 未落地，用户授权用 v1 做一次性预注册比较）
+
 **Status:** ready-for-human（预注册主比较已执行，判决 FAIL，因子保持默认关闭；见文末判决与账本 §10.11）
 
 - [x] 分层字段的覆盖率与缺失处理被记录；不改生产默认消费路径。
