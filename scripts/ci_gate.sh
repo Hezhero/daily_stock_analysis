@@ -2,6 +2,26 @@
 
 set -euo pipefail
 
+install_hint() {
+  printf "backend-gate: missing %s.\nInstall the backend-gate toolchain with:\n  pip install -r .github/requirements-ci.txt\n" "$1" >&2
+}
+
+require_command() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    install_hint "'$1'"
+    exit 2
+  fi
+}
+
+require_python_module() {
+  if ! python -c "import $1" >/dev/null 2>&1; then
+    install_hint "Python module '$1'"
+    exit 2
+  fi
+}
+
+require_command python
+
 syntax_check() {
   echo "==> backend-gate: Python syntax check"
   python -m py_compile main.py src/config.py src/auth.py src/analyzer.py src/notification.py
@@ -11,17 +31,21 @@ syntax_check() {
 }
 
 flake8_checks() {
+  require_command flake8
   echo "==> backend-gate: flake8 critical checks"
   flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
 }
 
 deterministic_checks() {
+  require_command python3
   echo "==> backend-gate: local deterministic checks"
   ./scripts/test.sh code
   ./scripts/test.sh yfinance
 }
 
 offline_test_suite() {
+  require_python_module pytest
+  require_python_module pytest_timeout
   echo "==> backend-gate: offline test suite"
   # ``--timeout=120`` hard-fails any single test that runs longer than two
   # minutes (issue #2131: backend-gate previously hung indefinitely around

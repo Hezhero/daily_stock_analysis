@@ -97,6 +97,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [文档] `AGENTS.md` 瘦身：把 CHANGELOG 扁平格式与验证矩阵（CI 覆盖、按改动面执行、平台边界）下沉到 `docs/agents/changelog-format.md` 与 `docs/agents/validation-matrix.md`，`AGENTS.md` 与 `.github/copilot-instructions.md` 改为指针，减少 always-loaded 重复内容。
+- [改进] `scripts/ci_gate.sh` 增加工具预检（`python` / `python3` / `flake8` / `pytest` / `pytest_timeout`），缺失时打印 `pip install -r .github/requirements-ci.txt` 并 `exit 2`；新增 `scripts/ci_gate.ps1` 在 Windows 自动定位 Git Bash 并透传退出码。项目 `daily_stock_analysis` 环境补装 `flake8` 与 `pytest-timeout`，`syntax` 与 `flake8` 两个 phase 已在 Windows 验证通过。
 - [测试] 新增 `scripts/check_spec_tickets.py` 并接入 `ai-governance`：`docs/specs/*/issues/` 每张票必须声明 `**Gate:**` 与 `**Signal set:**`；`v2-portfolio` 只允许信号集不变（flip-gate spec §9），`v1-signal` + 信号集变化必须给出 `**Gate rationale:**`，`none` 只能配 `none`。存量 9 张票已回填，规则写入 `docs/agents/issue-tracker.md`。
 - [修复] `scripts/backtest_5y_23strategies.py` 在导入时把 `stdout`/`stderr` 固定为 UTF-8（`errors="backslashreplace"`），修复 Windows cp936 控制台下报告 `print` 非 GBK 字符（`−`/`❶`/`↔` 等 30 行）导致进程在产物已写完后 `exit≠0` 的问题；新增 `tests/test_backtest_stdio_encoding.py` 回归测试。
 - [测试] `tests/test_backtest_card_d.py` 增加默认策略注册表不变式：`STRATEGIES` / `STRATEGY_MASKS` / `STRATEGY_FAMILY` 三表同键且均为 24 项，防止新增策略漏登记后被静默按 `unknown_strategy` 拒绝。
