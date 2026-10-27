@@ -18,6 +18,8 @@ from scripts.portfolio_sim import SimConfig, _CAND_COLUMNS, _config_hash
 
 DRIVER = Path(__file__).resolve().parents[1] / "scripts" / "backtest_5y_23strategies.py"
 
+pytestmark = pytest.mark.usefixtures("restore_env_after_test")
+
 # 已发布 T0.1 基线（2026-10-17，项目约定 conda 环境）的 config_hash。
 T01_BASELINE_CONFIG_HASH = "5eea05195af3d89432af8b2a049fde2517d6a53b"
 

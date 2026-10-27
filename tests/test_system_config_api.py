@@ -62,6 +62,8 @@ class SystemConfigApiTestCase(unittest.TestCase):
         )
         self._orig_dsa_desktop_mode = os.environ.get("DSA_DESKTOP_MODE")
         self._orig_database_path = os.environ.get("DATABASE_PATH")
+        self._orig_env_file = os.environ.get("ENV_FILE")
+        self._orig_admin_auth = os.environ.get("ADMIN_AUTH_ENABLED")
         os.environ["ENV_FILE"] = str(self.env_path)
         os.environ["DATABASE_PATH"] = str(Path(self.temp_dir.name) / "system_config_api_test.db")
         Config.reset_instance()
@@ -74,7 +76,10 @@ class SystemConfigApiTestCase(unittest.TestCase):
     def tearDown(self) -> None:
         Config.reset_instance()
         self._verify_session_patch.stop()
-        os.environ.pop("ENV_FILE", None)
+        if self._orig_env_file is None:
+            os.environ.pop("ENV_FILE", None)
+        else:
+            os.environ["ENV_FILE"] = self._orig_env_file
         if self._orig_dsa_desktop_mode is None:
             os.environ.pop("DSA_DESKTOP_MODE", None)
         else:
@@ -83,6 +88,10 @@ class SystemConfigApiTestCase(unittest.TestCase):
             os.environ.pop("DATABASE_PATH", None)
         else:
             os.environ["DATABASE_PATH"] = self._orig_database_path
+        if self._orig_admin_auth is None:
+            os.environ.pop("ADMIN_AUTH_ENABLED", None)
+        else:
+            os.environ["ADMIN_AUTH_ENABLED"] = self._orig_admin_auth
         self.temp_dir.cleanup()
 
     @staticmethod

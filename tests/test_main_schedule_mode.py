@@ -87,8 +87,11 @@ class MainScheduleModeTestCase(unittest.TestCase):
         root_logger.setLevel(self._original_root_level)
         os.chdir(self.original_cwd)
         Config.reset_instance()
-        self.env_patch.stop()
+        # patch.dict restores its own start-time snapshot, so these must stop in
+        # reverse start order: stopping env_patch first lets actions_env_patch put
+        # the temporary ENV_FILE back.
         self.actions_env_patch.stop()
+        self.env_patch.stop()
         for key in _MAIN_IMPORT_ENV_ADDITIONS:
             os.environ.pop(key, None)
         for key, value in _MAIN_IMPORT_ENV_OVERRIDES.items():

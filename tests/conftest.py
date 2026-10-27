@@ -5,6 +5,9 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import importlib
+import os
+import tempfile
 import time
 import threading
 from collections.abc import Awaitable, Callable
@@ -14,10 +17,109 @@ from typing import Any, TypeVar
 from warnings import warn
 
 import anyio.to_thread
+import pytest
 import fastapi.testclient
 import httpx
 import starlette.testclient
 from anyio._backends import _asyncio
+
+# Leak probe (ticket 12, D1). With ``DSA_ENV_LEAK_PROBE=1`` it compares the state
+# seen at each test's setup against the previous setup, so it names the test that
+# left an env entry or a shared singleton behind instead of letting a later,
+# unrelated test fail. Inert unless the variable is set.
+_PROBE_VARS = ("ENV_FILE", "DATABASE_PATH", "ADMIN_AUTH_ENABLED")
+_PROBE_SINGLETONS = {
+    "Config._instance": ("src.config", "Config"),
+    "DatabaseManager._instance": ("src.storage", "DatabaseManager"),
+}
+_PROBE_STATE: dict[str, str] | None = None
+_PROBE_LAST_NODEID = "<session start>"
+_PROBE_LEAKS: list[tuple[str, str, Any, Any]] = []
+
+
+def _singleton_marker(module_name: str, class_name: str) -> str:
+    """Lazy on purpose: importing these at conftest import would run setup_env()."""
+    try:
+        module = importlib.import_module(module_name)
+        instance = getattr(getattr(module, class_name), "_instance", None)
+    except Exception:
+        return "unimported"
+    return "none" if instance is None else "set"
+
+
+def _probe_snapshot() -> dict[str, str]:
+    snapshot = {name: repr(os.environ.get(name)) for name in _PROBE_VARS}
+    for label, (module_name, class_name) in _PROBE_SINGLETONS.items():
+        snapshot[label] = _singleton_marker(module_name, class_name)
+    return snapshot
+
+
+# Session env baseline (ticket 11). ``src.config`` calls ``setup_env()`` at import
+# time, which copies the repo-root ``.env`` into ``os.environ``; this runs while
+# conftest is loaded, i.e. before any test module triggers that import. Tests that
+# need a real env file assign ``ENV_FILE`` themselves — that is the opt-in.
+_AMBIENT_KEYS = ("ADMIN_AUTH_ENABLED", "REALTIME_SOURCE_PRIORITY", "SEARXNG_PUBLIC_INSTANCES_ENABLED")
+
+_BASELINE_ENV_FILE = os.path.join(tempfile.mkdtemp(prefix="dsa-test-env-"), "no-such.env")
+os.environ["ENV_FILE"] = _BASELINE_ENV_FILE
+for _ambient_key in _AMBIENT_KEYS:
+    os.environ.pop(_ambient_key, None)
+
+
+@pytest.fixture(autouse=True)
+def _enforce_ambient_env_baseline():
+    """Drop ambient config keys before every test so one test cannot leak into the next.
+
+    ``ENV_FILE`` is deliberately not forced here: several modules set it at import
+    time on purpose, and a per-test override would break them.
+    """
+    for name in _AMBIENT_KEYS:
+        os.environ.pop(name, None)
+    yield
+
+
+@pytest.fixture
+def restore_env_after_test():
+    """Undo env writes made by modules that bypass ``ENV_FILE`` (bare ``load_dotenv()``).
+
+    Opt in per module with ``pytestmark = pytest.mark.usefixtures("restore_env_after_test")``;
+    applying it globally would hide the leaks this suite is trying to eliminate.
+    """
+    before = dict(os.environ)
+    yield
+    for key in list(os.environ):
+        if key not in before:
+            os.environ.pop(key, None)
+    os.environ.update(before)
+
+
+def pytest_runtest_setup(item):
+    global _PROBE_LAST_NODEID, _PROBE_STATE
+    if os.environ.get("DSA_ENV_LEAK_PROBE") != "1":
+        return
+    current = _probe_snapshot()
+    if _PROBE_STATE is None:
+        _PROBE_STATE = current
+        _PROBE_LAST_NODEID = item.nodeid
+        return
+    for name, value in current.items():
+        previous = _PROBE_STATE.get(name)
+        if value != previous:
+            _PROBE_LEAKS.append((_PROBE_LAST_NODEID, name, previous, value))
+    _PROBE_STATE = current
+    _PROBE_LAST_NODEID = item.nodeid
+
+
+def pytest_sessionfinish(session, exitstatus):
+    if os.environ.get("DSA_ENV_LEAK_PROBE") != "1":
+        return
+    if not _PROBE_LEAKS:
+        print("\n[env-leak-probe] clean: no state transitions between tests")
+        return
+    print(f"\n[env-leak-probe] {len(_PROBE_LEAKS)} state transition(s) not restored:")
+    for nodeid, name, before, after in _PROBE_LEAKS:
+        print(f"  {nodeid} :: {name}: {before!r} -> {after!r}")
+
 
 T = TypeVar("T")
 

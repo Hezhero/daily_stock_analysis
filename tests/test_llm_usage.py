@@ -1810,6 +1810,11 @@ class TestLLMUsageMigration(unittest.TestCase):
             and f"ADD COLUMN {column} " in statement
         )
 
+    @staticmethod
+    def _release_sqlite_handles() -> None:
+        """Windows cannot delete a sqlite file that the engine still holds open."""
+        DatabaseManager.reset_instance()
+
     def test_existing_sqlite_table_gets_missing_columns_idempotently(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "legacy.sqlite"
@@ -1820,6 +1825,7 @@ class TestLLMUsageMigration(unittest.TestCase):
             db._ensure_llm_usage_telemetry_columns()
 
             self._assert_all_telemetry_columns(db_path)
+            self._release_sqlite_handles()
 
     def test_existing_sqlite_table_gets_partial_missing_columns(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1837,6 +1843,7 @@ class TestLLMUsageMigration(unittest.TestCase):
             DatabaseManager(db_url=f"sqlite:///{db_path}")
 
             self._assert_all_telemetry_columns(db_path)
+            self._release_sqlite_handles()
 
     def test_existing_sqlite_table_with_all_telemetry_columns_is_noop(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1850,6 +1857,7 @@ class TestLLMUsageMigration(unittest.TestCase):
             DatabaseManager(db_url=f"sqlite:///{db_path}")
 
             self._assert_all_telemetry_columns(db_path)
+            self._release_sqlite_handles()
 
     def test_existing_sqlite_table_ignores_concurrent_duplicate_column(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1894,6 +1902,7 @@ class TestLLMUsageMigration(unittest.TestCase):
 
             self.assertTrue(race_fired["value"])
             self._assert_all_telemetry_columns(db_path)
+            self._release_sqlite_handles()
 
     def test_existing_sqlite_table_retries_locked_column_backfill(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1937,6 +1946,7 @@ class TestLLMUsageMigration(unittest.TestCase):
             ]
             self.assertEqual(len(storage_retry_sleeps), 1)
             self._assert_all_telemetry_columns(db_path)
+            self._release_sqlite_handles()
 
 
 if __name__ == "__main__":

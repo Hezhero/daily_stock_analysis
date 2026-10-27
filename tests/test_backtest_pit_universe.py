@@ -11,8 +11,11 @@ import os
 from pathlib import Path
 
 from scripts.portfolio_sim import SimConfig, _config_hash
+import pytest
 
 DRIVER = Path(__file__).resolve().parents[1] / "scripts" / "backtest_5y_23strategies.py"
+
+pytestmark = pytest.mark.usefixtures("restore_env_after_test")
 
 # 已发布 T0.1 基线（ADR 0001）。l-only 默认必须逐位复现。
 T01_BASELINE_CONFIG_HASH = "5eea05195af3d89432af8b2a049fde2517d6a53b"

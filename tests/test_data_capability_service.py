@@ -11,8 +11,16 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
+import pytest
+
 from api.app import create_app
 from src.services.data_capability_service import DataCapabilityService
+
+
+@pytest.fixture(autouse=True)
+def _isolate_ambient_env(monkeypatch, tmp_path):
+    """The developer's repo-root .env must not decide these assertions."""
+    monkeypatch.setenv("ENV_FILE", str(tmp_path / "no-such.env"))
 
 
 class _Fetcher:

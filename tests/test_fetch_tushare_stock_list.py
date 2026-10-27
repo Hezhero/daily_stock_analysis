@@ -10,6 +10,13 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
+import pytest
+
+
+
+pytestmark = pytest.mark.usefixtures("restore_env_after_test")
+
+
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = ROOT / "scripts"

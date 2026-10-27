@@ -79,6 +79,31 @@ repository rules explicitly forbid).
 
 `python -m pytest -m "not network"` 只在 POSIX 上构成全量基线。native Windows 下，
 Codex App Server 相关用例（`os.killpg`/`getpgid`）、`time.tzset` 时区用例按契约跳过，
-`fxmacrodata-public-client` 又只从 GitHub Release 分发 wheel（PyPI 无包），因此本机全量
-结果偏红不代表改动引入回归；需要全量基线时在 WSL 或 Docker 里跑同一条命令。新增依赖时
-优先选择 PyPI 可解析的包，避免让本地基线依赖单一分发渠道。
+因此本机全量结果偏红不代表改动引入回归；需要全量基线时在 WSL 或 Docker 里跑同一条命令。
+新增依赖时优先选择 PyPI 可解析的包，避免让本地基线依赖单一分发渠道。
+
+native Windows 的差异只有三类是**契约允许**的：
+
+1. **产品在 Windows 上显式排除的能力**。判据是被测入口自己抛 `capability_unsupported`
+   （例如 `src/agent/codex_*` 的 `resolve_command()`），这类用例按平台 skip。
+2. **平台缺失的 stdlib 接口**，例如 `time.tzset` 仅 POSIX。只有当测试无法用跨平台等价物表达
+   同一契约时才允许 skip；能表达就必须改成跨平台实现——存活探测不能再用 `os.kill(pid, 0)`，
+   它在 Windows 上会真的终止进程。
+3. **只能由 POSIX mode 位表达的断言**（`0o600` / `0o700`）。生产侧若已 `except OSError: pass`，
+   说明它不是 fail-fast 契约，跳过 mode 断言即可；同一用例的其余断言必须继续在 Windows 上执行。
+
+不在上述三类的失败一律按根因修复。**禁止**为了"全量变绿"整文件 skip 或放宽断言：新增的模块级
+skip 必须属于上述三类并写明理由，否则视为契约漂移。已知反例（都必须修）：
+
+- 子进程 stdio 按 UTF-8 读回（`_read_text_file`），因此必须让子进程也按 UTF-8 写
+  （`build_local_cli_env()` 设 `PYTHONIOENCODING`），而不是放宽断言或给 `text=True` 补 `encoding`。
+- Windows 超时终止要覆盖整棵进程树：`terminate()` 只杀直接子进程。
+- 诊断预览的 CRLF/LF 差异在预览生成处统一为 LF，而不是逐条放宽断言。
+
+`fxmacrodata-public-client` 只从 GitHub Release 分发 wheel（PyPI 无包），按 ADR 0005 降级为可选
+导入：开发环境缺失时工具集为空并输出一次性原因信号，发布完整性由桌面端打包探针承担。
+
+native Windows 的既有失败由 `docs/agents/windows-known-failures.md` 登记，用
+`python scripts/check_windows_test_baseline.py` 校验：`NEW`（失败但未登记）、`STALE`（登记了但已
+不再失败）、`UNRESOLVED`（理由仍是 `TODO`）与 collection error 会分别报出，并以退出码 1 失败。
+该脚本只在本地跑，未接入 `ci_gate`（成本见票 10）。

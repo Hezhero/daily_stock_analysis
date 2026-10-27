@@ -49,6 +49,10 @@ class AlertApiTestCase(unittest.TestCase):
 
     def setUp(self) -> None:
         _reset_auth_globals()
+        self._prev_env = {
+            key: os.environ.get(key)
+            for key in ("ENV_FILE", "DATABASE_PATH", "ADMIN_AUTH_ENABLED")
+        }
         self.temp_dir = tempfile.TemporaryDirectory()
         self.data_dir = Path(self.temp_dir.name)
         self.env_path = self.data_dir / ".env"
@@ -78,8 +82,11 @@ class AlertApiTestCase(unittest.TestCase):
     def tearDown(self) -> None:
         DatabaseManager.reset_instance()
         Config.reset_instance()
-        os.environ.pop("ENV_FILE", None)
-        os.environ.pop("DATABASE_PATH", None)
+        for key, value in self._prev_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
         self.temp_dir.cleanup()
         _reset_auth_globals()
 

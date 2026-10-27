@@ -19,6 +19,8 @@ from scripts.portfolio_sim import STRATEGY_FAMILY
 
 DRIVER = Path(__file__).resolve().parents[1] / "scripts" / "backtest_5y_23strategies.py"
 
+pytestmark = pytest.mark.usefixtures("restore_env_after_test")
+
 
 @pytest.fixture(autouse=True)
 def _restore_shared_family_map():

@@ -1157,8 +1157,8 @@ class TestStorage(unittest.TestCase):
 
             self.assertEqual(total, 1)
         finally:
-            temp_dir.cleanup()
             DatabaseManager.reset_instance()
+            temp_dir.cleanup()
 
     # ------------------------------------------------------------------
     # Story 1.2 — canonical_id column + dual-write (issue #2207 PR2)

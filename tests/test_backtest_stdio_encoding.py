@@ -7,8 +7,11 @@ import importlib.util
 import io
 import os
 from pathlib import Path
+import pytest
 
 DRIVER = Path(__file__).resolve().parents[1] / "scripts" / "backtest_5y_23strategies.py"
+
+pytestmark = pytest.mark.usefixtures("restore_env_after_test")
 
 
 def _load_driver(log_dir: Path):

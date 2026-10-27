@@ -39,6 +39,10 @@ class AuthApiTestCase(unittest.TestCase):
 
     def setUp(self) -> None:
         _reset_auth_globals()
+        self._prev_env = {
+            key: os.environ.get(key)
+            for key in ("ENV_FILE", "DATABASE_PATH", "ADMIN_AUTH_ENABLED")
+        }
         self.temp_dir = tempfile.TemporaryDirectory()
         self.data_dir = Path(self.temp_dir.name)
         self.env_path = self.data_dir / ".env"
@@ -59,8 +63,11 @@ class AuthApiTestCase(unittest.TestCase):
         self.auth_patcher.stop()
         self.data_dir_patcher.stop()
         Config.reset_instance()
-        os.environ.pop("ENV_FILE", None)
-        os.environ.pop("DATABASE_PATH", None)
+        for key, value in self._prev_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
         self.temp_dir.cleanup()
 
     def _read_auth_enabled_from_env(self) -> bool:
@@ -681,6 +688,10 @@ class AuthDisableViaRealASGITestCase(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
+        cls._prev_env = {
+            key: os.environ.get(key)
+            for key in ("ENV_FILE", "DATABASE_PATH", "ADMIN_AUTH_ENABLED")
+        }
         cls._temp_dir = tempfile.TemporaryDirectory()
         cls.data_dir = Path(cls._temp_dir.name)
         cls.env_path = cls.data_dir / ".env"
@@ -711,8 +722,11 @@ class AuthDisableViaRealASGITestCase(unittest.TestCase):
     def tearDownClass(cls) -> None:
         cls._data_dir_patcher.stop()
         Config.reset_instance()
-        os.environ.pop("ENV_FILE", None)
-        os.environ.pop("DATABASE_PATH", None)
+        for key, value in cls._prev_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
         _reset_auth_globals()
         cls._temp_dir.cleanup()
 

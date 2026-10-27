@@ -8,8 +8,16 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+import pytest
+
 from api.app import create_app
 from api.deps import get_database_manager
+
+
+@pytest.fixture(autouse=True)
+def _isolate_ambient_env(monkeypatch, tmp_path):
+    """The developer's repo-root .env must not decide these assertions."""
+    monkeypatch.setenv("ENV_FILE", str(tmp_path / "no-such.env"))
 
 
 class FakeUsageDbManager:

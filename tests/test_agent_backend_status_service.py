@@ -136,6 +136,7 @@ def test_native_windows_is_rejected_before_command_probe(monkeypatch) -> None:
     assert payload["error_code"] == "platform_unsupported"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Codex App Server Agent excludes native Windows")
 def test_codex_status_checks_protocol_without_model_request_or_path_disclosure(monkeypatch) -> None:
     calls = _install_successful_codex_probe(monkeypatch)
 
@@ -178,6 +179,7 @@ def test_codex_status_checks_protocol_without_model_request_or_path_disclosure(m
         "turn/completed",
     ],
 )
+@pytest.mark.skipif(os.name == "nt", reason="Codex App Server Agent excludes native Windows")
 def test_codex_status_rejects_each_missing_required_protocol_capability(
     monkeypatch,
     missing: str,
@@ -201,6 +203,7 @@ def test_codex_status_rejects_each_missing_required_protocol_capability(
     assert payload["error_code"] == "capability_unsupported"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Codex App Server Agent excludes native Windows")
 def test_codex_status_treats_version_as_optional_display_data(monkeypatch) -> None:
     _install_successful_codex_probe(monkeypatch, version="")
 
@@ -213,6 +216,7 @@ def test_codex_status_treats_version_as_optional_display_data(monkeypatch) -> No
     assert payload["error_code"] is None
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Codex App Server Agent excludes native Windows")
 def test_codex_status_does_not_fail_when_optional_version_probe_times_out(monkeypatch) -> None:
     monkeypatch.setattr(
         "src.services.agent_backend_status_service.resolve_command",
