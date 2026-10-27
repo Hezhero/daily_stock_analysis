@@ -70,6 +70,64 @@ def _script(tmp_path: Path, source: str) -> str:
     return str(path)
 
 
+def _process_is_alive(pid: int) -> bool:
+    """Liveness probe that is safe on Windows, where ``os.kill(pid, 0)`` terminates."""
+    if os.name == "nt":
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        process_query_limited_information = 0x1000
+        still_active = 259
+        kernel32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.GetExitCodeProcess.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_ulong),
+        ]
+        kernel32.GetExitCodeProcess.restype = ctypes.c_int
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        kernel32.CloseHandle.restype = ctypes.c_int
+        handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+        if not handle:
+            return False
+        try:
+            exit_code = ctypes.c_ulong()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return False
+            return exit_code.value == still_active
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def test_process_is_alive_distinguishes_running_from_exited() -> None:
+    assert _process_is_alive(os.getpid()) is True
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    child.wait()
+    assert _process_is_alive(child.pid) is False
+
+
+def _assert_posix_mode_bits(probe: dict) -> None:
+    """Mode bits are POSIX-only; docs/agents/validation-matrix.md states the boundary."""
+    if os.name != "posix":
+        return
+    assert probe["prompt_mode"] == 0o600
+    assert probe["cwd_mode"] == 0o700
+
+
+def _wait_until_process_exits(pid: int, *, failure: str, timeout: float = 10.0) -> None:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not _process_is_alive(pid):
+            return
+        time.sleep(0.05)
+    pytest.fail(failure)
+
+
 def _backend(tmp_path: Path, source: str, **config_overrides) -> LocalCliGenerationBackend:
     preset = LocalCliPreset(
         preset_id="codex_cli",
@@ -379,8 +437,7 @@ print(json.dumps({{"type": "step_finish", "reason": "stop"}}))
     assert "--attach" not in argv
     assert "--dangerously-skip-permissions" not in argv
     assert probe["prompt"] == "prompt from dsa"
-    assert probe["prompt_mode"] == 0o600
-    assert probe["cwd_mode"] == 0o700
+    _assert_posix_mode_bits(probe)
     for tool_name in local_cli_backend_module._OPENCODE_DISABLED_TOOL_NAMES:
         assert opencode_config["tools"][tool_name] is False
     assert opencode_config["tools"]["websearch"] is False
@@ -1013,15 +1070,10 @@ time.sleep(30)
     assert exc_info.value.details["reason"] == "output_stat_failed"
     assert "sk-secret" not in exc_info.value.details["error"]
     child_pid = int(pid_file.read_text(encoding="utf-8"))
-    deadline = time.time() + 3
-    while time.time() < deadline:
-        try:
-            os.kill(child_pid, 0)
-        except OSError:
-            break
-        time.sleep(0.05)
-    else:
-        pytest.fail("child process was not terminated after output stat failure")
+    _wait_until_process_exits(
+        child_pid,
+        failure="child process was not terminated after output stat failure",
+    )
 
 
 def test_output_read_error_is_structured_unknown_not_empty(
@@ -1078,15 +1130,10 @@ time.sleep(30)
 
     assert exc_info.value.error_code is GenerationErrorCode.OUTPUT_TOO_LARGE
     child_pid = int(pid_file.read_text(encoding="utf-8"))
-    deadline = time.time() + 3
-    while time.time() < deadline:
-        try:
-            os.kill(child_pid, 0)
-        except OSError:
-            break
-        time.sleep(0.05)
-    else:
-        pytest.fail("child process was not terminated with the process group")
+    _wait_until_process_exits(
+        child_pid,
+        failure="child process was not terminated with the process group",
+    )
 
 
 def test_output_last_message_too_large(tmp_path: Path) -> None:
@@ -1370,15 +1417,10 @@ time.sleep(30)
 
     assert exc_info.value.error_code is GenerationErrorCode.TIMEOUT
     child_pid = int(pid_file.read_text(encoding="utf-8"))
-    deadline = time.time() + 3
-    while time.time() < deadline:
-        try:
-            os.kill(child_pid, 0)
-        except OSError:
-            break
-        time.sleep(0.05)
-    else:
-        pytest.fail("child process was not terminated with the process group")
+    _wait_until_process_exits(
+        child_pid,
+        failure="child process was not terminated with the process group",
+    )
 
 
 def test_env_allowlist_and_denylist(monkeypatch) -> None:
@@ -1525,7 +1567,7 @@ def test_popen_session_kwargs_are_platform_specific(monkeypatch) -> None:
     }
 
 
-def test_windows_terminate_process_group_prefers_ctrl_break(monkeypatch) -> None:
+def test_windows_terminate_process_group_requests_ctrl_break_then_sweeps_tree(monkeypatch) -> None:
     class FakeProcess:
         pid = 1234
 
@@ -1549,6 +1591,12 @@ def test_windows_terminate_process_group_prefers_ctrl_break(monkeypatch) -> None
         def kill(self):
             self.killed = True
 
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        return SimpleNamespace(returncode=0)
+
     monkeypatch.setattr(local_cli_backend_module.os, "name", "nt")
     monkeypatch.setattr(
         local_cli_backend_module.signal,
@@ -1556,22 +1604,23 @@ def test_windows_terminate_process_group_prefers_ctrl_break(monkeypatch) -> None
         1,
         raising=False,
     )
+    monkeypatch.setattr(local_cli_backend_module.subprocess, "run", fake_run)
     process = FakeProcess()
 
     LocalCliGenerationBackend._terminate_process_group(process)
 
     assert process.signals == [1]
+    assert calls == [["taskkill", "/F", "/T", "/PID", "1234"]]
     assert process.terminated is False
     assert process.killed is False
 
 
-def test_windows_terminate_process_group_falls_back_to_kill(monkeypatch) -> None:
+def test_windows_terminate_process_group_kills_the_whole_tree(monkeypatch) -> None:
     class FakeProcess:
         pid = 1234
 
         def __init__(self) -> None:
             self.signals = []
-            self.terminated = False
             self.killed = False
             self._wait_calls = 0
 
@@ -1589,10 +1638,16 @@ def test_windows_terminate_process_group_falls_back_to_kill(monkeypatch) -> None
             return 0
 
         def terminate(self):
-            self.terminated = True
+            raise AssertionError("terminate() would orphan the CLI's tool processes")
 
         def kill(self):
             self.killed = True
+
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(local_cli_backend_module.os, "name", "nt")
     monkeypatch.setattr(
@@ -1601,12 +1656,13 @@ def test_windows_terminate_process_group_falls_back_to_kill(monkeypatch) -> None
         1,
         raising=False,
     )
+    monkeypatch.setattr(local_cli_backend_module.subprocess, "run", fake_run)
     process = FakeProcess()
 
     LocalCliGenerationBackend._terminate_process_group(process)
 
     assert process.signals == [1]
-    assert process.terminated is True
+    assert calls == [["taskkill", "/F", "/T", "/PID", "1234"]]
     assert process.killed is True
 
 

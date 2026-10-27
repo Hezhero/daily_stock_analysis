@@ -626,6 +626,10 @@ def build_local_cli_env(source: Optional[Mapping[str, str]] = None) -> Dict[str,
         if not allowed or _is_sensitive_env_name(upper):
             continue
         child_env[key] = value
+    # Child stdio is read back as UTF-8 (see _read_text_file). Python children
+    # otherwise default to the locale codec, which corrupts Chinese output on a
+    # zh-CN Windows; non-Python children ignore this variable.
+    child_env["PYTHONIOENCODING"] = "utf-8"
     return child_env
 
 
@@ -1704,7 +1708,10 @@ def redact_diagnostic_text(text: str, *, home: Optional[str] = None, limit: int 
     for troubleshooting.
     """
 
-    redacted = _ANSI_ESCAPE_PATTERN.sub("", text or "")
+    # Diagnostic previews are logged and compared across platforms: normalise
+    # line endings so a Windows child's stderr renders like a POSIX one.
+    canonical = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    redacted = _ANSI_ESCAPE_PATTERN.sub("", canonical)
     home_path = home or os.path.expanduser("~")
     if home_path:
         redacted = redacted.replace(home_path, "~")
@@ -2785,24 +2792,11 @@ class LocalCliGenerationBackend(GenerationBackend):
                 try:
                     process.send_signal(ctrl_break)
                     process.wait(timeout=2)
-                    return
                 except Exception:
                     pass
-            try:
-                process.terminate()
-            except Exception:
-                return
-            try:
-                process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                try:
-                    process.kill()
-                except Exception:
-                    return
-                try:
-                    process.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    return
+            # A successful CTRL_BREAK only proves the direct child exited, so the
+            # tree is swept unconditionally rather than trusting that signal.
+            _terminate_windows_process_tree(process)
             return
         try:
             os.killpg(process.pid, signal.SIGTERM)
@@ -2819,6 +2813,35 @@ class LocalCliGenerationBackend(GenerationBackend):
                 process.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 return
+
+
+def _terminate_windows_process_tree(process: subprocess.Popen[str]) -> None:
+    """Kill the whole process tree, not just the CLI process.
+
+    ``process.terminate()`` only reaches the direct child, so a timed-out CLI
+    would leave the tool subprocesses it spawned running. ``taskkill /T`` walks
+    the tree and needs no extra dependency.
+    """
+    try:
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        process.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        try:
+            process.kill()
+        except Exception:
+            return
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            return
 
 
 @contextmanager
