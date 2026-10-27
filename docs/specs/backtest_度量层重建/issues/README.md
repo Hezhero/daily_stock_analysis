@@ -1,6 +1,6 @@
 # 票索引
 
-度量层重建的票按编号推进；**下一个可用编号：10**。
+度量层重建的票按编号推进；**下一个可用编号：14**。
 
 状态取值见 `docs/agents/triage-labels.md`（`needs-triage` / `needs-info` / `ready-for-agent` / `ready-for-human` / `wontfix`）。`ready-for-agent` 且依赖全清的那一张就是当前 frontier。
 
@@ -14,7 +14,11 @@
 | [06](06-card-d-moneyflow-factor.md) | 卡 D：`tushare_moneyflow` 分层主力资金因子 | ready-for-human（FAIL，因子默认关闭） | 01–05 |
 | [07](07-pit-universe.md) | PIT 宇宙落地（roadmap T0.4） | ready-for-human（默认已切 `pit`） | — |
 | [08](08-gate-portfolio-level-estimator.md) | 门禁组合层估计量（不重判既有卡） | ready-for-human | — |
-| [09](09-local-full-suite-baseline.md) | 本地全量 pytest 基线不可用 | ready-for-human | — |
+| [09](09-local-full-suite-baseline.md) | 本地全量 pytest 基线不可用 | ready-for-agent（决策 1/2 已落地；分类完成，43 条待修） | — |
+| [10](10-native-windows-baseline-whitelist.md) | native Windows 全量失败白名单 | ready-for-human（机制已落地；白名单收敛为空表，待办见票 09） | — |
+| [11](11-test-environment-baseline.md) | 测试环境基线（隔离开发者本机环境） | ready-for-human（会话级基线已落地；3 处历史 fixture 待清理） | 12 |
+| [12](12-cross-file-test-state-pollution.md) | 跨文件测试状态污染（全量与单跑不一致） | ready-for-human（5 个模块已加守卫；仍有第三个触发源） | — |
+| [13](13-config-validation-must-not-read-process-env.md) | 配置校验不应依赖进程级 `LLM_CHANNELS` | ready-for-human（待定 D1-D3） | — |
 
 ## 开新票前的两句提醒
 
