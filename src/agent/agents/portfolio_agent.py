@@ -58,6 +58,7 @@ class PortfolioAgent(BaseAgent):
         'risk_sentiment',
         'mcp_portfolio_risk_engine_task',
         'mcp_macro_regime_classifier_task',
+        require_integration=False,
     )
 
     # ------------------------------------------------------------------

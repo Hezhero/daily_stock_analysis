@@ -4,10 +4,18 @@ from pathlib import Path
 
 import pytest
 
-from fxmacrodata_public import Result, list_operations
-from src.agent.tools import fxmacrodata_tools
-from src.agent.tools.fxmacrodata_tools import build_fxmacrodata_tools, fxmacrodata_tool_names
-from src.agent.tools.registry import ToolRegistry
+pytest.importorskip(
+    "fxmacrodata_public",
+    reason="fxmacrodata-public-client ships only via GitHub Release; see docs/adr/0005",
+)
+
+from fxmacrodata_public import Result, list_operations  # noqa: E402
+from src.agent.tools import fxmacrodata_tools  # noqa: E402
+from src.agent.tools.fxmacrodata_tools import (  # noqa: E402
+    build_fxmacrodata_tools,
+    fxmacrodata_tool_names,
+)
+from src.agent.tools.registry import ToolRegistry  # noqa: E402
 
 
 class FixtureClient:
@@ -172,10 +180,16 @@ def test_missing_operation_catalogue_disables_tools_without_breaking_import(monk
     monkeypatch.setattr(fxmacrodata_public, "list_operations", missing_catalogue)
     try:
         module = importlib.reload(fxmacrodata_tools)
+        assert module.fxmacrodata_availability() == module.CATALOGUE_UNAVAILABLE
         assert module.ALL_FXMACRODATA_TOOLS == []
         assert module.build_fxmacrodata_tools(FixtureClient()) == []
         assert module.fxmacrodata_tool_names() == []
-        assert module.fxmacrodata_tool_names("data_catalogue", "release_calendar") == []
+        # Naming operations must fail loudly rather than hand back a shorter allowlist.
+        with pytest.raises(RuntimeError, match="FXMacroData integration is unavailable"):
+            module.fxmacrodata_tool_names("data_catalogue", "release_calendar")
+        assert module.fxmacrodata_tool_names(
+            "data_catalogue", "release_calendar", require_integration=False
+        ) == []
     finally:
         monkeypatch.undo()
         importlib.reload(fxmacrodata_tools)

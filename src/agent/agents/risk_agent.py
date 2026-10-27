@@ -43,6 +43,7 @@ class RiskAgent(BaseAgent):
         'event_predictions',
         'mcp_release_risk_score_task',
         'mcp_macro_news',
+        require_integration=False,
     )
 
     def system_prompt(self, ctx: AgentContext) -> str:
