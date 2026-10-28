@@ -1,4 +1,5 @@
 ## [Unreleased]
+- [测试] `tests/test_system_config_api.py::test_preview_agent_backend_status_uses_draft_without_persisting` 在 native Windows 固定为 `platform_unsupported` 而失败：该用例验证的是"预览不落盘"契约，与平台无关，改为把 `agent_backend_status_service.is_native_windows` 打桩为 False（同 `test_native_windows_is_rejected_before_command_probe` 的相反手法），不再只覆盖一半平台。该文件由 1 failed 转为 35 passed。
 - [chore] `requirements.txt` 的 22 行中文注释改为英文（票 14 D1）：`tests/test_check_env_encoding.py` 要求该文件 ASCII 可解码（Windows 首次运行编码护栏），中文注释会让该断言在任何平台失败。仅改注释，依赖声明未动。
 - [修复] 实时行情源优先级默认值由 `tencent,efinance,tushare` 改为 `tushare,tencent,akshare_sina,efinance,akshare_em`（票 14 D2）：原值与 `.env.example` 及文档示例不一致，且缺少 `akshare_sina`；`TUSHARE_TOKEN` 注入分支加幂等守卫。无 token 时 `TushareFetcher` 自我禁用，因此把 `tushare` 置于首位不产生额外失败尝试。全量 native Windows `32 → 28 failed`。
 - [文档] 新增票 14（三条与平台无关的失败）：`requirements.txt` 的 ASCII 断言与 22 行中文注释冲突、两条实时源默认值断言与 `Config._resolve_realtime_source_priority` 的代码默认值不一致——三条在任何平台都红，说明票 09 的"POSIX 全绿"前提从未被验证；待定 D1/D2（ASCII 化 vs 放宽、以代码还是以文档为准）。

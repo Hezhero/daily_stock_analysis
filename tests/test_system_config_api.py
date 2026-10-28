@@ -335,6 +335,9 @@ class SystemConfigApiTestCase(unittest.TestCase):
                 return_value=["/test/codex"],
             ),
             patch("src.services.agent_backend_status_service._run_codex_probe", side_effect=fake_run),
+            # Codex App Server is excluded on native Windows before the command probe runs;
+            # this case validates the preview/persistence contract, so pin the POSIX branch.
+            patch("src.services.agent_backend_status_service.is_native_windows", return_value=False),
         ):
             payload = system_config.preview_agent_backend_status(
                 request=AgentBackendStatusPreviewRequest(
