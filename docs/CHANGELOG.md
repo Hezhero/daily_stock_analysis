@@ -1,4 +1,5 @@
 ## [Unreleased]
+- [chore] `requirements.txt` 的 22 行中文注释改为英文（票 14 D1）：`tests/test_check_env_encoding.py` 要求该文件 ASCII 可解码（Windows 首次运行编码护栏），中文注释会让该断言在任何平台失败。仅改注释，依赖声明未动。
 - [修复] 实时行情源优先级默认值由 `tencent,efinance,tushare` 改为 `tushare,tencent,akshare_sina,efinance,akshare_em`（票 14 D2）：原值与 `.env.example` 及文档示例不一致，且缺少 `akshare_sina`；`TUSHARE_TOKEN` 注入分支加幂等守卫。无 token 时 `TushareFetcher` 自我禁用，因此把 `tushare` 置于首位不产生额外失败尝试。全量 native Windows `32 → 28 failed`。
 - [文档] 新增票 14（三条与平台无关的失败）：`requirements.txt` 的 ASCII 断言与 22 行中文注释冲突、两条实时源默认值断言与 `Config._resolve_realtime_source_priority` 的代码默认值不一致——三条在任何平台都红，说明票 09 的"POSIX 全绿"前提从未被验证；待定 D1/D2（ASCII 化 vs 放宽、以代码还是以文档为准）。
 - [测试] 把 `LLM_CHANNELS` 纳入按用例的 ambient 基线（票 11/12）：`tests/conftest.py` 的 `_AMBIENT_KEYS` 增加 `LLM_CHANNELS`，泄漏探针也跟踪该键。票 13 定 A（校验继续实时读进程 env）后，这是正确解法；native Windows 全量 `47 → 37 failed`，9 条污染型 `ConfigValidationError` 全部消失。

@@ -8,7 +8,7 @@ Windows 失败清单里。修好它们才能让"POSIX 全绿、Windows 走白名
 **Gate:** `none`
 **Signal set:** `none`
 
-**Status:** ready-for-human（两处都需要产品口径，见「待定决策」）
+**Status:** ready-for-agent（D1 选 a、D2 已定，三条用例全部转绿；仅剩 POSIX 侧待 CI 验证）
 
 ## 背景（2026-10-26 实测）
 
@@ -41,6 +41,26 @@ Windows 失败清单里。修好它们才能让"POSIX 全绿、Windows 走白名
 实测：目标两条 + 4 个实时路由测试文件 **73 passed**；全量 `32 → 28 failed`。
 
 **D1 仍未定**：`requirements.txt` 的 ASCII 断言（22 行中文注释）怎么处理——见「待定决策 D1」。
+
+## 决策 D1（2026-10-26，用户选择 a）
+
+把 `requirements.txt` 里 **22 行中文注释全部翻成英文**，保留"必须 ASCII 可解码"这道护栏（它来自
+提交 `5cd968b4` 的 Windows 首次运行编码修复）。改动只动注释文本，不动任何依赖声明。
+
+校验：`requirements.txt` 现可 `decode("ascii")`；`tests/test_check_env_encoding.py` **4 passed**。
+
+## 收口
+
+三条跨平台失败全部转绿：
+
+| 用例 | 修法 |
+| --- | --- |
+| `test_requirements_file_is_ascii_decodable` | 22 行注释 ASCII 化（D1 a） |
+| `test_load_from_env_keeps_default_behavior_without_tickflow_api_key` | 默认值对齐 `.env` 取值（D2） |
+| `test_tickflow_api_key_does_not_auto_inject_realtime_priority` | 同上 |
+
+全量 native Windows：`28 failed / 7745 passed / 292 skipped`（与修前同数，因为本轮同时有一条既有
+flake 出现；`check_env_encoding` 已从失败集合消失）。**POSIX 侧仍未实测**——推送后会由 CI 覆盖。
 
 ## 待定决策
 
