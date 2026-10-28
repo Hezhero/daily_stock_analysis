@@ -4,6 +4,7 @@ import sys
 import os
 import shutil
 import sqlite3
+from contextlib import closing
 import tempfile
 import threading
 from datetime import date
@@ -24,7 +25,7 @@ class TestStorage(unittest.TestCase):
 
     @staticmethod
     def _list_sqlite_indexes(db_path: str, table_name: str) -> dict[str, list[str]]:
-        with sqlite3.connect(db_path) as conn:
+        with closing(sqlite3.connect(db_path)) as conn, conn:
             indexes = {}
             for row in conn.execute(f"PRAGMA index_list({table_name})").fetchall():
                 index_name = row[1]
@@ -39,7 +40,7 @@ class TestStorage(unittest.TestCase):
 
     @staticmethod
     def _list_sqlite_unique_indexes(db_path: str, table_name: str) -> dict[str, list[str]]:
-        with sqlite3.connect(db_path) as conn:
+        with closing(sqlite3.connect(db_path)) as conn, conn:
             rows = conn.execute(f"PRAGMA index_list({table_name})").fetchall()
             unique_indexes = {}
             for row in rows:
@@ -59,7 +60,7 @@ class TestStorage(unittest.TestCase):
         db_path = os.path.join(temp_dir.name, "legacy_intel.sqlite")
 
         try:
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 conn.execute(
                     """CREATE TABLE intelligence_sources (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -139,7 +140,7 @@ class TestStorage(unittest.TestCase):
                 unique_indexes_after["uix_intel_item_scope"],
                 ["source_id", "url", "scope_type", "scope_value", "market"],
             )
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 table_count = conn.execute("SELECT COUNT(*) FROM intelligence_items").fetchone()[0]
                 temp_tables = conn.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'intelligence_items_recreate_tmp_%'"
@@ -228,7 +229,7 @@ class TestStorage(unittest.TestCase):
         deeply_nested_json = "[" * 10_000 + "]" * 10_000
 
         try:
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 conn.execute(
                     """CREATE TABLE decision_signals (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -290,7 +291,7 @@ class TestStorage(unittest.TestCase):
             with self.assertLogs("src.storage", level="INFO") as logs:
                 DatabaseManager(db_url=f"sqlite:///{db_path}")
 
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 columns = {row[1] for row in conn.execute("PRAGMA table_info(decision_signals)").fetchall()}
                 rows = conn.execute(
                     "SELECT id, decision_profile FROM decision_signals ORDER BY id"
@@ -367,7 +368,7 @@ class TestStorage(unittest.TestCase):
         db_path = os.path.join(temp_dir.name, "existing_decision_profile.db")
 
         try:
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 conn.execute(
                     """CREATE TABLE decision_signals (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -397,7 +398,7 @@ class TestStorage(unittest.TestCase):
             with self.assertLogs("src.storage", level="INFO") as logs:
                 DatabaseManager(db_url=f"sqlite:///{db_path}")
 
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 profiles = conn.execute(
                     "SELECT decision_profile FROM decision_signals ORDER BY id"
                 ).fetchall()
@@ -1167,7 +1168,7 @@ class TestStorage(unittest.TestCase):
     @staticmethod
     def _create_legacy_stock_daily_without_canonical_id(db_path: str) -> None:
         """Pre-PR2 ``stock_daily`` schema: no ``canonical_id`` column."""
-        with sqlite3.connect(db_path) as conn:
+        with closing(sqlite3.connect(db_path)) as conn, conn:
             conn.execute(
                 """CREATE TABLE stock_daily (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1199,7 +1200,7 @@ class TestStorage(unittest.TestCase):
     @staticmethod
     def _create_legacy_stock_daily_with_canonical_id(db_path: str) -> None:
         """``stock_daily`` schema WITH a ``canonical_id`` column (for repair tests)."""
-        with sqlite3.connect(db_path) as conn:
+        with closing(sqlite3.connect(db_path)) as conn, conn:
             conn.execute(
                 """CREATE TABLE stock_daily (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1249,7 +1250,7 @@ class TestStorage(unittest.TestCase):
 
         try:
             self._create_legacy_stock_daily_without_canonical_id(db_path)
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 conn.executemany(
                     """INSERT INTO stock_daily (
                     code, date, close, data_source
@@ -1263,7 +1264,7 @@ class TestStorage(unittest.TestCase):
 
             DatabaseManager(db_url=f"sqlite:///{db_path}")
 
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 columns = {row[1] for row in conn.execute("PRAGMA table_info(stock_daily)").fetchall()}
                 rows = {
                     code: canonical_id
@@ -1292,7 +1293,7 @@ class TestStorage(unittest.TestCase):
 
         try:
             self._create_legacy_stock_daily_without_canonical_id(db_path)
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 conn.execute(
                     "INSERT INTO stock_daily (code, date, close) VALUES (?, ?, ?)",
                     ("600519", "2026-01-01", 1600.0),
@@ -1300,7 +1301,7 @@ class TestStorage(unittest.TestCase):
 
             # First run: adds column + backfills.
             DatabaseManager(db_url=f"sqlite:///{db_path}")
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 first_pass = conn.execute(
                     "SELECT canonical_id FROM stock_daily WHERE code='600519'"
                 ).fetchone()[0]
@@ -1309,7 +1310,7 @@ class TestStorage(unittest.TestCase):
             DatabaseManager.reset_instance()
             # Second run: must not raise, must not duplicate the column.
             DatabaseManager(db_url=f"sqlite:///{db_path}")
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 columns = [row[1] for row in conn.execute("PRAGMA table_info(stock_daily)").fetchall()]
                 second_pass = conn.execute(
                     "SELECT canonical_id FROM stock_daily WHERE code='600519'"
@@ -1330,7 +1331,7 @@ class TestStorage(unittest.TestCase):
         try:
             DatabaseManager(db_url=f"sqlite:///{db_path}")
 
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 columns = {row[1] for row in conn.execute("PRAGMA table_info(stock_daily)").fetchall()}
                 count = conn.execute("SELECT COUNT(*) FROM stock_daily").fetchone()[0]
 
@@ -1374,7 +1375,7 @@ class TestStorage(unittest.TestCase):
 
         try:
             self._create_legacy_stock_daily_without_canonical_id(db_path)
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 conn.execute(
                     "INSERT INTO stock_daily (code, date, close) VALUES (?, ?, ?)",
                     ("000300", "2026-01-01", 4000.0),
@@ -1382,7 +1383,7 @@ class TestStorage(unittest.TestCase):
 
             DatabaseManager(db_url=f"sqlite:///{db_path}")
 
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 canonical_id = conn.execute(
                     "SELECT canonical_id FROM stock_daily WHERE code='000300'"
                 ).fetchone()[0]
@@ -1403,7 +1404,7 @@ class TestStorage(unittest.TestCase):
 
         try:
             self._create_legacy_stock_daily_without_canonical_id(db_path)
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 conn.execute(
                     "INSERT INTO stock_daily (code, date, close) VALUES (?, ?, ?)",
                     ("600519", "2026-01-01", 1600.0),
@@ -1411,7 +1412,7 @@ class TestStorage(unittest.TestCase):
 
             DatabaseManager(db_url=f"sqlite:///{db_path}")
 
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 canonical_id = conn.execute(
                     "SELECT canonical_id FROM stock_daily WHERE code='600519'"
                 ).fetchone()[0]
@@ -1429,7 +1430,7 @@ class TestStorage(unittest.TestCase):
 
         try:
             self._create_legacy_stock_daily_without_canonical_id(db_path)
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 # Two distinct code aliases for the same underlying, same date.
                 conn.executemany(
                     """INSERT INTO stock_daily (code, date, close) VALUES (?, ?, ?)""",
@@ -1441,7 +1442,7 @@ class TestStorage(unittest.TestCase):
 
             DatabaseManager(db_url=f"sqlite:///{db_path}")
 
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 rows = conn.execute(
                     "SELECT code, canonical_id FROM stock_daily ORDER BY id"
                 ).fetchall()
@@ -1474,7 +1475,7 @@ class TestStorage(unittest.TestCase):
 
         try:
             self._create_legacy_stock_daily_without_canonical_id(db_path)
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 # Bad row FIRST, good rows after — maximizes re-select exposure
                 # if the scan ever regresses to "re-select NULL rows".
                 conn.executemany(
@@ -1492,7 +1493,7 @@ class TestStorage(unittest.TestCase):
             ):
                 DatabaseManager(db_url=f"sqlite:///{db_path}")
 
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 rows = dict(
                     conn.execute(
                         "SELECT code, canonical_id FROM stock_daily"
@@ -1522,7 +1523,7 @@ class TestStorage(unittest.TestCase):
 
         try:
             self._create_legacy_stock_daily_without_canonical_id(db_path)
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 conn.executemany(
                     """INSERT INTO stock_daily (code, date, close) VALUES (?, ?, ?)""",
                     [
@@ -1537,7 +1538,7 @@ class TestStorage(unittest.TestCase):
             ):
                 DatabaseManager(db_url=f"sqlite:///{db_path}")
 
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 rows = dict(
                     conn.execute(
                         "SELECT code, canonical_id FROM stock_daily"
@@ -1867,7 +1868,7 @@ class TestStorage(unittest.TestCase):
 
         try:
             self._create_legacy_stock_daily_with_canonical_id(db_path)
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 conn.executemany(
                     """INSERT INTO stock_daily (code, date, close, canonical_id)
                     VALUES (?, ?, ?, ?)""",
@@ -1889,7 +1890,7 @@ class TestStorage(unittest.TestCase):
 
             DatabaseManager(db_url=f"sqlite:///{db_path}")
 
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 rows = dict(
                     conn.execute(
                         "SELECT code, canonical_id FROM stock_daily ORDER BY id"
@@ -1918,7 +1919,7 @@ class TestStorage(unittest.TestCase):
 
         try:
             self._create_legacy_stock_daily_with_canonical_id(db_path)
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 conn.execute(
                     "INSERT INTO stock_daily (code, date, close, canonical_id) "
                     "VALUES (?, ?, ?, ?)",
@@ -1926,7 +1927,7 @@ class TestStorage(unittest.TestCase):
                 )
 
             DatabaseManager(db_url=f"sqlite:///{db_path}")
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 first = conn.execute(
                     "SELECT canonical_id FROM stock_daily WHERE code='000016'"
                 ).fetchone()[0]
@@ -1950,7 +1951,7 @@ class TestStorage(unittest.TestCase):
 
         try:
             self._create_legacy_stock_daily_with_canonical_id(db_path)
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 conn.execute(
                     "INSERT INTO stock_daily (code, date, close, canonical_id) "
                     "VALUES (?, ?, ?, ?)",
@@ -1963,7 +1964,7 @@ class TestStorage(unittest.TestCase):
             ), self.assertLogs("src.storage", level="WARNING") as logs:
                 DatabaseManager(db_url=f"sqlite:///{db_path}")
 
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 canonical_id = conn.execute(
                     "SELECT canonical_id FROM stock_daily WHERE code='000016'"
                 ).fetchone()[0]
@@ -1984,7 +1985,7 @@ class TestStorage(unittest.TestCase):
 
         try:
             self._create_legacy_stock_daily_with_canonical_id(db_path)
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 conn.execute(
                     "INSERT INTO stock_daily (code, date, close, canonical_id) "
                     "VALUES (?, ?, ?, ?)",
@@ -1996,7 +1997,7 @@ class TestStorage(unittest.TestCase):
             def racing_parse(code):
                 # Simulate a concurrent writer that already fixed the row.
                 if code == "000016":
-                    with sqlite3.connect(db_path) as conn:
+                    with closing(sqlite3.connect(db_path)) as conn, conn:
                         conn.execute(
                             "UPDATE stock_daily SET canonical_id='sz000016' "
                             "WHERE code='000016'"
@@ -2010,7 +2011,7 @@ class TestStorage(unittest.TestCase):
             ):
                 DatabaseManager(db_url=f"sqlite:///{db_path}")
 
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 canonical_id = conn.execute(
                     "SELECT canonical_id FROM stock_daily WHERE code='000016'"
                 ).fetchone()[0]
@@ -2029,7 +2030,7 @@ class TestStorage(unittest.TestCase):
 
         try:
             self._create_legacy_stock_daily_with_canonical_id(db_path)
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 conn.executemany(
                     """INSERT INTO stock_daily (code, date, close, canonical_id)
                     VALUES (?, ?, ?, ?)""",
@@ -2046,7 +2047,7 @@ class TestStorage(unittest.TestCase):
 
             DatabaseManager(db_url=f"sqlite:///{db_path}")
 
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 rows = dict(
                     conn.execute(
                         "SELECT code, canonical_id FROM stock_daily ORDER BY id"
