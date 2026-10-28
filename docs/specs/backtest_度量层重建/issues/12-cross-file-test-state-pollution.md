@@ -214,6 +214,24 @@ test_backtest_card_d.py + test_system_config_service.py            → 234 passe
 `test_docker_entrypoint` 3、`test_name_to_code_resolver` 3、`test_storage` 3、
 `test_fundamental_timeout_guard` 2、`test_miaoxiang_fetcher` 2，其余 14 个文件各 1 条。
 
+## 2026-10-26 第四轮：分析结果缓存（27 → 22）
+
+`test_market_analyzer_generate_text` 的 5 条也是跨用例状态，但**不是环境、也不是单例**：
+
+- 二分把 culprit 定位到 `test_analyze_uses_litellm_fallback_when_codex_cli_config_error_is_fallbackable`；
+- 一个临时插件（`pytest_configure` 里包一层 `GeminiAnalyzer._get_generation_backend` 打印
+  `id(self)` / `id(backend)`）显示 **victim 根本没调用后端**；
+- 顺着 `model_used` 反查，命中 `src/utils/cache.py` 的 `AnalysisCache`：**进程级单例，键是
+  `(code, cache_date)`**。两条用例都分析 `600519`、`date` 都为空 → 同键 → victim 直接吃到
+  culprit 缓存下来的结果（`analysis_summary="fallback ok"`、`model_used="gemini/gemini-2.0-flash"`）。
+
+修法：该文件加 autouse fixture，在每个用例前后 `get_analysis_cache().clear()`。
+
+结果：`tests/test_market_analyzer_generate_text.py` **5 failed → 146 passed**；全量 `27 → 22 failed`。
+
+**方法结论**：这类"对象身份泄漏"用 `id()` 探针一次就能定性，比读代码猜快得多——先证伪"victim 走了
+后端路径"，再顺着结果字段（`model_used`）反查，两步就落到缓存。
+
 ## 待定决策
 
 ## 待定决策

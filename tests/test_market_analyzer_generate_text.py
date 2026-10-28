@@ -22,6 +22,8 @@ for _mod in ("litellm", "google.generativeai", "google.genai", "anthropic"):
 
 import pytest
 
+from src.utils.cache import get_analysis_cache
+
 
 @pytest.fixture(autouse=True)
 def _llm_usage_hmac_env(monkeypatch):
@@ -110,6 +112,18 @@ _OPENAI_COMPATIBILITY_PAYLOAD_FIXTURES = [
 # ---------------------------------------------------------------------------
 # Analyzer.generate_text()
 # ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _clear_analysis_cache():
+    """The analysis cache is a process-wide singleton keyed by (code, date).
+
+    Two cases analysing the same stock with the same (empty) date would otherwise
+    share one cached result, so the first case decides what the second one sees.
+    """
+    get_analysis_cache().clear()
+    yield
+    get_analysis_cache().clear()
+
 
 class TestAnalyzerGenerateText:
     def _make_analyzer(self):
