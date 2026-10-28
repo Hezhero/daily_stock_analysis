@@ -27,7 +27,7 @@ from anyio._backends import _asyncio
 # seen at each test's setup against the previous setup, so it names the test that
 # left an env entry or a shared singleton behind instead of letting a later,
 # unrelated test fail. Inert unless the variable is set.
-_PROBE_VARS = ("ENV_FILE", "DATABASE_PATH", "ADMIN_AUTH_ENABLED")
+_PROBE_VARS = ("ENV_FILE", "DATABASE_PATH", "ADMIN_AUTH_ENABLED", "LLM_CHANNELS")
 _PROBE_SINGLETONS = {
     "Config._instance": ("src.config", "Config"),
     "DatabaseManager._instance": ("src.storage", "DatabaseManager"),
@@ -58,7 +58,12 @@ def _probe_snapshot() -> dict[str, str]:
 # time, which copies the repo-root ``.env`` into ``os.environ``; this runs while
 # conftest is loaded, i.e. before any test module triggers that import. Tests that
 # need a real env file assign ``ENV_FILE`` themselves — that is the opt-in.
-_AMBIENT_KEYS = ("ADMIN_AUTH_ENABLED", "REALTIME_SOURCE_PRIORITY", "SEARXNG_PUBLIC_INSTANCES_ENABLED")
+_AMBIENT_KEYS = (
+    "ADMIN_AUTH_ENABLED",
+    "REALTIME_SOURCE_PRIORITY",
+    "SEARXNG_PUBLIC_INSTANCES_ENABLED",
+    "LLM_CHANNELS",
+)
 
 _BASELINE_ENV_FILE = os.path.join(tempfile.mkdtemp(prefix="dsa-test-env-"), "no-such.env")
 os.environ["ENV_FILE"] = _BASELINE_ENV_FILE

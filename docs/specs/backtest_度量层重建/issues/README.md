@@ -18,7 +18,7 @@
 | [10](10-native-windows-baseline-whitelist.md) | native Windows 全量失败白名单 | ready-for-human（机制已落地；白名单收敛为空表，待办见票 09） | — |
 | [11](11-test-environment-baseline.md) | 测试环境基线（隔离开发者本机环境） | ready-for-human（会话级基线已落地；3 处历史 fixture 待清理） | 12 |
 | [12](12-cross-file-test-state-pollution.md) | 跨文件测试状态污染（全量与单跑不一致） | ready-for-human（5 个模块已加守卫；仍有第三个触发源） | — |
-| [13](13-config-validation-must-not-read-process-env.md) | 配置校验不应依赖进程级 `LLM_CHANNELS` | ready-for-human（待定 D1-D3） | — |
+| [13](13-config-validation-must-not-read-process-env.md) | 配置校验不应依赖进程级 `LLM_CHANNELS` | ready-for-agent（决策 A：保留契约，仅剩文档化） | — |
 
 ## 开新票前的两句提醒
 

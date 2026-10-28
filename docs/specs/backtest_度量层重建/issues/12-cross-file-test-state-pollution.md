@@ -194,6 +194,26 @@ errors = [{'key': 'LITELLM_MODEL', 'code': 'unknown_model',
 （env 文件 + 提交项），不读 `os.environ` 里的其它测试残留。这是生产语义决策，超出本票范围，
 应单开一票讨论。
 
+## 2026-10-26 第三轮：把 `LLM_CHANNELS` 纳入 ambient 基线（47 → 37）
+
+票 13 定 A（校验继续实时读 env）后，正确做法变成"让每个用例从干净环境开始"，而不是追每一个写入者。
+把 `LLM_CHANNELS` 加进 `_AMBIENT_KEYS` 后：
+
+```
+test_decision_signal_extractor.py + test_system_config_service.py  → 245 passed
+test_backtest_card_d.py + test_system_config_service.py            → 234 passed
+全量                                                               → 37 failed / 7739 passed
+（原 47；9 条污染型 ConfigValidationError 全部消失）
+```
+
+剩下唯一一条 `system_config` 失败是
+`test_preview_agent_backend_status_uses_draft_without_persisting`——它**单跑也红**，是真实失败，
+不属于本票。
+
+**剩余 37 条的分布**（31 条 nodeid + 6 条子测试级）：`test_market_analyzer_generate_text` 5、
+`test_docker_entrypoint` 3、`test_name_to_code_resolver` 3、`test_storage` 3、
+`test_fundamental_timeout_guard` 2、`test_miaoxiang_fetcher` 2，其余 14 个文件各 1 条。
+
 ## 待定决策
 
 ## 待定决策

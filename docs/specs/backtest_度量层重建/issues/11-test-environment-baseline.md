@@ -61,7 +61,8 @@ per-file fixture 每次都会重新隔离，统一基线只设一次就把这些
 
 **第三阶段（按用例强制）**：仅"会话开始时设一次"还不够——某个用例把 `SEARXNG_PUBLIC_INSTANCES_ENABLED`
 写进 `os.environ` 就能污染后面所有用例（`_build_runtime_display_config_map` 直接读 `os.environ`）。
-因此 `tests/conftest.py` 增加了 autouse fixture：**每个用例执行前**把 `_AMBIENT_KEYS` 三个键清掉。
+因此 `tests/conftest.py` 增加了 autouse fixture：**每个用例执行前**把 `_AMBIENT_KEYS` 清掉（`ADMIN_AUTH_ENABLED` / `REALTIME_SOURCE_PRIORITY` /
+`SEARXNG_PUBLIC_INSTANCES_ENABLED` / `LLM_CHANNELS`；最后一个在票 13 定为"校验读实时 env"契约后补入）。
 `ENV_FILE` 刻意不在其中——多个模块在 import 期就设它，按用例覆盖会打坏它们。
 
 效果：`test_get_config_defaults_public_searxng_instances_off` 由红转绿，全量 `48 → 47 failed`。

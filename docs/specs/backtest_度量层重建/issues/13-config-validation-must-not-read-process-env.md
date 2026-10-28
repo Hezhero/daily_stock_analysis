@@ -10,7 +10,7 @@
 **Gate:** `none`
 **Signal set:** `none`
 
-**Status:** ready-for-human（需要先定"运行时环境"的边界，见「待定决策」）
+**Status:** ready-for-agent（决策 A：保留"实时读 env"契约；剩余仅文档化）
 
 ## 背景（2026-10-26 实测）
 
@@ -35,6 +35,50 @@ errors = [{'key': 'LITELLM_MODEL', 'code': 'unknown_model',
 **关键证据**：`test_system_config_service.py` 单跑 **225 passed**、全量必红；修掉 5 个"导入脚本即
 写脏环境"的测试模块后，`card_d + victim` 从 7 failed 变 234 passed，**但全量仍有第三个独立触发源**。
 也就是说：触发源数量不确定，而缺陷是"校验读了不该读的进程状态"。
+
+## 2026-10-26 实测：D1(b) 与既有契约冲突（已回滚）
+
+按 D1(b) 实现了一版：在既有 bootstrap 捕获点（`setup_env()` 里、`load_dotenv()` 之前）冻结整份
+`os.environ` 到 `Config._BOOTSTRAP_PROCESS_ENV`，并让
+`_build_runtime_display_config_map()` 改读这份快照。
+
+结果**打坏了既有用例**：
+
+```
+FAILED test_validate_uses_runtime_injected_llm_channels_for_support_keys
+FAILED test_get_config_switch_type_uses_runtime_env_display_fallback
+FAILED test_runtime_env_fallback_does_not_override_saved_provider_and_base_url_settings
+→ 两个 system_config 文件：6 failed / 254 passed（回滚后 1 failed / 259 passed）
+```
+
+关键证据：`test_validate_uses_runtime_injected_llm_channels_for_support_keys` 用
+`patch.dict(os.environ, {...})` 注入 `LLM_CHANNELS` 等键、**不调用 `setup_env()`**，并要求校验
+立刻采用它们。也就是说 **"实时读进程环境"是被两个专门用例固化的既有契约**，不是疏忽。
+
+**结论修正**：本票原来"病根是读了不该读的进程状态"的判断**不成立**——读是对的，问题在于
+**谁在什么时候写**。于是决策空间变成：
+
+- **(A) 维持契约**：校验继续实时读 env；那 10 条失败纯粹是"别的模块往进程里写了 `LLM_CHANNELS`"，
+  应由票 12 把剩下的事件源找干净。本票价值退化为"把该契约写进文档 + 给出可接受的写入者清单"。
+- **(B) 修改契约**：改为"启动时快照 + 显式 opt-in"，则必须同时改写上述两条用例，并在文档里说明
+  "启动后修改环境不再影响配置校验/展示"（会改变 Docker `env_file` 之外的运行时注入语义）。
+
+➡️ **修正后的推荐：(A)**。契约看起来是刻意设计（两条专门用例 + 代码注释都在解释它），而 (B) 会
+静默改变部署语义。若选 (A)，本票应降级为文档任务，主体工作在票 12。
+
+## 决策（2026-10-26，用户选择 A）
+
+维持既有契约：**配置校验与展示继续实时读取进程环境**，把"运行时注入的 `LLM_CHANNELS` 等键"当作
+当前配置的一部分——这是 `test_validate_uses_runtime_injected_llm_channels_for_support_keys` 与
+`test_get_config_switch_type_uses_runtime_env_display_fallback` 明文固化的行为，不是缺陷。
+
+由此确定：
+
+- 票 09/12 里那 10 条 `ConfigValidationError` 的定性是**测试间环境泄漏**，不是生产读取缺陷；修复
+  责任回到票 12（把剩余写入 `LLM_CHANNELS` 的模块找干净）。
+- 本票不再改生产代码。剩余工作只有一条：把该契约写进文档，说明"进程环境里的注册键会被当作运行时
+  注入配置"，避免下一个人再把它当 bug 修一遍。
+- D1 的 (a)(b) 两个方案**均否**：(a) 破坏 Docker/WebUI 语义；(b) 实测打坏上述两条用例。
 
 ## 待定决策
 
