@@ -22,6 +22,26 @@ Windows 失败清单里。修好它们才能让"POSIX 全绿、Windows 走白名
 
 三条都不依赖 `.env`、不依赖 `os.environ`、不依赖测试顺序——去掉 Windows 前缀后依然是红的。
 
+## 决策 D2（2026-10-26，用户指定）
+
+以 `.env` 的取值为准：`REALTIME_SOURCE_PRIORITY=tushare,tencent,akshare_sina,efinance,akshare_em`。
+
+落地：
+
+- `Config.realtime_source_priority` 字段默认值与 `_resolve_realtime_source_priority()` 的
+  `default_priority` 均改为该值（原为 `tencent,efinance,tushare`，与 `.env.example` 三条示例和
+  两份文档全都对不上，属实现落后）。
+- TUSHARE_TOKEN 注入分支加幂等守卫：仅当默认值里没有 `tushare` 时才前置，避免产生
+  `tushare,tushare,...`。默认值已含 `tushare`，因此该分支通常不再触发。
+- 两条断言同步为该值，无需改测试逻辑。
+
+副作用已核实：无 `TUSHARE_TOKEN` 时 `TushareFetcher` 在 `_init_api` 里直接 `return`（自我禁用），
+`tushare` 置于首位不会带来额外失败尝试。
+
+实测：目标两条 + 4 个实时路由测试文件 **73 passed**；全量 `32 → 28 failed`。
+
+**D1 仍未定**：`requirements.txt` 的 ASCII 断言（22 行中文注释）怎么处理——见「待定决策 D1」。
+
 ## 待定决策
 
 ### D1. `requirements.txt` 的 ASCII 约束怎么处理

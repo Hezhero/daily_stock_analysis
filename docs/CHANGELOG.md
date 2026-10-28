@@ -1,4 +1,5 @@
 ## [Unreleased]
+- [修复] 实时行情源优先级默认值由 `tencent,efinance,tushare` 改为 `tushare,tencent,akshare_sina,efinance,akshare_em`（票 14 D2）：原值与 `.env.example` 及文档示例不一致，且缺少 `akshare_sina`；`TUSHARE_TOKEN` 注入分支加幂等守卫。无 token 时 `TushareFetcher` 自我禁用，因此把 `tushare` 置于首位不产生额外失败尝试。全量 native Windows `32 → 28 failed`。
 - [文档] 新增票 14（三条与平台无关的失败）：`requirements.txt` 的 ASCII 断言与 22 行中文注释冲突、两条实时源默认值断言与 `Config._resolve_realtime_source_priority` 的代码默认值不一致——三条在任何平台都红，说明票 09 的"POSIX 全绿"前提从未被验证；待定 D1/D2（ASCII 化 vs 放宽、以代码还是以文档为准）。
 - [测试] 把 `LLM_CHANNELS` 纳入按用例的 ambient 基线（票 11/12）：`tests/conftest.py` 的 `_AMBIENT_KEYS` 增加 `LLM_CHANNELS`，泄漏探针也跟踪该键。票 13 定 A（校验继续实时读进程 env）后，这是正确解法；native Windows 全量 `47 → 37 failed`，9 条污染型 `ConfigValidationError` 全部消失。
 - [文档] 新增票 13（配置校验不应依赖进程级 `LLM_CHANNELS`）：记录完整链路——脚本的 `load_dotenv()` 绕过 `ENV_FILE` 把仓库根 `.env` 灌回进程环境 → `LLM_CHANNELS=deepseek` → `_build_runtime_display_config_map()` 把进程环境当"当前配置" → 校验把 `openai/kimi-k2.6` 判成 `unknown_model`；结论是"逐触发器打补丁是 O(污染源数量)，病根在读取来源"；待定 D1–D3（运行时环境边界 / 启动快照位置 / 回归测试形态）。

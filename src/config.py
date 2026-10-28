@@ -1288,7 +1288,7 @@ class Config:
     # - tencent: 腾讯财经，有量比/换手率/市盈率等，单股查询稳定（推荐）
     # - efinance: 东财全量接口，数据最全但容易被封（AKShare已移除）
     # - tushare: Tushare Pro，需要2000积分，数据全面（付费用户可优先使用）
-    realtime_source_priority: str = "tencent,efinance,tushare"
+    realtime_source_priority: str = "tushare,tencent,akshare_sina,efinance,akshare_em"
     # 实时行情缓存时间（秒）
     realtime_cache_ttl: int = 600
     # 熔断器冷却时间（秒）
@@ -3082,18 +3082,22 @@ class Config:
         Resolve realtime source priority with automatic tushare injection.
 
         When TUSHARE_TOKEN is configured but REALTIME_SOURCE_PRIORITY is not
-        explicitly set, automatically prepend 'tushare' to the default priority
-        so that the paid data source is utilized for realtime quotes as well.
+        explicitly set, prepend 'tushare' to the default priority when it is
+        absent, so the paid data source is tried first. The default already
+        starts with 'tushare', so this is normally a no-op and the guard only
+        keeps the prepend idempotent if the default ever changes.
         """
         explicit = os.getenv('REALTIME_SOURCE_PRIORITY')
-        default_priority = 'tencent,efinance,tushare'
+        default_priority = 'tushare,tencent,akshare_sina,efinance,akshare_em'
 
         if explicit:
             # User explicitly set priority, respect it
             return explicit
 
         tushare_token = os.getenv('TUSHARE_TOKEN', '').strip()
-        if tushare_token:
+        if tushare_token and 'tushare' not in [
+            part.strip() for part in default_priority.split(',')
+        ]:
             # Token configured but no explicit priority override
             # Prepend tushare so the paid source is tried first
             import logging
