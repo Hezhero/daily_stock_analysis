@@ -86,7 +86,9 @@ native Windows 的差异只有三类是**契约允许**的：
 
 1. **产品在 Windows 上显式排除的能力**。判据是被测入口自己抛 `capability_unsupported`
    （例如 `src/agent/codex_*` 的 `resolve_command()`），这类用例按平台 skip。
-2. **平台缺失的 stdlib 接口**，例如 `time.tzset` 仅 POSIX。只有当测试无法用跨平台等价物表达
+2. **平台缺失的 stdlib 接口或 POSIX 工具链**，例如 `time.tzset` 仅 POSIX、Windows 默认 PATH 没有
+   `sh`（`docker/entrypoint.sh` 只能在 POSIX 下执行）。能力可用 `shutil.which` 探测时就用能力探测
+   skip，而不是写死平台；只有当测试无法用跨平台等价物表达
    同一契约时才允许 skip；能表达就必须改成跨平台实现——存活探测不能再用 `os.kill(pid, 0)`，
    它在 Windows 上会真的终止进程。
 3. **只能由 POSIX mode 位表达的断言**（`0o600` / `0o700`）。生产侧若已 `except OSError: pass`，
