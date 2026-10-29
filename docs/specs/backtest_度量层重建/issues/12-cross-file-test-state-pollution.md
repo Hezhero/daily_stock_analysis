@@ -232,6 +232,30 @@ test_backtest_card_d.py + test_system_config_service.py            → 234 passe
 **方法结论**：这类"对象身份泄漏"用 `id()` 探针一次就能定性，比读代码猜快得多——先证伪"victim 走了
 后端路径"，再顺着结果字段（`model_used`）反查，两步就落到缓存。
 
+## 2026-10-26 第五轮：resolver 的模块级缓存 + 三条"测已删功能"的用例（22 → 19）
+
+`test_name_to_code_resolver` 的 3 条**单跑也红**，所以不是顺序问题。拆成两件事：
+
+1. **缓存隔离**：`src/services/name_to_code_resolver.py` 有 5 个模块级缓存
+   （`_akshare_cache` / `_akshare_failure_cache` / `_akshare_merged` / `_names_cache` /
+   `_pinyin_cache`），而文件里原有的 `clean_db` **只在 teardown 重置**，于是每个用例开始时继承
+   上一个用例的状态，且 `test_akshare_fallback_when_not_in_local` 根本没用该 fixture。
+   已抽出 `_reset_resolver_state()` 并加 autouse fixture，在**每个用例前后**都重置。
+2. **契约漂移**：`resolve_name_to_code` 的 docstring 明写 "AKShare online fallback has been
+   removed"，对应提交 `bbbceea3`（「去掉akshare渠道」）。3 条用例仍在模拟 `_get_akshare_name_to_code`
+   并断言在线回退生效——测的是已被移除的能力。已按现契约改写：
+
+| 原用例 | 改为 |
+| --- | --- |
+| `test_akshare_fallback_when_not_in_local` | `test_local_miss_returns_none_after_akshare_fallback_removal` |
+| `test_akshare_exact_fallback_beats_fuzzy_for_non_local_name` | `test_local_exact_and_fuzzy_both_land_on_the_same_code` |
+| `test_legacy_fullwidth_input_resolves`（依赖 akshare 补全 000725） | 改用本地映射里的 `ＭｉｃｒｏＳｔｒａｔｅｇｙ → MSTR` |
+
+结果：该文件 `3 failed → 69 passed`；全量 `22 → 19 failed`。
+
+**待观察**：`test_storage::test_provider_turns_do_not_appear_in_visible_or_web_messages_and_delete_with_session`
+在最近四次全量里反复偶发，是当前最稳定的 flake 候选。
+
 ## 待定决策
 
 ## 待定决策

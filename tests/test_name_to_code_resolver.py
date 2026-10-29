@@ -32,13 +32,8 @@ from src.services.name_to_code_resolver import (
 )
 
 
-@pytest.fixture()
-def clean_db(request):
-    """Isolate the global stockDB/caches; the AkShare fetch is mocked offline
-    by default. Parametrize with ``indirect=True`` to inject a fake map."""
-    fake_map = getattr(request, "param", None)
-    with patch.object(ntc, "_get_akshare_name_to_code", return_value=fake_map):
-        yield
+def _reset_resolver_state() -> None:
+    """Drop every module-level cache the resolver keeps between calls."""
     # 恢复用归一后的本地映射（与模块初值同构，见 _normalize_stock_name）
     ntc.stockDB.clear()
     ntc.stockDB.update(
@@ -51,6 +46,23 @@ def clean_db(request):
     ntc._akshare_failure_cache = None
     ntc._akshare_inflight = None
     ntc.stockAliases.clear()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_resolver_state():
+    """Reset before *and* after each case: the caches are module-level globals."""
+    _reset_resolver_state()
+    yield
+    _reset_resolver_state()
+
+
+@pytest.fixture()
+def clean_db(request):
+    """Isolate the global stockDB/caches; the AkShare fetch is mocked offline
+    by default. Parametrize with ``indirect=True`` to inject a fake map."""
+    fake_map = getattr(request, "param", None)
+    with patch.object(ntc, "_get_akshare_name_to_code", return_value=fake_map):
+        yield
 
 
 # ---------------------------------------------------------------------------
@@ -180,16 +192,9 @@ class TestResolveNameToCode:
         # "阿里巴巴" maps to both BABA and 09988 in STOCK_NAME_MAP
         assert resolve_name_to_code("阿里巴巴") is None
 
-    @patch("src.services.name_to_code_resolver._get_akshare_name_to_code")
-    def test_akshare_fallback_when_not_in_local(self, mock_akshare):
-        mock_akshare.return_value = {"平安银行": "000001"}
-        # 000001 is in local map as 平安银行, so we use a name that's only in akshare
-        # Actually local has 000001 -> 平安银行. So "平安银行" would hit local first.
-        # Use a name not in STOCK_NAME_MAP - e.g. some A-share only in AkShare
-        mock_akshare.return_value = {"浦发银行": "600000"}
-        result = resolve_name_to_code("浦发银行")
-        assert result == "600000"
-        mock_akshare.assert_called()
+    def test_local_miss_returns_none_after_akshare_fallback_removal(self):
+        # AKShare 在线回退已在 bbbceea3 移除：本地映射未命中即返回 None。
+        assert resolve_name_to_code("浦发银行") is None
 
     @patch("src.services.name_to_code_resolver._get_akshare_name_to_code")
     def test_fuzzy_match_fallback(self, mock_akshare):
@@ -210,11 +215,10 @@ class TestResolveNameToCode:
         assert result is None
         mock_akshare.assert_not_called()
 
-    @pytest.mark.parametrize("clean_db", [{"三一重能": "688349"}], indirect=True)
-    def test_akshare_exact_fallback_beats_fuzzy_for_non_local_name(self, clean_db):
-        # 本地未收录的 CJK 名称：AkShare 精确命中（第 4 步）优先于模糊
-        # 匹配（第 5 步），"三一重能" 不会被误配到相近的 三一重工。
-        assert resolve_name_to_code("三一重能") == "688349"
+    def test_local_exact_and_fuzzy_both_land_on_the_same_code(self):
+        # 精确命中优先；输入有笔误时走本地模糊匹配，落到同一代码。
+        assert resolve_name_to_code("贵州茅台") == "600519"
+        assert resolve_name_to_code("贵州茅苔") == "600519"
 
 
 # ---------------------------------------------------------------------------
@@ -460,9 +464,8 @@ class TestStockNameWidthNormalization:
 
     @pytest.mark.parametrize("clean_db", [{"京东方A": "000725"}], indirect=True)
     def test_legacy_fullwidth_input_resolves(self, clean_db):
-        # legacy 入口查询归一（生产缓存侧名称经 _build_name_map_from_df
-        # 已归一，mock 按生产形态给出半角键）
-        assert ntc.resolve_name_to_code("京东方Ａ") == "000725"
+        # 全角输入经 _normalize_stock_name 归一后应命中本地映射（MSTR/MicroStrategy）
+        assert ntc.resolve_name_to_code("ＭｉｃｒｏＳｔｒａｔｅｇｙ") == "MSTR"
 
     def test_local_name_indexes_normalized(self):
         # 构建器内部归一：全角拼写输入的索引键为半角
