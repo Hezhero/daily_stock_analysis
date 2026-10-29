@@ -1,4 +1,5 @@
 ## [Unreleased]
+- [修复] `src/storage.py::get_conversation_history` 补 `id` 次级排序（`created_at DESC, id DESC`）：同一时刻写入的两条会话消息原先顺序不确定，`reversed()` 后会渲染成倒序（`get_visible_conversation_messages` 本来就有该 tiebreaker）。对应测试此前在 native Windows 上 5–6 次复跑必红 1–2 次，修复后连跑 8 次全绿；全量 19 → 18 failed。
 - [测试] `tests/test_name_to_code_resolver.py`：抽出 `_reset_resolver_state()` 并加 autouse fixture，在每用例前后重置该模块的 5 个模块级缓存（原先 `clean_db` 只在 teardown 重置，导致用例继承上一用例状态）；三条断言"AKShare 在线回退"的用例按现契约改写——该回退已在 `bbbceea3` 移除，本地映射未命中即返回 `None`。该文件 3 failed → 69 passed，全量 native Windows 22 → 19 failed。
 - [测试] `tests/test_market_analyzer_generate_text.py` 加 autouse fixture 在每用例前后清空 `AnalysisCache`（票 12）：该缓存是进程级单例、键为 `(code, cache_date)`，两条用例分析同一只股票且 date 为空时会共享结果，后一条直接命中前一条的缓存（症状是拿到别的用例 mock 的 `analysis_summary`）。该文件 5 failed → 146 passed，全量 native Windows 27 → 22 failed。
 - [测试] `tests/test_system_config_api.py::test_preview_agent_backend_status_uses_draft_without_persisting` 在 native Windows 固定为 `platform_unsupported` 而失败：该用例验证的是"预览不落盘"契约，与平台无关，改为把 `agent_backend_status_service.is_native_windows` 打桩为 False（同 `test_native_windows_is_rejected_before_command_probe` 的相反手法），不再只覆盖一半平台。该文件由 1 failed 转为 35 passed。

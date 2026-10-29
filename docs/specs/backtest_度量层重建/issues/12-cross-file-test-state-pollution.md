@@ -256,6 +256,30 @@ test_backtest_card_d.py + test_system_config_service.py            → 234 passe
 **待观察**：`test_storage::test_provider_turns_do_not_appear_in_visible_or_web_messages_and_delete_with_session`
 在最近四次全量里反复偶发，是当前最稳定的 flake 候选。
 
+## 2026-10-26 第六轮：那条"稳定 flake"其实是生产排序缺陷（19 → 18）
+
+`tests/test_storage.py::TestStorage::test_provider_turns_do_not_appear_in_visible_or_web_messages_and_delete_with_session`
+在最近四次全量里偶发。实测：**同一文件、同一顺序连跑 5–6 次会红 1–2 次**，所以不是顺序污染，
+是真正的非确定性。
+
+失败现场：两条会话消息顺序**互换**（期望 `[user, assistant]`，得到 `[assistant, user]`）。根因在
+`src/storage.py::get_conversation_history`：
+
+```python
+.order_by(ConversationMessage.created_at.desc()).limit(limit)
+...
+return [... for msg in reversed(messages)]
+```
+
+同一时刻写入的两条消息 `created_at` 相同，缺 `id` tiebreaker → 数据库返回顺序不确定 → `reversed()`
+后就成了倒序。隔壁 `get_visible_conversation_messages`（`:3738`）**本来就**用了
+`(created_at, id)`，这里漏了。
+
+修法：改为 `order_by(created_at.desc(), id.desc())`。这是**生产修复**，不是测试让步——真实场景里
+同一秒内的问答在 UI 上可能渲染成倒序。
+
+验证：`tests/test_storage.py` 连跑 **8 次全绿**（修前 5–6 次必红 1–2 次）；全量 `19 → 18 failed`。
+
 ## 待定决策
 
 ## 待定决策
