@@ -21,7 +21,12 @@ from typing import Iterable, Optional, Sequence
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BASELINE = REPO_ROOT / "docs" / "agents" / "windows-known-failures.md"
 DEFAULT_PYTEST_ARGS = ("-m", "not network", "--timeout=120", "-o", "timeout_method=thread")
-ALLOWED_CATEGORIES = ("product-excluded", "stdlib-missing", "posix-mode-bits")
+ALLOWED_CATEGORIES = (
+    "product-excluded",
+    "stdlib-missing",
+    "posix-mode-bits",
+    "known-unattributed",
+)
 TODO = "TODO"
 
 EXIT_OK = 0
@@ -37,7 +42,9 @@ BASELINE_HEADER = """\
 
 - 生成/更新：`python scripts/check_windows_test_baseline.py --update`
 - 校验：`python scripts/check_windows_test_baseline.py`
-- `类别` 只能取 `product-excluded` / `stdlib-missing` / `posix-mode-bits`（定义见 validation-matrix）。
+- `类别` 取 `product-excluded` / `stdlib-missing` / `posix-mode-bits`（定义见 validation-matrix），
+  或 `known-unattributed`：既有失败、根因已记录但**不属于**任何平台契约。后者只用于把已知失败固定住，
+  让新增失败显性；它不是"平台允许的差异"，不允许用它掩盖平台契约问题。
 - `理由` 写作 `TODO` 表示尚未归因；checker 会因此失败，**不要**把未分类失败当成已归因。
 - 本文件只登记失败，不改变测试结果；真正的平台契约排除仍应写成 `skipif`。
 - `test` 用 JUnit 的 `classname::name`，与 `pytest -rf` 打印的路径形式不逐字相同，新增条目请走 `--update`。
@@ -69,6 +76,7 @@ class Report:
     unresolved: list[str] = field(default_factory=list)
     bad_category: list[str] = field(default_factory=list)
     collection_errors: list[str] = field(default_factory=list)
+    stale_soft: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -130,7 +138,19 @@ def compare(outcome: Outcome, entries: Sequence[Entry]) -> Report:
     actual = set(outcome.failures)
     report = Report()
     report.new = sorted(actual - set(baseline))
-    report.stale = sorted(set(baseline) - actual)
+    disappeared = set(baseline) - actual
+    # ``known-unattributed`` entries are tracked failures, not platform contracts:
+    # one passing again is good news, so it is reported but must not fail the run.
+    report.stale = sorted(
+        test
+        for test in disappeared
+        if baseline[test].category != "known-unattributed"
+    )
+    report.stale_soft = sorted(
+        test
+        for test in disappeared
+        if baseline[test].category == "known-unattributed"
+    )
     report.collection_errors = sorted(outcome.collection_errors)
     for test, entry in baseline.items():
         if entry.reason.strip().upper() == TODO or entry.category.strip().upper() == TODO:
@@ -153,6 +173,11 @@ def render_report(report: Report, known: int, actual: int) -> str:
 
     section("NEW", report.new, "failing but unregistered: fix it, or --update and write a reason")
     section("STALE", report.stale, "registered but no longer failing: delete the row")
+    section(
+        "STALE (tracked, not gating)",
+        report.stale_soft,
+        "known-unattributed entry passed this run: fine, prune it when it stays green",
+    )
     section("UNRESOLVED", report.unresolved, "reason or category is still TODO: attribute it first")
     section("BAD_CATEGORY", report.bad_category, "category must be one of " + ", ".join(ALLOWED_CATEGORIES))
     section("COLLECTION_ERROR", report.collection_errors, "collection errors must be zero; never register them")

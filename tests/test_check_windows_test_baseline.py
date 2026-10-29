@@ -145,3 +145,18 @@ def test_update_refuses_while_collection_errors_exist(tmp_path):
 
     assert exit_code == 1
     assert not baseline.exists()
+
+def test_known_unattributed_category_is_accepted():
+    outcome = Outcome(failures={"tests.a::test_x"})
+    report = compare(outcome, [Entry("tests.a::test_x", "known-unattributed", "既有失败，见票 12")])
+
+    assert report.ok is True
+    assert report.exit_code() == 0
+
+def test_known_unattributed_entries_that_pass_do_not_fail_the_run():
+    outcome = Outcome(failures=set())
+    report = compare(outcome, [Entry("tests.a::test_x", "known-unattributed", "既有失败")])
+
+    assert report.ok is True
+    assert report.stale == []
+    assert report.stale_soft == ["tests.a::test_x"]

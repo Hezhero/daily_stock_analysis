@@ -299,6 +299,15 @@ traceback** 拿到真因：`401 unauthorized`。
 
 全量：`18 → 17 failed`；`test_stock_profile_api` / `test_storage` / `test_screening_api` 均无失败。
 
+## 2026-10-26 收口：剩余失败转入可追踪基线
+
+按"边际收益递减"的判断收口：剩余失败不再逐条挖，改为用票 10 的 checker 固定成基线
+（12 条 `known-unattributed`，每条带一段根因描述）。此后**新增失败立即显性**，而既有失败不再
+每次都以 NEW 的形式制造噪声——这正是票 09 的原始目标。
+
+仍未逐条定性的 12 条见 `docs/agents/windows-known-failures.md`；子测试级失败（junit 不可见）
+仍是票 10 的已知限制。
+
 ## 待定决策
 
 ## 待定决策

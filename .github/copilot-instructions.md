@@ -5,6 +5,7 @@ Canonical source: [`AGENTS.md`](../AGENTS.md).
 If any instruction in this file conflicts with `AGENTS.md`, follow `AGENTS.md`.
 
 ## Core Rules
+- Decision authority: only stop for a human decision when the choice is a product semantic, a default value, a user-visible behaviour change, an irreversible/high-cost remote action, or a contract conflict the evidence cannot settle. Otherwise follow the documented recommendation, execute it, and record what was decided and why.
 
 - Respect directory boundaries:
   - Backend: `src/`, `data_provider/`, `api/`, `bot/`

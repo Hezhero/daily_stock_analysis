@@ -1,4 +1,6 @@
 ## [Unreleased]
+- [文档] `AGENTS.md` 新增 §1.3「决策与自主边界」：只在必须人类拍板时打断（产品语义/默认值/用户可见行为、不可逆远端操作、契约冲突且证据不足、需外部环境），其余按推荐直接执行并在交付说明里写明依据；同步 `.github/copilot-instructions.md`。
+- [测试] `scripts/check_windows_test_baseline.py` 新增 `known-unattributed` 类别与「软 STALE」：非平台契约的既有失败可登记，登记项复现消失只报告不阻断，`NEW`/`TODO`/collection error 仍一律失败；基线登记当前 12 条 junit 可见失败，`check_windows_test_baseline.py` 对同次运行退出码 0。
 - [测试] `tests/test_stock_profile_api.py::test_profile_endpoint_validates_code_and_exposes_contract` 显式隔离 `ENV_FILE` 并改为快照/还原 `ENV_FILE` / `DATABASE_PATH` / `ADMIN_AUTH_ENABLED`：auth 读的是 `ENV_FILE` 指向的文件，继承到此前泄漏的 `.env`（含 `ADMIN_AUTH_ENABLED=true`）时全站 401。全量 18 → 17 failed。
 - [测试] `tests/conftest.py` 设 `LITELLM_LOCAL_MODEL_COST_MAP=True`：litellm 首次使用会远端拉取模型价格表（日志中可见超时），在标记为离线的套件里引入真实网络；`tests/test_stock_profile_api.py` 单跑耗时 33s → 16s。
 - [修复] `src/storage.py::get_conversation_history` 补 `id` 次级排序（`created_at DESC, id DESC`）：同一时刻写入的两条会话消息原先顺序不确定，`reversed()` 后会渲染成倒序（`get_visible_conversation_messages` 本来就有该 tiebreaker）。对应测试此前在 native Windows 上 5–6 次复跑必红 1–2 次，修复后连跑 8 次全绿；全量 19 → 18 failed。

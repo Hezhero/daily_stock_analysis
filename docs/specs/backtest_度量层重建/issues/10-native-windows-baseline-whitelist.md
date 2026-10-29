@@ -83,6 +83,22 @@ pytest tests/test_check_windows_test_baseline.py          → 12 passed
 - **给 14 个 Codex 用例补 `skipif`**：属票 09 剩余项 3，是"把契约排除表达成 skip"的独立决定，与本票的"登记已知失败"是两件事。
 - **约 55 个零散失败的逐项分类**：属票 09 剩余项 1-2。本票落地后它们会以 `TODO` 形式显性存在，成为该项的待办清单。
 
+## 扩展（2026-10-26）：第 4 类 `known-unattributed` 与软 STALE
+
+票 09/12 的收尾阶段剩余失败已经**不是**平台契约问题（时序、渲染桩、未定性），若坚持只允许
+`product-excluded` / `stdlib-missing` / `posix-mode-bits` 三类，这些失败会永远以 `NEW` 形式出现，
+白名单反而失去意义。因此新增第 4 类：
+
+- `known-unattributed`：**既有失败，根因已记录但不属于任何平台契约**。它只用于把已知失败固定住，
+  让新增失败显性；不得用它掩盖平台契约问题。
+- 该类条目的 **STALE 不阻断**：登记项这次通过属好消息，报告为 `STALE (tracked, not gating)` 并
+  建议清理，但退出码仍为 0。`product-excluded` 等三类仍保持"登记了却通过 = 失败"（那是契约漂移）。
+- `NEW`、`TODO`、collection error 依旧一律失败。
+
+落地结果：基线登记 **12 条**（16 个文件里的 12 个 junit 可见失败），checker 对同一次运行
+`12 registered / 12 failing`、退出码 0。子测试级失败（`test_notification` 的 6 条 subtests）仍
+不可见，属既有已知限制。
+
 ## Notes
 
 - 白名单的 id 用 JUnit 的 `classname::name`（checker 从 `--junitxml` 读取），因此和 `pytest -rf` 打印的 `tests/x.py::test_y` 不逐字相同；新增条目走 `--update` 而不是手抄。
