@@ -1,4 +1,5 @@
 ## [Unreleased]
+- [测试] `scripts/check_windows_test_baseline.py` 新增 `UNREPRESENTED` 统计：捕获 pytest 摘要里的 `N failed` 与 junit 计数比对，把 junit 看不见的子测试级失败显性化（当前 5 条）。按信息性处理而非致命，避免长期存在的子测试失败让基线永远红。实测一次全量：`17 failed` vs `12` junit 可见 → `UNREPRESENTED (5)`，基线 12/12 匹配、退出码 0。
 - [文档] `AGENTS.md` 新增 §1.3「决策与自主边界」：只在必须人类拍板时打断（产品语义/默认值/用户可见行为、不可逆远端操作、契约冲突且证据不足、需外部环境），其余按推荐直接执行并在交付说明里写明依据；同步 `.github/copilot-instructions.md`。
 - [测试] `scripts/check_windows_test_baseline.py` 新增 `known-unattributed` 类别与「软 STALE」：非平台契约的既有失败可登记，登记项复现消失只报告不阻断，`NEW`/`TODO`/collection error 仍一律失败；基线登记当前 12 条 junit 可见失败，`check_windows_test_baseline.py` 对同次运行退出码 0。
 - [测试] `tests/test_stock_profile_api.py::test_profile_endpoint_validates_code_and_exposes_contract` 显式隔离 `ENV_FILE` 并改为快照/还原 `ENV_FILE` / `DATABASE_PATH` / `ADMIN_AUTH_ENABLED`：auth 读的是 `ENV_FILE` 指向的文件，继承到此前泄漏的 `.env`（含 `ADMIN_AUTH_ENABLED=true`）时全站 401。全量 18 → 17 failed。

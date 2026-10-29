@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -77,6 +78,7 @@ class Report:
     bad_category: list[str] = field(default_factory=list)
     collection_errors: list[str] = field(default_factory=list)
     stale_soft: list[str] = field(default_factory=list)
+    unrepresented: int = 0
 
     @property
     def ok(self) -> bool:
@@ -133,7 +135,11 @@ def read_junit(path: Path) -> Outcome:
     return outcome
 
 
-def compare(outcome: Outcome, entries: Sequence[Entry]) -> Report:
+def compare(
+    outcome: Outcome,
+    entries: Sequence[Entry],
+    reported_failures: Optional[int] = None,
+) -> Report:
     baseline = {entry.test: entry for entry in entries}
     actual = set(outcome.failures)
     report = Report()
@@ -157,6 +163,11 @@ def compare(outcome: Outcome, entries: Sequence[Entry]) -> Report:
             report.unresolved.append(test)
         elif entry.category not in ALLOWED_CATEGORIES:
             report.bad_category.append(f"{test} ({entry.category})")
+    if reported_failures is not None:
+        # pytest counts subtest failures that its JUnit report cannot express, so a
+        # mismatch means some failures have no nodeid and cannot be baselined.
+        known = len(outcome.failures) + len(outcome.collection_errors)
+        report.unrepresented = max(0, int(reported_failures) - known)
     report.unresolved.sort()
     report.bad_category.sort()
     return report
@@ -181,12 +192,17 @@ def render_report(report: Report, known: int, actual: int) -> str:
     section("UNRESOLVED", report.unresolved, "reason or category is still TODO: attribute it first")
     section("BAD_CATEGORY", report.bad_category, "category must be one of " + ", ".join(ALLOWED_CATEGORIES))
     section("COLLECTION_ERROR", report.collection_errors, "collection errors must be zero; never register them")
+    if report.unrepresented:
+        lines.append(
+            f"\nUNREPRESENTED ({report.unrepresented}) - informational: failures pytest reported "
+            "that the JUnit report cannot see (subtest-level), so they cannot be baselined"
+        )
     if report.ok:
         lines.append("\nOK: failure set matches the baseline.")
     return "\n".join(lines)
 
 
-def _run_pytest(junit_path: Path) -> int:
+def _run_pytest(junit_path: Path) -> tuple[int, str]:
     command = [
         sys.executable,
         "-m",
@@ -197,8 +213,27 @@ def _run_pytest(junit_path: Path) -> int:
         "--continue-on-collection-errors",
         f"--junitxml={junit_path}",
     ]
-    print("==> windows-baseline: " + " ".join(command))
-    return subprocess.call(command, cwd=REPO_ROOT)
+    print("==> windows-baseline: " + " ".join(command), flush=True)
+    process = subprocess.Popen(
+        command,
+        cwd=REPO_ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        errors="replace",
+    )
+    chunks: list[str] = []
+    assert process.stdout is not None
+    for line in process.stdout:
+        print(line, end="")
+        chunks.append(line)
+    process.wait()
+    return process.returncode, "".join(chunks)
+
+
+def _reported_failures(output: str) -> Optional[int]:
+    match = re.search(r"(\d+) failed", output or "")
+    return int(match.group(1)) if match else None
 
 
 def _write_baseline(path: Path, outcome: Outcome) -> list[Entry]:
@@ -247,17 +282,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return EXIT_USAGE
 
     reuse = bool(args.junit) and Path(args.junit).exists()
+    reported: Optional[int] = None
     if reuse:
         junit_path = Path(args.junit)
         print(f"==> windows-baseline: reusing {junit_path}")
     elif args.junit:
         junit_path = Path(args.junit)
-        _run_pytest(junit_path)
+        _, output = _run_pytest(junit_path)
+        reported = _reported_failures(output)
     else:
         handle, name = tempfile.mkstemp(suffix=".xml")
         os.close(handle)
         junit_path = Path(name)
-        _run_pytest(junit_path)
+        _, output = _run_pytest(junit_path)
+        reported = _reported_failures(output)
 
     if not junit_path.exists():
         print(
@@ -271,18 +309,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     if args.update:
         if outcome.collection_errors:
-            print(render_report(compare(outcome, entries), len(entries), len(outcome.failures)))
+            print(render_report(compare(outcome, entries, reported), len(entries), len(outcome.failures)))
             print(
                 "ERROR: refusing to update the baseline while collection errors exist.",
                 file=sys.stderr,
             )
             return EXIT_FINDINGS
         written = _write_baseline(baseline_path, outcome)
-        report = compare(outcome, written)
+        report = compare(outcome, written, reported)
         print(render_report(report, len(written), len(outcome.failures)))
         return report.exit_code()
 
-    report = compare(outcome, entries)
+    report = compare(outcome, entries, reported)
     print(render_report(report, len(entries), len(outcome.failures)))
     return report.exit_code()
 

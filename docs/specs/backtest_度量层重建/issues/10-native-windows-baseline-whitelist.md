@@ -71,11 +71,16 @@ pytest tests/test_check_windows_test_baseline.py          → 12 passed
 真实 POSIX 机器上跑过。也因此本票没有把脚本接进 `ci_gate`——接入等于给非 Windows 开发者也加一次
 全量跑，收益未证明。
 
-**已知限制（实测发现）**：checker 从 `--junitxml` 读结果，而 **junit 不记录子测试级失败**。实测一次
-全量 `56 failed` 只对应 51 条 junit 失败，差的 5 条来自
-`test_notification::test_source_labels_render_in_all_supported_languages` 的参数化 subtest。若这类
-失败被登记或回归，白名单机制看不见。修法：捕获 pytest 摘要行里的 `N failed` 与 junit 计数比对，
-不一致就报 `UNREPRESENTED` 并以退出码 1 失败；本票未做。
+**已知限制已补测（2026-10-26）**：checker 从 `--junitxml` 读结果，而 **junit 不记录子测试级失败**。
+此前这条只是记录在案，现在已实现：捕获 pytest 摘要行的 `N failed`，与 junit 计数比对，差额以
+`UNREPRESENTED (n)` 报出。
+
+刻意把它处理成**信息性**而非致命：当前 5 条差额来自 `test_notification` 的长期子测试失败，若设为
+致命，基线永远红，工具就失去"基线一致即通过"的意义。差额变大时能在输出里直接看到，比完全不可见强。
+
+实测：一次真实全量 `17 failed`（pytest）vs `12`（junit 可见）→ 报 `UNREPRESENTED (5)`，
+同时 `12 registered / 12 failing`、退出码 0。
+
 
 ## 不在本票范围
 

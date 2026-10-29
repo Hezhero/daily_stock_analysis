@@ -6,6 +6,7 @@ from pathlib import Path
 
 from scripts import check_windows_test_baseline as baseline_module
 from scripts.check_windows_test_baseline import (
+    _reported_failures,
     BASELINE_HEADER,
     TODO,
     Entry,
@@ -160,3 +161,19 @@ def test_known_unattributed_entries_that_pass_do_not_fail_the_run():
     assert report.ok is True
     assert report.stale == []
     assert report.stale_soft == ["tests.a::test_x"]
+
+def test_reported_failures_parsed_from_the_pytest_summary():
+    assert _reported_failures("= 17 failed, 7756 passed in 1s =") == 17
+    assert _reported_failures("no summary here") is None
+
+
+def test_unrepresented_failures_are_counted_but_not_gating():
+    outcome = Outcome(failures={"tests.a::test_x"})
+    report = compare(
+        outcome,
+        [Entry("tests.a::test_x", "known-unattributed", "ok")],
+        reported_failures=7,
+    )
+
+    assert report.unrepresented == 6
+    assert report.ok is True
