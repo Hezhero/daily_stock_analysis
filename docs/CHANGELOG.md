@@ -1,4 +1,6 @@
 ## [Unreleased]
+- [测试] `tests/test_stock_profile_api.py::test_profile_endpoint_validates_code_and_exposes_contract` 显式隔离 `ENV_FILE` 并改为快照/还原 `ENV_FILE` / `DATABASE_PATH` / `ADMIN_AUTH_ENABLED`：auth 读的是 `ENV_FILE` 指向的文件，继承到此前泄漏的 `.env`（含 `ADMIN_AUTH_ENABLED=true`）时全站 401。全量 18 → 17 failed。
+- [测试] `tests/conftest.py` 设 `LITELLM_LOCAL_MODEL_COST_MAP=True`：litellm 首次使用会远端拉取模型价格表（日志中可见超时），在标记为离线的套件里引入真实网络；`tests/test_stock_profile_api.py` 单跑耗时 33s → 16s。
 - [修复] `src/storage.py::get_conversation_history` 补 `id` 次级排序（`created_at DESC, id DESC`）：同一时刻写入的两条会话消息原先顺序不确定，`reversed()` 后会渲染成倒序（`get_visible_conversation_messages` 本来就有该 tiebreaker）。对应测试此前在 native Windows 上 5–6 次复跑必红 1–2 次，修复后连跑 8 次全绿；全量 19 → 18 failed。
 - [测试] `tests/test_name_to_code_resolver.py`：抽出 `_reset_resolver_state()` 并加 autouse fixture，在每用例前后重置该模块的 5 个模块级缓存（原先 `clean_db` 只在 teardown 重置，导致用例继承上一用例状态）；三条断言"AKShare 在线回退"的用例按现契约改写——该回退已在 `bbbceea3` 移除，本地映射未命中即返回 `None`。该文件 3 failed → 69 passed，全量 native Windows 22 → 19 failed。
 - [测试] `tests/test_market_analyzer_generate_text.py` 加 autouse fixture 在每用例前后清空 `AnalysisCache`（票 12）：该缓存是进程级单例、键为 `(code, cache_date)`，两条用例分析同一只股票且 date 为空时会共享结果，后一条直接命中前一条的缓存（症状是拿到别的用例 mock 的 `analysis_summary`）。该文件 5 failed → 146 passed，全量 native Windows 27 → 22 failed。

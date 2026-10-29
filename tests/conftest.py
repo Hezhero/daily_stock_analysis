@@ -65,6 +65,10 @@ _AMBIENT_KEYS = (
     "LLM_CHANNELS",
 )
 
+# Keep the offline suite offline: litellm otherwise fetches its remote model-cost
+# map on first use, which shows up as multi-second hangs and load-dependent flakes.
+os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+
 _BASELINE_ENV_FILE = os.path.join(tempfile.mkdtemp(prefix="dsa-test-env-"), "no-such.env")
 os.environ["ENV_FILE"] = _BASELINE_ENV_FILE
 for _ambient_key in _AMBIENT_KEYS:

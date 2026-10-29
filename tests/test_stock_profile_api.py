@@ -631,6 +631,13 @@ def _endpoint_payload() -> dict:
 def test_profile_endpoint_validates_code_and_exposes_contract() -> None:
     _reset_auth_globals()
     with tempfile.TemporaryDirectory() as temp_dir:
+        prev_env = {
+            key: os.environ.get(key)
+            for key in ("ENV_FILE", "DATABASE_PATH", "ADMIN_AUTH_ENABLED")
+        }
+        # Auth reads ADMIN_AUTH_ENABLED from the file ENV_FILE points at, so an
+        # earlier case's leaked ENV_FILE would turn every request here into a 401.
+        os.environ["ENV_FILE"] = str(Path(temp_dir) / "no-such.env")
         try:
             os.environ["DATABASE_PATH"] = str(Path(temp_dir) / "profile.db")
             os.environ["ADMIN_AUTH_ENABLED"] = "false"
@@ -686,8 +693,11 @@ def test_profile_endpoint_validates_code_and_exposes_contract() -> None:
         finally:
             DatabaseManager.reset_instance()
             Config.reset_instance()
-            os.environ.pop("DATABASE_PATH", None)
-            os.environ.pop("ADMIN_AUTH_ENABLED", None)
+            for key, value in prev_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
             _reset_auth_globals()
 
 

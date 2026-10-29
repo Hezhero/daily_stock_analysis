@@ -280,6 +280,25 @@ return [... for msg in reversed(messages)]
 
 验证：`tests/test_storage.py` 连跑 **8 次全绿**（修前 5–6 次必红 1–2 次）；全量 `19 → 18 failed`。
 
+## 2026-10-26 第七轮：401 型污染 + litellm 远端价格表（18 → 17）
+
+`test_stock_profile_api::test_profile_endpoint_validates_code_and_exposes_contract` 上一轮绿、这一轮红。
+单跑 9/9 全绿，同前缀组（`tests/test_stock*.py`）398 passed，前缀二分也复现不了——最后靠**全量带
+traceback** 拿到真因：`401 unauthorized`。
+
+机制：`src/auth.py` 读的是 **`ENV_FILE` 指向的文件**，不是 `os.environ`。该用例设了
+`ADMIN_AUTH_ENABLED=false` 并 `_reset_auth_globals()`，但没管 `ENV_FILE`——于是继承了一个此前泄漏的
+`.env`（内含 `ADMIN_AUTH_ENABLED=true`），所有请求变 401。
+
+修法：该用例显式把 `ENV_FILE` 指向临时目录下的不存在路径，并把 `ENV_FILE` / `DATABASE_PATH` /
+`ADMIN_AUTH_ENABLED` 三个键改成**快照/还原**（原来只 `pop`，同样会破坏会话基线）。
+
+**顺带修的**：`tests/conftest.py` 设 `LITELLM_LOCAL_MODEL_COST_MAP=True`。此前 litellm 首次使用会去
+远端拉模型价格表（日志里能看到 `read operation timed out`），在"离线"套件里引入真实网络。
+`tests/test_stock_profile_api.py` 单跑 **33s → 16s**（全量总时长受机器负载影响波动较大，不宜单独引证）。
+
+全量：`18 → 17 failed`；`test_stock_profile_api` / `test_storage` / `test_screening_api` 均无失败。
+
 ## 待定决策
 
 ## 待定决策
