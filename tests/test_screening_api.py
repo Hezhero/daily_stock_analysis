@@ -1981,11 +1981,13 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
 
         def record_remaining(value: Any) -> Any:
             observed_timeouts.append(provider._akshare_timeout_seconds())
-            time.sleep(0.005)
+            # Windows monotonic() has ~15.6ms resolution; a 5ms sleep can leave
+            # two samples equal and break the strict-decrease assertion.
+            time.sleep(0.02)
             return value
 
         with (
-            patch.dict(os.environ, {"SCREENING_HOTSPOT_CALL_TIMEOUT_SEC": "0.25"}, clear=False),
+            patch.dict(os.environ, {"SCREENING_HOTSPOT_CALL_TIMEOUT_SEC": "2.0"}, clear=False),
             patch.object(provider, "_find_board_change", side_effect=lambda _topic: record_remaining({})),
             patch.object(provider, "_is_industry_hotspot", side_effect=lambda _topic: record_remaining(False)),
             patch.object(
@@ -2008,7 +2010,7 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
 
         self.assertEqual(detail["leader_stocks"][0]["code"], "000001")
         self.assertEqual(len(observed_timeouts), 5)
-        self.assertTrue(all(0 < timeout <= 0.25 for timeout in observed_timeouts))
+        self.assertTrue(all(0 < timeout <= 2.0 for timeout in observed_timeouts))
         self.assertTrue(all(
             later < earlier
             for earlier, later in zip(observed_timeouts, observed_timeouts[1:])

@@ -64,27 +64,7 @@ python scripts/check_ai_assets.py
 
 ## 3. 仓库速览
 
-- 项目定位：股票智能分析系统，覆盖 A 股、港股、美股。
-- 主流程：抓取数据 -> 技术分析/新闻检索 -> LLM 分析 -> 生成报告 -> 通知推送。
-- 关键入口：
-  - `main.py`：分析任务主入口
-  - `server.py`：FastAPI 服务入口
-  - `apps/dsa-web/`：Web 前端
-  - `apps/dsa-desktop/`：Electron 桌面端
-  - `.github/workflows/`：CI、发布、每日任务
-- 核心职责：
-  - `src/core/`：主流程编排
-  - `src/services/`：业务服务层
-  - `src/repositories/`：数据访问层
-  - `src/reports/`：报告生成
-  - `src/schemas/`：Schema / 数据结构
-  - `data_provider/`：多数据源适配与 fallback
-  - `api/`：FastAPI API
-  - `bot/`：机器人接入
-  - `scripts/`：本地脚本
-  - `.github/scripts/`：GitHub 自动化脚本
-  - `tests/`：pytest 测试
-  - `docs/`：文档与说明
+目录职责与关键入口见 `docs/agents/repo-map.md`。
 
 ## 4. 常用命令
 
@@ -119,12 +99,14 @@ uvicorn server:app --reload --host 0.0.0.0 --port 8000
 conda activate daily_stock_analysis
 pip install -r .github/requirements-ci.txt   # 与 backend-gate 同款依赖（requirements.txt + flake8 + pytest + pytest-timeout）
 ./scripts/ci_gate.sh                          # POSIX / Git Bash / WSL
-pwsh -File ./scripts/ci_gate.ps1              # Windows 包装器（定位 Git Bash；继承当前 PATH，须先激活 conda）
+pwsh -File ./scripts/ci_gate.ps1              # Windows 包装器（自动解析项目解释器 + 定位 Git Bash）
+pwsh -File ./scripts/pytest.ps1 -m "not network"   # 直接跑 pytest（自动解析解释器、UTF-8）
 python -m pytest -m "not network"
 python -m py_compile <changed_python_files>
 ```
 
-> 平台边界与全量基线口径见 `docs/agents/validation-matrix.md`。
+> 平台边界、WSL 兜底与全量基线口径见 `docs/agents/validation-matrix.md`。
+> 回测前先跑 `python scripts/check_data_freshness.py`；运行口径见 `docs/backtest-runbook.md`。
 
 ### Web / Desktop
 
@@ -145,7 +127,13 @@ npm run build
 gh pr view <pr_number>
 gh pr checks <pr_number>
 gh run view <run_id> --log-failed
+
+python scripts/ci_status.py            # public repo; no gh/token required
+pwsh -File scripts/ci_gate_wsl.ps1 -Phase offline-tests   # POSIX fallback when CI is unavailable
 ```
+
+`gh` 不可用时用 `ci_status.py` 确认当前 HEAD 是否真的有 CI run；没有 run 不等于 pending。
+POSIX 验证只在 CI 对当前 HEAD 绿，或 WSL/Docker 的 `ci_gate.sh` 通过时才算完成。
 
 ## 5. 默认工作流
 

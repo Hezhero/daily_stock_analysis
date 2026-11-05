@@ -1,0 +1,71 @@
+name: windows-baseline
+
+# Native Windows is not part of the blocking CI matrix: the Python suite has a
+# documented failure set there (docs/agents/windows-known-failures.md) that is
+# invisible to the Ubuntu shards. This workflow keeps that baseline honest.
+#
+# Non-blocking on purpose: the first runs are expected to surface drift between
+# the local baseline (Python 3.10) and the runner image. Remove
+# `continue-on-error` once the nightly run is stable for a week.
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: windows-baseline
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  windows-baseline:
+    name: windows-baseline
+    runs-on: windows-latest
+    timeout-minutes: 90
+    continue-on-error: true
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v5
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v6
+        with:
+          # The whitelist was generated on the project's 3.10 environment.
+          # Re-baseline with `--update` before changing this version.
+          python-version: '3.10'
+          cache: 'pip'
+          cache-dependency-path: |
+            requirements.txt
+            .github/requirements-ci.txt
+      - name: 📦 Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          for attempt in 1 2 3; do
+            if python -m pip install -r .github/requirements-ci.txt; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "Dependency install failed after ${attempt} attempts." >&2
+              exit 1
+            fi
+            echo "Dependency install attempt ${attempt} failed, retrying in 15s..." >&2
+            sleep 15
+          done
+      - name: 🪟 Compare the failure set with the documented baseline
+        shell: bash
+        env:
+          PYTHONIOENCODING: utf-8
+        run: |
+          python scripts/check_windows_test_baseline.py \
+            --junit windows-junit.xml
+      - name: 📎 Upload JUnit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-baseline-junit
+          path: windows-junit.xml
+          if-no-files-found: warn
+          retention-days: 30

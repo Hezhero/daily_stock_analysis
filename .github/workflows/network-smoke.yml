@@ -28,7 +28,8 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest
+          # setup.cfg addopts uses --timeout / faulthandler_timeout.
+          pip install pytest 'pytest-timeout>=2.3.0'
 
       - name: 🌐 Run pytest network smoke (non-blocking)
         continue-on-error: true

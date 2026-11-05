@@ -2,42 +2,44 @@
 
 set -euo pipefail
 
+PYTHON="${PYTHON:-python}"
+
 install_hint() {
   printf "backend-gate: missing %s.\nInstall the backend-gate toolchain with:\n  pip install -r .github/requirements-ci.txt\n" "$1" >&2
 }
 
-require_command() {
-  if ! command -v "$1" >/dev/null 2>&1; then
-    install_hint "'$1'"
+require_python() {
+  if ! "$PYTHON" --version >/dev/null 2>&1; then
+    install_hint "'$PYTHON'"
     exit 2
   fi
 }
 
 require_python_module() {
-  if ! python -c "import $1" >/dev/null 2>&1; then
-    install_hint "Python module '$1'"
+  if ! "$PYTHON" -c "import $1" >/dev/null 2>&1; then
+    install_hint "Python module '$1' (interpreter: $PYTHON)"
     exit 2
   fi
 }
 
-require_command python
+require_python
 
 syntax_check() {
-  echo "==> backend-gate: Python syntax check"
-  python -m py_compile main.py src/config.py src/auth.py src/analyzer.py src/notification.py
-  python -m py_compile src/storage.py src/scheduler.py src/search_service.py
-  python -m py_compile src/market_analyzer.py src/stock_analyzer.py
-  python -m py_compile data_provider/*.py
+  echo "==> backend-gate: Python syntax check ($PYTHON)"
+  "$PYTHON" -m py_compile main.py src/config.py src/auth.py src/analyzer.py src/notification.py
+  "$PYTHON" -m py_compile src/storage.py src/scheduler.py src/search_service.py
+  "$PYTHON" -m py_compile src/market_analyzer.py src/stock_analyzer.py
+  "$PYTHON" -m py_compile data_provider/*.py
 }
 
 flake8_checks() {
-  require_command flake8
-  echo "==> backend-gate: flake8 critical checks"
-  flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+  require_python_module flake8
+  echo "==> backend-gate: flake8 critical checks ($PYTHON)"
+  "$PYTHON" -m flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
 }
 
 deterministic_checks() {
-  require_command python3
+  require_python
   echo "==> backend-gate: local deterministic checks"
   ./scripts/test.sh code
   ./scripts/test.sh yfinance
@@ -46,21 +48,24 @@ deterministic_checks() {
 offline_test_suite() {
   require_python_module pytest
   require_python_module pytest_timeout
-  echo "==> backend-gate: offline test suite"
-  # ``--timeout=120`` hard-fails any single test that runs longer than two
-  # minutes (issue #2131: backend-gate previously hung indefinitely around
-  # AlphaSift hotspot cases without leaving any traceback). ``-o
-  # timeout_method=thread`` makes pytest-timeout use a watcher thread that
-  # is reliable even when the test has swallowed Ctrl-C / signal handling
-  # (yfinance, AlphaSift). ``-o faulthandler_timeout=300`` dumps all
-  # thread + interpreter stacks to stderr after five minutes of total
-  # test silence, giving us a post-mortem root cause for any future
-  # CI hang instead of ``backend-gate`` being silently cancelled by the
-  # workflow timeout.
+  echo "==> backend-gate: offline test suite ($PYTHON)"
+
+  # Native Windows does not have a full-suite baseline (see
+  # docs/agents/validation-matrix.md). The checker runs pytest and compares the
+  # failure set with the documented whitelist, so known platform differences do
+  # not mask new failures.
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+      echo "==> backend-gate: native Windows baseline checker"
+      "$PYTHON" scripts/check_windows_test_baseline.py
+      return
+      ;;
+  esac
+
+  # Timeout / faulthandler defaults live in setup.cfg so targeted runs get the
+  # same hang guard as the gate. Keep CI-only reporting flags here.
   pytest_args=(
     -m "not network"
-    --timeout=120 -o timeout_method=thread
-    -o faulthandler_timeout=300
     --durations=30 --durations-min=0.5
   )
 
@@ -76,7 +81,7 @@ offline_test_suite() {
       exit 2
     fi
     echo "==> backend-gate: pytest shard ${PYTEST_GROUP}/${PYTEST_SPLITS}"
-    python scripts/ci_test_shard.py \
+    "$PYTHON" scripts/ci_test_shard.py \
       --splits "${PYTEST_SPLITS}" \
       --group "${PYTEST_GROUP}" \
       --first-shard-overhead "${PYTEST_FIRST_SHARD_OVERHEAD:-0}" \
@@ -84,7 +89,7 @@ offline_test_suite() {
     return
   fi
 
-  python -m pytest "${pytest_args[@]}"
+  "$PYTHON" -m pytest "${pytest_args[@]}"
 }
 
 run_all() {

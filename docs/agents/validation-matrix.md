@@ -3,6 +3,9 @@
 Read this before delivering any change: pick the row that matches the touched surface,
 run its commands, and state the gap when a check could not run.
 
+> **完成判据**：POSIX 验证 = CI 对当前 HEAD 有成功 run，或 WSL/Docker 的 `ci_gate.sh` 通过。
+> “pending CI” 不是验证状态；先用 `python scripts/ci_status.py` 确认 HEAD 是否真的有 run。
+
 ## CI coverage
 
 | 检查项 | 来源 | 说明 | 是否阻断 |
@@ -12,6 +15,7 @@ run its commands, and state the gap when a check could not run.
 | `docker-build` | `.github/workflows/ci.yml` | Docker 构建与关键模块导入 smoke | 是 |
 | `web-gate` | `.github/workflows/ci.yml` | 前端改动时执行 `npm run lint` + `npm run build` | 是（触发时） |
 | `network-smoke` | `.github/workflows/network-smoke.yml` | `pytest -m network` + `scripts/test.sh quick` | 否，观测项 |
+| `windows-baseline` | `.github/workflows/windows-baseline.yml` | native Windows 全量对照白名单，夜间 + 手动触发 | 否，观测项（稳定前 `continue-on-error`） |
 | `pr-review` | `.github/workflows/pr-review.yml` | PR 静态检查 + AI 审查 + 自动标签 | 否，辅助项 |
 
 若 PR 上已有对应 CI 结果，可直接引用 CI 结论；若 CI 未覆盖改动面，或本地与 CI 环境差异较大，
@@ -22,17 +26,52 @@ run its commands, and state the gap when a check could not run.
 ```bash
 pip install -r .github/requirements-ci.txt   # requirements.txt + flake8 + pytest + pytest-timeout
 ./scripts/ci_gate.sh                          # POSIX / Git Bash / WSL
-pwsh -File ./scripts/ci_gate.ps1              # Windows PowerShell wrapper (locates Git Bash)
+pwsh -File ./scripts/ci_gate.ps1              # Windows PowerShell wrapper (resolves the interpreter + Git Bash)
+pwsh -File ./scripts/ci_gate_wsl.ps1 -Phase offline-tests   # POSIX fallback when CI is unavailable
 ```
 
-`ci_gate.sh` preflights its tools and exits `2` with the install command when `python`,
-`python3`, `flake8`, `pytest`, or `pytest_timeout` is missing. The `.ps1` wrapper only
+`ci_gate.sh` uses `${PYTHON:-python}` and preflights its tools; it exits `2` with the
+install command when the interpreter, `flake8`, `pytest`, or `pytest_timeout` is missing.
+Flake8 also runs as `"$PYTHON" -m flake8`, so a stray base-environment flake8 cannot mask
+a missing dependency.
+On native Windows (`MINGW*`/`MSYS*`/`CYGWIN*`) the `offline-tests` phase runs
+`scripts/check_windows_test_baseline.py` instead of raw pytest, so known platform
+differences do not hide new failures. The `.ps1` wrapper resolves the interpreter and
 locates Git Bash; it does not install anything.
 
-On Windows, activate the project environment first: `conda activate daily_stock_analysis`.
-The wrapper and the Git Bash it spawns inherit the current `PATH`; without activation the
-gate silently runs under the base environment's Python (cross-environment risk that the
-repository rules explicitly forbid).
+On Windows, `ci_gate.ps1` resolves the project interpreter in this order: `-Python`,
+`DSA_PYTHON`, `conda run -n daily_stock_analysis python -c "import sys; print(sys.executable)"`,
+then `python`. It sets `PYTHON` and prepends the interpreter's directory to `PATH`, so the
+Git Bash child no longer silently falls back to the base environment. If resolution fails,
+activate `daily_stock_analysis` first or pass `-Python <path>`.
+
+## CI unavailable: WSL fallback
+
+GitHub Actions can be unavailable (billing limit, disabled workflow, fork settings).
+Do not report "pending CI" as a verification state. Confirm whether HEAD has a run, then
+use WSL when it does not:
+
+```powershell
+python scripts/ci_status.py                              # exit 1 when HEAD has no run
+pwsh -File scripts/ci_gate_wsl.ps1 -Phase offline-tests   # POSIX fallback
+```
+
+`ci_gate_wsl.ps1` creates `/tmp/dsa-venv` and installs the CI toolchain when the
+dependency files change. It copies the worktree to an ext4 mirror (`/tmp/dsa-src`,
+excluding `.git` / `data` / `logs` / `node_modules`) and runs the gate there: on
+`/mnt/<drive>` (DrvFs) a `multiprocessing` child re-importing pandas can take longer
+than the 5s startup grace used by the scheduler / codex tests, which produces failures
+that do not exist on a POSIX filesystem. Keep `apps/dsa-web/public/stocks.index.json`
+in the mirror — the stock/index identity tests read it. Pass `-InPlace` to run against
+the mounted worktree when debugging filesystem-specific behavior. The optional
+`fxmacrodata-public-client` GitHub-Release wheel returns 403 from WSL, so the installer
+strips that line and relies on the optional-import fallback documented in ADR 0005.
+Pass `-PipIndex <url>` when the default PyPI endpoint is slow. Ubuntu 24.04 provides
+Python 3.12 while CI uses 3.11; treat the result as a POSIX behavior signal, not a
+replacement for the CI version matrix.
+
+If neither CI nor WSL is available, state the gap explicitly in the delivery and do not
+claim POSIX coverage.
 
 ## Per-surface checks
 
@@ -108,4 +147,9 @@ skip 必须属于上述三类并写明理由，否则视为契约漂移。已知
 native Windows 的既有失败由 `docs/agents/windows-known-failures.md` 登记，用
 `python scripts/check_windows_test_baseline.py` 校验：`NEW`（失败但未登记）、`STALE`（登记了但已
 不再失败）、`UNRESOLVED`（理由仍是 `TODO`）与 collection error 会分别报出，并以退出码 1 失败。
-该脚本只在本地跑，未接入 `ci_gate`（成本见票 10）。
+native Windows 上 `ci_gate.sh offline-tests` 会调用该脚本，不再直接跑 pytest；夜间
+`windows-baseline` workflow 用同一脚本防止白名单漂移。
+
+JUnit 无法表达 `unittest.subTest` 失败，所以 checker 还会比较 pytest 汇总的 `N failed` 与
+JUnit 失败数，得到 `UNREPRESENTED`；`--max-unrepresented`（默认 0）在出现子测试级失败时立即失败。
+`--leak-probe` 可选开启 `DSA_ENV_LEAK_PROBE=1`，把测试之间的 env / singleton 状态转移视为失败。

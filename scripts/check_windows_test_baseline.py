@@ -21,7 +21,7 @@ from typing import Iterable, Optional, Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BASELINE = REPO_ROOT / "docs" / "agents" / "windows-known-failures.md"
-DEFAULT_PYTEST_ARGS = ("-m", "not network", "--timeout=120", "-o", "timeout_method=thread")
+DEFAULT_PYTEST_ARGS = ("-m", "not network")
 ALLOWED_CATEGORIES = (
     "product-excluded",
     "stdlib-missing",
@@ -51,6 +51,11 @@ BASELINE_HEADER = """\
 - `test` 用 JUnit 的 `classname::name`，与 `pytest -rf` 打印的路径形式不逐字相同，新增条目请走 `--update`。
 - **登记前提是该用例在目标平台上确定性失败**。偶发失败（同机两次跑结果不同）不是已知失败，
   必须修掉或显式隔离，不能靠白名单吸收；否则 `NEW` / `STALE` 会随机抖动。
+- **子测试级失败**（`unittest.subTest`）不会出现在 JUnit 报告里。checker 用 pytest 汇总的
+  `N failed` 减去 JUnit 失败数得到 `UNREPRESENTED`；当前基线为 0。`--max-unrepresented`
+  （默认 0）在出现子测试级失败时立即失败，避免它被静默吞掉。
+- `--leak-probe` 会以 `DSA_ENV_LEAK_PROBE=1` 运行，并把测试之间的 env / singleton 状态转移
+  视为失败；默认关闭，避免把既有泄漏直接变成红基线。
 
 | test | 类别 | 理由 |
 | --- | --- | --- |
@@ -79,6 +84,15 @@ class Report:
     collection_errors: list[str] = field(default_factory=list)
     stale_soft: list[str] = field(default_factory=list)
     unrepresented: int = 0
+    unrepresented_limit: Optional[int] = None
+    leak_transitions: int = 0
+
+    @property
+    def unrepresented_excess(self) -> bool:
+        return (
+            self.unrepresented_limit is not None
+            and self.unrepresented > self.unrepresented_limit
+        )
 
     @property
     def ok(self) -> bool:
@@ -88,6 +102,8 @@ class Report:
             or self.unresolved
             or self.bad_category
             or self.collection_errors
+            or self.unrepresented_excess
+            or self.leak_transitions
         )
 
     def exit_code(self) -> int:
@@ -139,10 +155,11 @@ def compare(
     outcome: Outcome,
     entries: Sequence[Entry],
     reported_failures: Optional[int] = None,
+    max_unrepresented: Optional[int] = None,
 ) -> Report:
     baseline = {entry.test: entry for entry in entries}
     actual = set(outcome.failures)
-    report = Report()
+    report = Report(unrepresented_limit=max_unrepresented)
     report.new = sorted(actual - set(baseline))
     disappeared = set(baseline) - actual
     # ``known-unattributed`` entries are tracked failures, not platform contracts:
@@ -193,16 +210,28 @@ def render_report(report: Report, known: int, actual: int) -> str:
     section("BAD_CATEGORY", report.bad_category, "category must be one of " + ", ".join(ALLOWED_CATEGORIES))
     section("COLLECTION_ERROR", report.collection_errors, "collection errors must be zero; never register them")
     if report.unrepresented:
+        limit = report.unrepresented_limit
+        if limit is None:
+            status = "informational"
+        elif report.unrepresented_excess:
+            status = f"EXCEEDS LIMIT {limit}"
+        else:
+            status = f"within limit {limit}"
         lines.append(
-            f"\nUNREPRESENTED ({report.unrepresented}) - informational: failures pytest reported "
+            f"\nUNREPRESENTED ({report.unrepresented}) - {status}: failures pytest reported "
             "that the JUnit report cannot see (subtest-level), so they cannot be baselined"
+        )
+    if report.leak_transitions:
+        lines.append(
+            f"\nENV LEAKS ({report.leak_transitions}) - state transitions between tests; "
+            "run with --leak-probe to reproduce and name the leaking test"
         )
     if report.ok:
         lines.append("\nOK: failure set matches the baseline.")
     return "\n".join(lines)
 
 
-def _run_pytest(junit_path: Path) -> tuple[int, str]:
+def _run_pytest(junit_path: Path, leak_probe: bool = False) -> tuple[int, str]:
     command = [
         sys.executable,
         "-m",
@@ -214,6 +243,10 @@ def _run_pytest(junit_path: Path) -> tuple[int, str]:
         f"--junitxml={junit_path}",
     ]
     print("==> windows-baseline: " + " ".join(command), flush=True)
+    env = os.environ.copy()
+    if leak_probe:
+        env["DSA_ENV_LEAK_PROBE"] = "1"
+        print("==> windows-baseline: env leak probe enabled", flush=True)
     process = subprocess.Popen(
         command,
         cwd=REPO_ROOT,
@@ -221,11 +254,12 @@ def _run_pytest(junit_path: Path) -> tuple[int, str]:
         stderr=subprocess.STDOUT,
         text=True,
         errors="replace",
+        env=env,
     )
     chunks: list[str] = []
     assert process.stdout is not None
     for line in process.stdout:
-        print(line, end="")
+        print(line, end="", flush=True)
         chunks.append(line)
     process.wait()
     return process.returncode, "".join(chunks)
@@ -234,6 +268,12 @@ def _run_pytest(junit_path: Path) -> tuple[int, str]:
 def _reported_failures(output: str) -> Optional[int]:
     match = re.search(r"(\d+) failed", output or "")
     return int(match.group(1)) if match else None
+
+
+def _reported_leaks(output: str) -> int:
+    """Count env state transitions printed by ``tests/conftest.py`` at session end."""
+    match = re.search(r"\[env-leak-probe\] (\d+) state transition", output or "")
+    return int(match.group(1)) if match else 0
 
 
 def _write_baseline(path: Path, outcome: Outcome) -> list[Entry]:
@@ -265,6 +305,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--baseline", default=str(DEFAULT_BASELINE))
     parser.add_argument("--update", action="store_true", help="rewrite the baseline from this run")
     parser.add_argument("--junit", help="reuse this junit xml instead of running pytest")
+    parser.add_argument(
+        "--max-unrepresented",
+        type=int,
+        default=0,
+        help=(
+            "fail when pytest reports more failures than the JUnit report can express "
+            "(subtest-level); the native-Windows baseline is 0"
+        ),
+    )
+    parser.add_argument(
+        "--leak-probe",
+        action="store_true",
+        help="run pytest with DSA_ENV_LEAK_PROBE=1 and fail on env state transitions",
+    )
     args = parser.parse_args(argv)
 
     baseline_path = Path(args.baseline)
@@ -283,19 +337,31 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     reuse = bool(args.junit) and Path(args.junit).exists()
     reported: Optional[int] = None
+    leaks = 0
     if reuse:
         junit_path = Path(args.junit)
         print(f"==> windows-baseline: reusing {junit_path}")
-    elif args.junit:
-        junit_path = Path(args.junit)
-        _, output = _run_pytest(junit_path)
-        reported = _reported_failures(output)
+        print(
+            "WARNING: a reused JUnit report has no pytest summary, so --max-unrepresented "
+            "cannot be evaluated",
+            file=sys.stderr,
+        )
+        if args.leak_probe:
+            print(
+                "WARNING: --leak-probe is ignored when --junit reuses an existing report",
+                file=sys.stderr,
+            )
     else:
-        handle, name = tempfile.mkstemp(suffix=".xml")
-        os.close(handle)
-        junit_path = Path(name)
-        _, output = _run_pytest(junit_path)
+        if args.junit:
+            junit_path = Path(args.junit)
+        else:
+            handle, name = tempfile.mkstemp(suffix=".xml")
+            os.close(handle)
+            junit_path = Path(name)
+        _, output = _run_pytest(junit_path, leak_probe=args.leak_probe)
         reported = _reported_failures(output)
+        if args.leak_probe:
+            leaks = _reported_leaks(output)
 
     if not junit_path.exists():
         print(
@@ -307,20 +373,34 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     outcome = read_junit(junit_path)
 
+    def build_report(entries_for_report: Sequence[Entry]) -> Report:
+        report = compare(
+            outcome,
+            entries_for_report,
+            reported,
+            max_unrepresented=args.max_unrepresented,
+        )
+        report.leak_transitions = leaks
+        return report
+
     if args.update:
         if outcome.collection_errors:
-            print(render_report(compare(outcome, entries, reported), len(entries), len(outcome.failures)))
+            print(
+                render_report(
+                    build_report(entries), len(entries), len(outcome.failures)
+                )
+            )
             print(
                 "ERROR: refusing to update the baseline while collection errors exist.",
                 file=sys.stderr,
             )
             return EXIT_FINDINGS
         written = _write_baseline(baseline_path, outcome)
-        report = compare(outcome, written, reported)
+        report = build_report(written)
         print(render_report(report, len(written), len(outcome.failures)))
         return report.exit_code()
 
-    report = compare(outcome, entries, reported)
+    report = build_report(entries)
     print(render_report(report, len(entries), len(outcome.failures)))
     return report.exit_code()
 

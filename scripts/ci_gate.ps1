@@ -2,11 +2,13 @@
 param(
     [Parameter(Position = 0)]
     [ValidateSet('all', 'syntax', 'flake8', 'deterministic', 'offline-tests')]
-    [string]$Phase = 'all'
+    [string]$Phase = 'all',
+    [string]$Python = ''
 )
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot 'resolve_python.ps1')
 
 function Find-GitBash {
     $candidates = @()
@@ -32,6 +34,17 @@ if (-not $bash) {
     [Console]::Error.WriteLine(
         'backend-gate: Git Bash not found. Install Git for Windows, or run the commands in docs/agents/validation-matrix.md.'
     )
+    exit 2
+}
+
+$pythonPath = Resolve-DsaPython -Explicit $Python
+$pythonDir = Split-Path -Parent $pythonPath
+$env:PYTHON = $pythonPath
+$env:PATH = "$pythonDir;$(Join-Path $pythonDir 'Scripts');$env:PATH"
+
+& $pythonPath -c "import sys; print('backend-gate: python', sys.executable, sys.version.split()[0])"
+if ($LASTEXITCODE -ne 0) {
+    [Console]::Error.WriteLine("backend-gate: cannot run the selected interpreter: $pythonPath")
     exit 2
 }
 

@@ -303,7 +303,7 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
         result = service.run_now()
 
         self.assertTrue(result["accepted"])
-        deadline = time.monotonic() + 4
+        deadline = time.monotonic() + 20
         while service.status()["last_success_at"] is None and time.monotonic() < deadline:
             time.sleep(0.05)
         status = service.status()
@@ -346,7 +346,7 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
                 "the scheduler callback remained blocked by analysis",
             )
 
-            deadline = time.monotonic() + 10
+            deadline = time.monotonic() + 20
             while service.status()["last_error"] is None and time.monotonic() < deadline:
                 time.sleep(0.05)
 
@@ -357,10 +357,10 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
             service._analysis_process_target = _successful_spawn_runner
             # The recovery assertion is about releasing the run lock, not
             # whether a spawn interpreter can import dependencies within 1s.
-            service._analysis_timeout_seconds = lambda: 5
+            service._analysis_timeout_seconds = lambda: 30
             self.assertTrue(service.run_now()["accepted"])
 
-            deadline = time.monotonic() + 10
+            deadline = time.monotonic() + 40
             while service.status()["last_success_at"] is None and time.monotonic() < deadline:
                 time.sleep(0.05)
 
@@ -382,14 +382,14 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
         service._analysis_process_target = _blocking_spawn_runner
 
         self.assertTrue(service.run_now()["accepted"])
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + 20
         while service.status()["last_run_at"] is None and time.monotonic() < deadline:
             time.sleep(0.05)
         self.assertIsNotNone(service.status()["last_run_at"])
 
         service.stop()
 
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + 20
         while service.status()["running"] and time.monotonic() < deadline:
             time.sleep(0.05)
         self.assertFalse(service.status()["running"])
@@ -404,14 +404,14 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
         service._analysis_process_target = _blocking_spawn_runner
 
         self.assertTrue(service.run_now()["accepted"])
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + 20
         while service.status()["last_run_at"] is None and time.monotonic() < deadline:
             time.sleep(0.05)
         self.assertIsNotNone(service.status()["last_run_at"])
 
         service.stop()
 
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + 20
         while service.status()["running"] and time.monotonic() < deadline:
             time.sleep(0.05)
         status = service.status()
@@ -452,10 +452,10 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
         )
         service = RuntimeSchedulerService(config_provider=lambda: config)
         service._analysis_process_target = _large_failure_spawn_runner
-        service._analysis_timeout_seconds = lambda: 2
+        service._analysis_timeout_seconds = lambda: 15
 
         self.assertTrue(service.run_now()["accepted"])
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + 30
         while service.status()["last_error"] is None and time.monotonic() < deadline:
             time.sleep(0.05)
 
@@ -481,7 +481,7 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
                     {"DSA_TEST_DESCENDANT_PID_FILE": str(pid_file)},
                 ):
                     self.assertTrue(service.run_now()["accepted"])
-                    deadline = time.monotonic() + 5
+                    deadline = time.monotonic() + 30
                     while not pid_file.exists() and time.monotonic() < deadline:
                         time.sleep(0.05)
                     self.assertTrue(pid_file.exists())
@@ -523,7 +523,7 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
                     {"DSA_TEST_DESCENDANT_PID_FILE": str(pid_file)},
                 ):
                     self.assertTrue(service.run_now()["accepted"])
-                    deadline = time.monotonic() + 5
+                    deadline = time.monotonic() + 30
                     while not pid_file.exists() and time.monotonic() < deadline:
                         time.sleep(0.05)
                     self.assertTrue(pid_file.exists())

@@ -7,10 +7,12 @@ from pathlib import Path
 from scripts import check_windows_test_baseline as baseline_module
 from scripts.check_windows_test_baseline import (
     _reported_failures,
+    _reported_leaks,
     BASELINE_HEADER,
     TODO,
     Entry,
     Outcome,
+    Report,
     _write_baseline,
     compare,
     main,
@@ -177,3 +179,43 @@ def test_unrepresented_failures_are_counted_but_not_gating():
 
     assert report.unrepresented == 6
     assert report.ok is True
+
+
+def test_unrepresented_failures_gate_above_the_configured_limit():
+    outcome = Outcome(failures={"tests.a::test_x"})
+    report = compare(
+        outcome,
+        [Entry("tests.a::test_x", "known-unattributed", "ok")],
+        reported_failures=7,
+        max_unrepresented=5,
+    )
+
+    assert report.unrepresented == 6
+    assert report.unrepresented_excess is True
+    assert report.ok is False
+    assert report.exit_code() == 1
+
+
+def test_unrepresented_failures_at_the_limit_do_not_gate():
+    outcome = Outcome(failures={"tests.a::test_x"})
+    report = compare(
+        outcome,
+        [Entry("tests.a::test_x", "known-unattributed", "ok")],
+        reported_failures=6,
+        max_unrepresented=5,
+    )
+
+    assert report.unrepresented == 5
+    assert report.unrepresented_excess is False
+    assert report.ok is True
+
+
+def test_reported_leaks_parsed_from_the_probe_output():
+    assert _reported_leaks("[env-leak-probe] 3 state transition(s) not restored:") == 3
+    assert _reported_leaks("[env-leak-probe] clean: no state transitions between tests") == 0
+    assert _reported_leaks("") == 0
+
+
+def test_leak_transitions_fail_the_run():
+    assert Report(leak_transitions=0).ok is True
+    assert Report(leak_transitions=1).ok is False
