@@ -91,6 +91,12 @@ pytest tests/test_check_windows_test_baseline.py          → 12 passed
 - `ci_gate.sh` 与 `windows-baseline.yml` 不再显式传 5。
 
 
+## 扩展（2026-11-05）：夜间非阻断 Windows baseline workflow
+
+`.github/workflows/windows-baseline.yml` 已落地：夜间 + 手动触发、`continue-on-error`、
+90 分钟超时，只上传 JUnit 产物，不进入 `backend-gate` 的阻断链。这是对下方“新增 Windows CI job
+需要单独评估”的落地结论——先以观测项运行，稳定一周后再讨论是否升为阻断。
+
 ## 不在本票范围
 
 - **新增 Windows CI job**：仓库目前只在 `ubuntu-latest` 跑 pytest 全量；Windows 侧只有 `desktop-release` 打包。加 Windows 全量 job 的成本（依赖 + 时长）需要单独评估。
