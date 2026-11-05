@@ -67,9 +67,11 @@ per-file fixture 每次都会重新隔离，统一基线只设一次就把这些
 
 效果：`test_get_config_defaults_public_searxng_instances_off` 由红转绿，全量 `48 → 47 failed`。
 
-**未做**：票 11 验收标准 4 要求把 3 处历史的 per-file `ENV_FILE` fixture
-（`test_intelligence_api.py` / `test_data_capability_service.py` / `test_usage_api.py`）删掉并
-迁到统一机制。它们在基线之上已经冗余但无害；删除需要再跑一次全量验证，本轮未做。
+**已收口（2026-11-05）**：票 11 验收标准 4 的 3 处历史 per-file `ENV_FILE` 隔离
+（`test_intelligence_api.py` / `test_data_capability_service.py` / `test_usage_api.py`）已删除；
+`tests/conftest.py` 在 import 期把 `ENV_FILE` 指向缺失路径的会话级基线覆盖了该需求。
+验证：三个文件 50 passed；POSIX 全量 8087 passed / 0 failed，native Windows 7798 passed /
+2 条白名单内平台差异。
 
 ## 待定决策
 

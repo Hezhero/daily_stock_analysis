@@ -1,4 +1,5 @@
 ## [Unreleased]
+- [测试] 删除票 11 的 3 处历史 per-file `ENV_FILE` 隔离（`test_intelligence_api.py` / `test_data_capability_service.py` / `test_usage_api.py`）：`tests/conftest.py` 的会话级 `ENV_FILE` 基线已覆盖该需求；三文件 50 passed，POSIX 全量 0 failed。
 - [修复] `scripts/ci_status.py` 不再写死 `Hezhero/...` 仓库：解析顺序改为 `--repo` → `GITHUB_REPOSITORY` → `origin` remote；解析不到时退出码 2，不再静默查询另一个仓库。
 - [修复] `scripts/check_data_freshness.py` 的库名解析补齐 `PG_DBNAME` → `PG_DATABASE` → `tushare`，与 `data_provider/pg_cache_fetcher.py` 的既有优先级一致。
 - [修复] `src/core/config_registry.py` 的 `REALTIME_SOURCE_PRIORITY` 默认值与示例同步为 `tushare,tencent,akshare_sina,efinance,akshare_em`，并同步 `docs/full-guide.md` / `docs/full-guide_EN.md` / `docs/FAQ.md` 的示例，补齐票 14 D2 的“文档/代码/断言三者一致”。
