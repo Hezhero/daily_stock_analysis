@@ -1,4 +1,8 @@
 ## [Unreleased]
+- [chore] 本地 guardrail：`ci_gate.sh` / `ci_gate.ps1` 新增 `governance` phase（`check_ai_assets.py` + `check_spec_tickets.py`），并加入 `all` 流程；新增 `.githooks/pre-commit`（启用：`git config core.hooksPath .githooks`），提交前跑 flake8 + 相关 governance 检查。
+- [测试] 新增 `tests/test_env_leak_probe.py`：用子进程跑干净/泄漏两个 fixture，端到端验证 `DSA_ENV_LEAK_PROBE` 仍能报出 `ENV_FILE` 过渡；新增 `tests/test_no_machine_specific_paths.py`：禁止 `scripts/`、`src/`、`docs/agents/` 写死 `F:\workspace`、`C:\Users\` 或 fork 账号。
+- [chore] `scripts/check_windows_test_baseline.py` 默认把 JUnit 写到 `logs/windows-baseline.xml`，`--update` 不再需要从日志解析随机临时路径；`check_ai_assets.py` 在无 `.git` 的导出树/WSL 镜像里跳过 tracked-artifact 检查并打印说明。
+- [文档] `docs/agents/validation-matrix.md` 补 fast iteration loop（定向 → `--lf` → 全量 gate）与 pre-commit 启用说明；`AGENTS.md` §4 收敛为少量命令 + 指针。
 - [测试] 删除票 11 的 3 处历史 per-file `ENV_FILE` 隔离（`test_intelligence_api.py` / `test_data_capability_service.py` / `test_usage_api.py`）：`tests/conftest.py` 的会话级 `ENV_FILE` 基线已覆盖该需求；三文件 50 passed，POSIX 全量 0 failed。
 - [修复] `scripts/ci_status.py` 不再写死 `Hezhero/...` 仓库：解析顺序改为 `--repo` → `GITHUB_REPOSITORY` → `origin` remote；解析不到时退出码 2，不再静默查询另一个仓库。
 - [修复] `scripts/check_data_freshness.py` 的库名解析补齐 `PG_DBNAME` → `PG_DATABASE` → `tushare`，与 `data_provider/pg_cache_fetcher.py` 的既有优先级一致。

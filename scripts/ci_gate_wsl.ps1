@@ -14,7 +14,7 @@ wheel is skipped because its GitHub Release URL returns 403 from WSL
 (ADR 0005).
 
 .PARAMETER Phase
-The ci_gate.sh phase: all, syntax, flake8, deterministic, offline-tests.
+The ci_gate.sh phase: all, syntax, flake8, governance, deterministic, offline-tests.
 
 .PARAMETER Distro
 WSL distribution name. Defaults to Ubuntu-24.04.
@@ -36,7 +36,7 @@ Optional pip index URL (for example a regional mirror) used for the WSL install.
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('all', 'syntax', 'flake8', 'deterministic', 'offline-tests')]
+    [ValidateSet('all', 'syntax', 'flake8', 'governance', 'deterministic', 'offline-tests')]
     [string]$Phase = 'all',
     [string]$Distro = 'Ubuntu-24.04',
     [string]$Venv = '/tmp/dsa-venv',

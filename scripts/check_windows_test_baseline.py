@@ -13,7 +13,6 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -359,9 +358,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if args.junit:
             junit_path = Path(args.junit)
         else:
-            handle, name = tempfile.mkstemp(suffix=".xml")
-            os.close(handle)
-            junit_path = Path(name)
+            # Stable path so a follow-up --update can reuse the report without
+            # parsing a random temp name out of the log.
+            junit_path = REPO_ROOT / "logs" / "windows-baseline.xml"
+            junit_path.parent.mkdir(parents=True, exist_ok=True)
         _, output = _run_pytest(junit_path, leak_probe=args.leak_probe)
         reported = _reported_failures(output)
         if args.leak_probe:

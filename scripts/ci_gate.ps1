@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('all', 'syntax', 'flake8', 'deterministic', 'offline-tests')]
+    [ValidateSet('all', 'syntax', 'flake8', 'governance', 'deterministic', 'offline-tests')]
     [string]$Phase = 'all',
     [string]$Python = ''
 )
@@ -12,10 +12,30 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 
 function Find-GitBash {
     $candidates = @()
+    if ($env:DSA_GIT_BASH) {
+        $candidates += $env:DSA_GIT_BASH
+    }
     $git = Get-Command git -ErrorAction SilentlyContinue
     if ($git) {
-        $gitRoot = Split-Path (Split-Path $git.Source -Parent) -Parent
-        $candidates += Join-Path $gitRoot 'bin\bash.exe'
+        $gitSource = $git.Source
+        # Under Git Bash, Get-Command git returns /usr/bin/git; ask Git for its
+        # Windows install root instead of trying to Split-Path a POSIX path.
+        if ($gitSource -notmatch '^[A-Za-z]:') {
+            $execPath = (& git --exec-path 2>$null)
+            if ($execPath) {
+                $gitRoot = Split-Path (Split-Path (Split-Path $execPath -Parent) -Parent) -Parent
+                $gitSource = Join-Path $gitRoot 'cmd\git.exe'
+            }
+        }
+        if ($gitSource -match '^[A-Za-z]:') {
+            $gitRoot = Split-Path (Split-Path $gitSource -Parent) -Parent
+            $candidates += Join-Path $gitRoot 'bin\bash.exe'
+        }
+    }
+    foreach ($base in @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramW6432)) {
+        if ($base) {
+            $candidates += Join-Path $base 'Git\bin\bash.exe'
+        }
     }
     $candidates += @(
         'C:\Program Files\Git\bin\bash.exe'

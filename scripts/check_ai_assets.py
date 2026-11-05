@@ -106,13 +106,20 @@ def ensure_gitignore_rules() -> None:
 
 
 def ensure_no_tracked_claude_artifacts() -> None:
-    result = subprocess.run(
-        ["git", "ls-files", "--", ".claude"],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "--", ".claude"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        # Exported trees and the WSL ext4 gate mirror have no .git index. The
+        # tracked-only check has nothing to inspect there, so skip it with a
+        # note instead of failing the governance phase.
+        print("[ai-assets] note: git index unavailable; skipping tracked-artifact check")
+        return
     tracked = [line.strip() for line in result.stdout.splitlines() if line.strip()]
     allowed_prefixes = (".claude/skills/",)
     for path in tracked:

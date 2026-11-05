@@ -33,7 +33,9 @@ pwsh -File ./scripts/ci_gate_wsl.ps1 -Phase offline-tests   # POSIX fallback whe
 `ci_gate.sh` uses `${PYTHON:-python}` and preflights its tools; it exits `2` with the
 install command when the interpreter, `flake8`, `pytest`, or `pytest_timeout` is missing.
 Flake8 also runs as `"$PYTHON" -m flake8`, so a stray base-environment flake8 cannot mask
-a missing dependency.
+a missing dependency. The `governance` phase runs `check_ai_assets.py` and
+`check_spec_tickets.py`, so the two checks that used to live only in the `ai-governance`
+CI job still run locally when Actions is unavailable.
 On native Windows (`MINGW*`/`MSYS*`/`CYGWIN*`) the `offline-tests` phase runs
 `scripts/check_windows_test_baseline.py` instead of raw pytest, so known platform
 differences do not hide new failures. The `.ps1` wrapper resolves the interpreter and
@@ -44,6 +46,18 @@ On Windows, `ci_gate.ps1` resolves the project interpreter in this order: `-Pyth
 then `python`. It sets `PYTHON` and prepends the interpreter's directory to `PATH`, so the
 Git Bash child no longer silently falls back to the base environment. If resolution fails,
 activate `daily_stock_analysis` first or pass `-Python <path>`.
+
+### Fast iteration loop
+
+The full suite is delivery evidence, not an edit loop:
+
+1. Run the touched files: `pwsh -File scripts/pytest.ps1 <test files> -q`.
+2. Re-run only the last failures by appending `--lf` to the same file list.
+3. Before commit/delivery run the full gate: `pwsh -File scripts/ci_gate_wsl.ps1 -Phase offline-tests`
+   (POSIX) and `pwsh -File scripts/ci_gate.ps1 offline-tests` (native Windows).
+
+`--lf` is an iteration aid; never quote it as the verification result, and re-run the full
+gate after the last fix.
 
 ## CI unavailable: WSL fallback
 
@@ -72,6 +86,30 @@ replacement for the CI version matrix.
 
 If neither CI nor WSL is available, state the gap explicitly in the delivery and do not
 claim POSIX coverage.
+
+When `gh` is available, the PR/CI evidence commands are:
+
+```bash
+gh pr view <pr_number>
+gh pr checks <pr_number>
+gh run view <run_id> --log-failed
+```
+
+`gh` unavailable: use `ci_status.py` (public repo, no token). A missing run is not
+"pending".
+
+### Local pre-commit guardrail
+
+Enable the fast hook once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+The hook runs `ci_gate.sh flake8` (or `ci_gate.ps1 flake8`) and adds the `governance`
+phase when staged files touch `AGENTS.md`, the Copilot mirror, `.claude/skills/`, or
+`docs/specs/`. The full suite stays a delivery step, not a commit step; bypass with
+`git commit --no-verify` only when you knowingly accept the gap.
 
 ## Per-surface checks
 

@@ -1,0 +1,45 @@
+#!/bin/sh
+# Fast local guardrail for commits.
+#
+# Enable once per clone:
+#   git config core.hooksPath .githooks
+#
+# This hook only runs the cheap checks: flake8 critical rules for the whole
+# repo (a few seconds), plus the governance scripts when the staged files touch
+# AGENTS.md, the Copilot mirror, skills, or the local spec tickets. The full
+# suite stays in scripts/ci_gate.sh (or ci_gate.ps1 on Windows) and is a
+# pre-push / delivery step, not a commit step.
+
+set -eu
+
+repo_root=$(git rev-parse --show-toplevel)
+cd "$repo_root"
+
+staged=$(git diff --cached --name-only --diff-filter=ACM)
+if [ -z "$staged" ]; then
+    exit 0
+fi
+
+# PowerShell launched from Git Bash inherits POSIX-style PATH entries, so
+# Get-Command git may fail. Tell ci_gate.ps1 where the running Git Bash lives.
+if command -v cygpath >/dev/null 2>&1; then
+    DSA_GIT_BASH=$(cygpath -w "$(command -v bash)")
+    export DSA_GIT_BASH
+fi
+
+needs_governance=0
+if printf '%s\n' "$staged" | grep -Eq '^(AGENTS\.md|CLAUDE\.md|\.github/copilot-instructions\.md|\.github/instructions/|\.claude/skills/|docs/specs/)'; then
+    needs_governance=1
+fi
+
+if command -v pwsh >/dev/null 2>&1; then
+    pwsh -NoProfile -File scripts/ci_gate.ps1 flake8
+    if [ "$needs_governance" -eq 1 ]; then
+        pwsh -NoProfile -File scripts/ci_gate.ps1 governance
+    fi
+else
+    ./scripts/ci_gate.sh flake8
+    if [ "$needs_governance" -eq 1 ]; then
+        ./scripts/ci_gate.sh governance
+    fi
+fi

@@ -38,6 +38,13 @@ flake8_checks() {
   "$PYTHON" -m flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
 }
 
+governance_checks() {
+  require_python
+  echo "==> backend-gate: governance checks ($PYTHON)"
+  "$PYTHON" scripts/check_ai_assets.py
+  "$PYTHON" scripts/check_spec_tickets.py
+}
+
 deterministic_checks() {
   require_python
   echo "==> backend-gate: local deterministic checks"
@@ -95,6 +102,7 @@ offline_test_suite() {
 run_all() {
   syntax_check
   flake8_checks
+  governance_checks
   deterministic_checks
   offline_test_suite
   echo "==> backend-gate: all checks passed"
@@ -112,6 +120,9 @@ case "$phase" in
   flake8)
     flake8_checks
     ;;
+  governance)
+    governance_checks
+    ;;
   deterministic)
     deterministic_checks
     ;;
@@ -119,7 +130,7 @@ case "$phase" in
     offline_test_suite
     ;;
   *)
-    echo "Usage: $0 [all|syntax|flake8|deterministic|offline-tests]" >&2
+    echo "Usage: $0 [all|syntax|flake8|governance|deterministic|offline-tests]" >&2
     exit 2
     ;;
 esac

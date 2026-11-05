@@ -71,11 +71,15 @@ python scripts/check_ai_assets.py
 
 ### 运行环境（本项目约定）
 
-本项目统一使用 conda 环境 `daily_stock_analysis`，执行任何 Python 命令前先：
+本项目统一使用 conda 环境 `daily_stock_analysis`。交互式终端先：
 
 ```bash
 conda activate daily_stock_analysis
 ```
+
+非交互脚本不要依赖 `conda activate`（它不会真正切换解释器）；用
+`conda run --live-stream -n daily_stock_analysis python ...`，或 `scripts/ci_gate.ps1` /
+`scripts/pytest.ps1` 自带的解释器解析。
 
 - 不要用 base 或其他环境的解释器跑本项目脚本；跨环境（Python / numpy 版本不同）会让回测结果不可比。
 - 该环境未安装 `numexpr`，pandas 会回退到 NumPy，因此不受 numexpr 2.14.1「多线程静默返回全零缓冲」缺陷影响；不要在未评估的情况下给它装 numexpr。根因、护栏与已验证的升级路径见 `docs/CHANGELOG.md` 的 `[Unreleased]` 条目。
@@ -97,17 +101,14 @@ uvicorn server:app --reload --host 0.0.0.0 --port 8000
 ### 后端验证
 
 ```bash
-conda activate daily_stock_analysis
-pip install -r .github/requirements-ci.txt   # 与 backend-gate 同款依赖（requirements.txt + flake8 + pytest + pytest-timeout）
-./scripts/ci_gate.sh                          # POSIX / Git Bash / WSL
-pwsh -File ./scripts/ci_gate.ps1              # Windows 包装器（自动解析项目解释器 + 定位 Git Bash）
-pwsh -File ./scripts/pytest.ps1 -m "not network"   # 直接跑 pytest（自动解析解释器、UTF-8）
-python -m pytest -m "not network"
-python -m py_compile <changed_python_files>
+pip install -r .github/requirements-ci.txt
+pwsh -File scripts/ci_gate.ps1 all        # Windows；POSIX 用 ./scripts/ci_gate.sh
+pwsh -File scripts/pytest.ps1 <files>     # 定向 pytest（自动解析解释器、UTF-8）
+python scripts/check_data_freshness.py    # 回测前的数据门禁
 ```
 
-> 平台边界、WSL 兜底与全量基线口径见 `docs/agents/validation-matrix.md`。
-> 回测前先跑 `python scripts/check_data_freshness.py`；运行口径见 `docs/backtest-runbook.md`。
+平台边界、快循环、WSL 兜底与全量基线口径见 `docs/agents/validation-matrix.md`；回测口径见
+`docs/backtest-runbook.md`。
 
 ### Web / Desktop
 
@@ -124,17 +125,8 @@ npm run build
 
 ### PR / CI 证据
 
-```bash
-gh pr view <pr_number>
-gh pr checks <pr_number>
-gh run view <run_id> --log-failed
-
-python scripts/ci_status.py            # public repo; no gh/token required
-pwsh -File scripts/ci_gate_wsl.ps1 -Phase offline-tests   # POSIX fallback when CI is unavailable
-```
-
-`gh` 不可用时用 `ci_status.py` 确认当前 HEAD 是否真的有 CI run；没有 run 不等于 pending。
-POSIX 验证只在 CI 对当前 HEAD 绿，或 WSL/Docker 的 `ci_gate.sh` 通过时才算完成。
+见 `docs/agents/validation-matrix.md`：`gh` 命令、`scripts/ci_status.py`、WSL 兜底与完成判据。
+没有 CI run 不等于 pending。
 
 ## 5. 默认工作流
 
