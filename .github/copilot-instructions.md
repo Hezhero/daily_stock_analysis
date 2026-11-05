@@ -13,6 +13,7 @@ If any instruction in this file conflicts with `AGENTS.md`, follow `AGENTS.md`.
   - Desktop: `apps/dsa-desktop/`
   - Deployment/workflows: `scripts/`, `.github/workflows/`, `docker/`
 - Do not run `git commit`, `git tag`, or `git push` without explicit user confirmation.
+- Do not trigger GitHub Actions proactively: no empty commits, no manual `workflow_dispatch`, and no workflow edits just to force a run. When CI is unavailable, verify with the WSL/Docker fallback in `docs/agents/validation-matrix.md`.
 - Before creating/updating PRs, PR review, or issue analysis, refresh the latest code baseline with `git fetch --all --prune`; if the worktree is clean and the current branch can fast-forward, run `git pull --ff-only`. If local changes, conflicts, missing upstream, or non-fast-forward history make that unsafe, do not stash/reset/overwrite local state; analyze against fetched remote refs or record the baseline gap before proceeding.
 - PR titles should use `<type>: <change summary>` such as `fix: 修复大盘分析历史记录丢失`; use `fix`/`feat`/`refactor`/`docs`/`chore`/`test`/`ci` where possible, and avoid `[codex]`, `codex`, `autocode`, `copilot`, or other tool/agent source prefixes. Treat this as process guidance and do not use title format mismatches as a hard review blocker.
 - Do not hardcode secrets, accounts, ports, model names, absolute environment-specific paths, or environment-specific branches.

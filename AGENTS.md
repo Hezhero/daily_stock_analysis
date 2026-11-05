@@ -12,6 +12,7 @@
   - 桌面端改动在 `apps/dsa-desktop/`
   - 部署与流水线改动在 `scripts/`、`.github/workflows/`、`docker/`
 - 未经明确确认，不执行 `git commit`、`git tag`、`git push`。
+- 不主动触发 GitHub Actions：不推空提交、不手动 `workflow_dispatch`、不为逼出 CI run 而改 workflow；CI 不可用时按 `docs/agents/validation-matrix.md` 的 WSL/Docker 兜底验证。
 - commit message 使用英文，不添加 `Co-Authored-By`。
 - 不写死密钥、账号、路径、模型名、端口或环境差异逻辑。
 - 优先复用现有模块、配置入口、脚本和测试，不新增平行实现。
