@@ -308,7 +308,40 @@ traceback** 拿到真因：`401 unauthorized`。
 仍未逐条定性的 12 条见 `docs/agents/windows-known-failures.md`；子测试级失败（junit 不可见）
 仍是票 10 的已知限制。
 
-## 待定决策
+## 2026-11-05 第八轮：环境复原从 5 个模块提升为全仓逐用例（POSIX 全量）
+
+POSIX 全量复跑暴露了两类只在“全量”出现的失败：
+
+- `test_agent_chat_api` 11 条 `sqlite3.OperationalError: disk I/O error`：前序用例把仓库根 `.env`
+  的 `DATABASE_PATH=./data/stock_analysis.db` 泄漏进进程环境，后续 SQLite 文件落在 `/mnt/f`
+  （DrvFs）上，并发访问时返回 I/O error。
+- `test_fundamental_adapter_contracts` / `test_fundamental_timeout_guard` 误走本地 PG 兜底：
+  `PG_*` 同样来自泄漏的 `.env`；单跑时 PG 不可达、全量时可达，同一份断言得到不同结果。
+
+票 12 早前选择“逐触发器打补丁”，但泄漏源数量是 O(文件数)，每个新加入 `load_dotenv()` 的模块
+都会重新引入。改为在 `tests/conftest.py` 的 autouse fixture 里对**整个 `os.environ`** 做逐用例
+快照/还原；`restore_env_after_test` 退化为显式依赖声明，不再承担隔离职责。
+
+`test_auth_api` 的 `setUpClass` 写 env 仍能通过（实测 30 passed）；若后续出现 class 级 env
+依赖，应把复原粒度改为 module 级，而不是回退到 deny-list。
+
+同一轮修掉 `test_fetch_tushare_stock_list.py` 的 `sys.modules` 泄漏：它把 `dotenv` / `tushare`
+替换成 stub 后没有移除。子集运行时（该模块先于 `src.config` 首次导入）会让 `dotenv_values()`
+永远返回 `{}`，`src.auth` 因此把 admin auth 判成关闭并返回 403；全量里因为更早的模块已导入真实
+`dotenv` 才被掩盖。修法是在导入被测脚本后把 stub 从 `sys.modules` 弹出。
+
+修复后 POSIX 全量仍有 12 条“子进程未在 5s 内启动”的失败（Codex App Server、调度器、
+题材搜索）。把同一组 113 条用例复制到 WSL ext4 镜像（`/tmp/dsa-src`）后 **37s 全绿**，
+证明这是 `/mnt/f`（DrvFs）的 `multiprocessing` spawn 启动延迟，不是状态污染。`ci_gate_wsl.ps1`
+因此默认在 ext4 镜像上跑 gate（`-InPlace` 可退回），不修改任何测试断言。
+
+ext4 上最后剩 1 条 `test_fetch_enabled_sources_is_fail_open`，根因不是测试污染而是生产缺陷：
+`src/services/intelligence_service.py` 把模块级 `_DISABLE_REQUEST_PROXIES` 直接传给
+`requests.get`，而 `requests.Session.merge_environment_settings()` 会对传入的 `proxies` 调用
+`setdefault()`。一次真实请求（`_load_persisted_intelligence_context` → `refresh_auto_sources`）
+就把环境代理键（本机为 `use=false`）永久写进该常量，之后所有“禁用代理”的请求都会带上它。
+修法：每次传 `dict(_DISABLE_REQUEST_PROXIES)` 副本。这解释了为什么该用例单跑绿、全量红：
+只有先发生过一次真实请求，常量才会被污染。
 
 ## 待定决策
 

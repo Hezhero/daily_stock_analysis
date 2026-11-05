@@ -655,6 +655,12 @@ def _canonical_hash(payload: Mapping[str, Any]) -> str:
     gate = clone.get("gate")
     if isinstance(gate, dict):
         gate.pop("created_at", None)
+    estimator = clone.get("estimator")
+    if isinstance(estimator, dict):
+        # Provenance, not verdict semantics. The bootstrap numbers are identical
+        # across numpy builds (PCG64 is stable), so hashing the version string
+        # would turn every dependency bump into a fake verdict change.
+        estimator.pop("numpy_version", None)
     text = json.dumps(
         _json_safe(clone),
         sort_keys=True,

@@ -17,6 +17,7 @@ from scripts.portfolio_gate import (
     GATE_SPEC_HASH,
     PORTFOLIO_ESTIMATOR_ID,
     PORTFOLIO_GATE_SPEC_HASH,
+    _canonical_hash,
     block_length,
     build_observations,
     main,
@@ -242,7 +243,21 @@ def test_verdict_hash_is_deterministic_and_order_independent(tmp_path: Path) -> 
     assert first["verdict_hash"] == third["verdict_hash"]
 
 
-FROZEN_SIGNAL_VERDICT_HASH = "2c70774a05b85794c04be3446289b01fde322766785e7d8631115803744f68b2"
+def test_verdict_hash_ignores_environment_provenance(tmp_path: Path) -> None:
+    """A dependency bump that leaves the numbers unchanged must keep the hash."""
+    baseline = make_run(100, 4, 1, 0.0, 0.002, 0.0, seed=61)
+    candidate = make_run(100, 4, 1, 0.0, 0.002, 0.01, seed=62)
+    payload = _run(baseline, candidate, tmp_path)
+
+    mutated = copy.deepcopy(payload)
+    mutated.pop("verdict_hash", None)
+    mutated["estimator"]["numpy_version"] = "0.0.0-provenance-only"
+    mutated["gate"]["created_at"] = "1999-01-01T00:00:00+00:00"
+
+    assert _canonical_hash(mutated) == payload["verdict_hash"]
+
+
+FROZEN_SIGNAL_VERDICT_HASH = "91466ff2f2f7d555afee02c51953024f2665b3eebc96621066300a7525576bf3"
 FROZEN_SIGNAL_TOP_LEVEL_KEYS = frozenset(
     {
         "criteria",

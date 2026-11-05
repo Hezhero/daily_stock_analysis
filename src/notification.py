@@ -2169,6 +2169,10 @@ class NotificationService(
         # 财务摘要 / 股东回报 / 关联板块（数据缺失时自动隐藏对应小节）
         self._append_fundamental_blocks(lines, result)
 
+        # 数据来源说明（与 brief / dashboard 报告保持同一契约）
+        if self._append_data_sources_line(lines, result, labels):
+            lines.append("")
+
         lines.append("---")
         if self._should_show_llm_model():
             model_used = normalize_model_used(getattr(result, "model_used", None))

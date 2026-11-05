@@ -836,14 +836,19 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
 
         with mock.patch.object(service, "generate_dashboard_report", return_value="dashboard") as mock_dashboard, mock.patch.object(
             service, "generate_brief_report", return_value="brief"
-        ) as mock_brief:
-            self.assertEqual(service.generate_aggregate_report([result], "simple"), "dashboard")
+        ) as mock_brief, mock.patch.object(
+            service, "generate_simple_aggregate_report", return_value="simple"
+        ) as mock_simple:
+            # SIMPLE has its own renderer since the report-engine split; only
+            # full/detailed still fall through to the dashboard report.
+            self.assertEqual(service.generate_aggregate_report([result], "simple"), "simple")
             self.assertEqual(service.generate_aggregate_report([result], "full"), "dashboard")
             self.assertEqual(service.generate_aggregate_report([result], "detailed"), "dashboard")
             self.assertEqual(service.generate_aggregate_report([result], "brief"), "brief")
 
-        self.assertEqual(mock_dashboard.call_count, 3)
+        self.assertEqual(mock_dashboard.call_count, 2)
         mock_brief.assert_called_once()
+        mock_simple.assert_called_once()
 
     @mock.patch("src.notification.get_config")
     def test_dashboard_sources_are_isolated_in_builtin_and_template_renderers(

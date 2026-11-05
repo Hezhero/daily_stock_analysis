@@ -4758,9 +4758,29 @@ class DataFetcherManager:
             "capital_flow",
             quarantine_key=("akshare", "capital_flow"),
         )
+        adapter_failed = not isinstance(payload, dict)
+        if adapter_failed:
+            payload = {
+                "status": "failed",
+                "stock_flow": {},
+                "sector_rankings": {"top": [], "bottom": []},
+                "source_chain": [],
+                "errors": [err or "capital_flow failed"],
+            }
 
-        # 在线源整体失败（超时/异常）时，用本地 PG 兜底个股资金流 + 申万行业资金流榜
-        if not isinstance(payload, dict):
+        # 主链路（akshare/东财）未取到个股资金流时，用剩余预算尝试补充数据源（如妙想）
+        remaining_budget = max(0.0, timeout - cost_ms / 1000.0)
+        self._supplement_capital_flow_from_fetchers(stock_code, payload, remaining_budget)
+
+        stock_flow = payload.get("stock_flow") or {}
+        sector_rankings = payload.get("sector_rankings") or {}
+        has_stock_flow = False
+        if isinstance(stock_flow, dict):
+            has_stock_flow = any(v is not None for v in stock_flow.values())
+        has_sector_rankings = bool(sector_rankings.get("top")) or bool(sector_rankings.get("bottom"))
+
+        # 在线源整体失败（超时/异常）且补充源也没取到数据时，用本地 PG 兜底个股资金流 + 申万行业资金流榜
+        if adapter_failed and not has_stock_flow and not has_sector_rankings:
             pg_flow = self._get_pg_capital_flow(stock_code)
             pg_sector = self._get_pg_sector_fund_flow(5)
             if pg_flow or pg_sector:
@@ -4776,21 +4796,14 @@ class DataFetcherManager:
                         "sector_rankings": pg_sector or {"top": [], "bottom": []},
                     },
                     self._normalize_source_chain(pg_chain, "capital_flow", "ok", cost_ms),
-                    [err or "online capital_flow failed; pg fallback used"],
+                    list(payload.get("errors", [])),
                 )
             return self._build_fundamental_block(
                 "failed",
                 {},
                 [{"provider": "fundamental_pipeline", "result": "failed", "duration_ms": cost_ms}],
-                [err or "capital_flow failed"],
+                list(payload.get("errors", [])),
             )
-
-        stock_flow = payload.get("stock_flow") or {}
-        sector_rankings = payload.get("sector_rankings") or {}
-        has_stock_flow = False
-        if isinstance(stock_flow, dict):
-            has_stock_flow = any(v is not None for v in stock_flow.values())
-        has_sector_rankings = bool(sector_rankings.get("top")) or bool(sector_rankings.get("bottom"))
 
         # 在线源未取到个股资金流时，用本地 PostgreSQL tushare_moneyflow 兜底
         if not has_stock_flow:
@@ -4834,7 +4847,7 @@ class DataFetcherManager:
                 capital_flow_status,
                 cost_ms,
             ),
-            list(payload.get("errors", [])) + ([err] if err else []),
+            list(payload.get("errors", [])) + ([err] if err and not adapter_failed else []),
         )
 
     def get_dragon_tiger_context(self, stock_code: str, budget_seconds: Optional[float] = None) -> Dict[str, Any]:

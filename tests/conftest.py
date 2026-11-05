@@ -77,22 +77,34 @@ for _ambient_key in _AMBIENT_KEYS:
 
 @pytest.fixture(autouse=True)
 def _enforce_ambient_env_baseline():
-    """Drop ambient config keys before every test so one test cannot leak into the next.
+    """Snapshot ``os.environ`` for every test and restore it afterwards.
 
-    ``ENV_FILE`` is deliberately not forced here: several modules set it at import
+    Several modules call bare ``load_dotenv()`` / ``setup_env()``, which reads the
+    repository ``.env`` (``DATABASE_PATH``, ``PG_*``, ``LLM_*``) and bypasses the
+    ``ENV_FILE`` baseline set above. Without a full restore, later tests inherit a
+    real database path (SQLite on /mnt/f then reports "disk I/O error" under load)
+    or live PostgreSQL credentials (capital-flow tests hit the PG fallback instead
+    of the mocked online source).
+
+    ``ENV_FILE`` is deliberately not forced: several modules set it at import
     time on purpose, and a per-test override would break them.
     """
+    before = dict(os.environ)
     for name in _AMBIENT_KEYS:
         os.environ.pop(name, None)
     yield
+    for key in list(os.environ):
+        if key not in before:
+            os.environ.pop(key, None)
+    os.environ.update(before)
 
 
 @pytest.fixture
 def restore_env_after_test():
-    """Undo env writes made by modules that bypass ``ENV_FILE`` (bare ``load_dotenv()``).
+    """Kept for modules that want to declare the env dependency explicitly.
 
-    Opt in per module with ``pytestmark = pytest.mark.usefixtures("restore_env_after_test")``;
-    applying it globally would hide the leaks this suite is trying to eliminate.
+    The autouse ``_enforce_ambient_env_baseline`` fixture now restores the full
+    environment after every test, so this fixture is redundant but harmless.
     """
     before = dict(os.environ)
     yield

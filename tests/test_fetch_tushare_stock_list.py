@@ -23,18 +23,29 @@ SCRIPTS_DIR = ROOT / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-if "dotenv" not in sys.modules:
+_ORIGINAL_DOTENV = sys.modules.get("dotenv")
+if _ORIGINAL_DOTENV is None:
     dotenv_stub = types.ModuleType("dotenv")
     dotenv_stub.load_dotenv = lambda *args, **kwargs: None
     dotenv_stub.dotenv_values = lambda *args, **kwargs: {}
     sys.modules["dotenv"] = dotenv_stub
 
-if "tushare" not in sys.modules:
+_ORIGINAL_TUSHARE = sys.modules.get("tushare")
+if _ORIGINAL_TUSHARE is None:
     tushare_stub = types.ModuleType("tushare")
     tushare_stub.pro_api = lambda *args, **kwargs: MagicMock()
     sys.modules["tushare"] = tushare_stub
 
 fetch_tushare_stock_list = importlib.import_module("fetch_tushare_stock_list")
+
+# The stubs exist only to import the script under test. Leaving them in
+# ``sys.modules`` poisons any module imported later (notably ``src.config`` /
+# ``src.auth``, whose ``dotenv_values`` would return ``{}`` and disable admin
+# auth), so a subset run can fail while the full suite passes.
+if _ORIGINAL_DOTENV is None:
+    sys.modules.pop("dotenv", None)
+if _ORIGINAL_TUSHARE is None:
+    sys.modules.pop("tushare", None)
 
 
 def test_should_fix_a_stock_name_matches_status_prefixes():
