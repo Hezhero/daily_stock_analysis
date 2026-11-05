@@ -10,10 +10,8 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot 'resolve_python.ps1')
 
-$pythonPath = Resolve-DsaPython
-$pythonDir = Split-Path -Parent $pythonPath
+$pythonPath = Initialize-DsaPython
 $env:PYTHONIOENCODING = 'utf-8'
-$env:PATH = "$pythonDir;$(Join-Path $pythonDir 'Scripts');$env:PATH"
 
 $pytestArgs = @($args)
 if ($pytestArgs.Count -eq 0) {

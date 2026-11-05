@@ -17,8 +17,9 @@
 - **子测试级失败**（`unittest.subTest`）不会出现在 JUnit 报告里。checker 用 pytest 汇总的
   `N failed` 减去 JUnit 失败数得到 `UNREPRESENTED`；当前基线为 0。`--max-unrepresented`
   （默认 0）在出现子测试级失败时立即失败，避免它被静默吞掉。
-- `--leak-probe` 会以 `DSA_ENV_LEAK_PROBE=1` 运行，并把测试之间的 env / singleton 状态转移
-  视为失败；默认关闭，避免把既有泄漏直接变成红基线。
+- `--leak-probe` 会以 `DSA_ENV_LEAK_PROBE=1` 运行；该模式**关闭**逐用例环境还原，让
+  `pytest_runtest_setup` 能观察到每个用例真正留下的 env 写入，并把过渡视为失败；单例过渡只
+  作为信息输出。默认关闭，避免把既有泄漏直接变成红基线。
 
 | test | 类别 | 理由 |
 | --- | --- | --- |

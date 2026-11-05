@@ -6,6 +6,7 @@ from datetime import date, datetime
 from scripts.check_data_freshness import (
     TableStatus,
     _as_date,
+    _pg_dbname,
     evaluate,
     missing_trade_days,
     parse_tables,
@@ -58,6 +59,21 @@ def test_evaluate_treats_a_missing_table_as_stale():
 
     assert fresh is False
     assert stale == statuses
+
+
+def test_pg_dbname_matches_the_shared_pg_settings_precedence(monkeypatch):
+    monkeypatch.delenv("PG_DBNAME", raising=False)
+    monkeypatch.delenv("PG_DATABASE", raising=False)
+    assert _pg_dbname() == "tushare"
+
+    monkeypatch.setenv("PG_DATABASE", "warehouse")
+    assert _pg_dbname() == "warehouse"
+
+    monkeypatch.setenv("PG_DBNAME", "custom")
+    assert _pg_dbname() == "custom"
+
+    monkeypatch.setenv("PG_DBNAME", "  ")
+    assert _pg_dbname() == "tushare"
 
 
 def test_parse_tables_defaults_and_overrides():

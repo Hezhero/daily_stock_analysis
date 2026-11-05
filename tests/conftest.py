@@ -23,18 +23,22 @@ import httpx
 import starlette.testclient
 from anyio._backends import _asyncio
 
-# Leak probe (ticket 12, D1). With ``DSA_ENV_LEAK_PROBE=1`` it compares the state
-# seen at each test's setup against the previous setup, so it names the test that
-# left an env entry or a shared singleton behind instead of letting a later,
-# unrelated test fail. Inert unless the variable is set.
+# Leak probe (ticket 12, D1). With ``DSA_ENV_LEAK_PROBE=1`` the autouse fixture
+# below deliberately stops restoring the environment, and each test's setup is
+# compared with the previous setup, so the probe names the test that left an env
+# entry behind. Singleton transitions are reported separately as informational:
+# fixtures create and reset singletons by design, so they are not gating.
+# Inert unless the variable is set.
 _PROBE_VARS = ("ENV_FILE", "DATABASE_PATH", "ADMIN_AUTH_ENABLED", "LLM_CHANNELS")
 _PROBE_SINGLETONS = {
     "Config._instance": ("src.config", "Config"),
     "DatabaseManager._instance": ("src.storage", "DatabaseManager"),
 }
-_PROBE_STATE: dict[str, str] | None = None
+_PROBE_ENV_STATE: dict[str, str] | None = None
+_PROBE_SINGLETON_STATE: dict[str, str] | None = None
 _PROBE_LAST_NODEID = "<session start>"
-_PROBE_LEAKS: list[tuple[str, str, Any, Any]] = []
+_PROBE_ENV_LEAKS: list[tuple[str, str, Any, Any]] = []
+_PROBE_SINGLETON_TRANSITIONS: list[tuple[str, str, Any, Any]] = []
 
 
 def _singleton_marker(module_name: str, class_name: str) -> str:
@@ -47,11 +51,15 @@ def _singleton_marker(module_name: str, class_name: str) -> str:
     return "none" if instance is None else "set"
 
 
-def _probe_snapshot() -> dict[str, str]:
-    snapshot = {name: repr(os.environ.get(name)) for name in _PROBE_VARS}
-    for label, (module_name, class_name) in _PROBE_SINGLETONS.items():
-        snapshot[label] = _singleton_marker(module_name, class_name)
-    return snapshot
+def _probe_env_snapshot() -> dict[str, str]:
+    return {name: repr(os.environ.get(name)) for name in _PROBE_VARS}
+
+
+def _probe_singleton_snapshot() -> dict[str, str]:
+    return {
+        label: _singleton_marker(module_name, class_name)
+        for label, (module_name, class_name) in _PROBE_SINGLETONS.items()
+    }
 
 
 # Session env baseline (ticket 11). ``src.config`` calls ``setup_env()`` at import
@@ -86,28 +94,21 @@ def _enforce_ambient_env_baseline():
     or live PostgreSQL credentials (capital-flow tests hit the PG fallback instead
     of the mocked online source).
 
+    ``DSA_ENV_LEAK_PROBE=1`` disables both the ambient-key scrub and the restore
+    so ``pytest_runtest_setup`` can observe what each test actually leaves behind;
+    do not use it as the normal pass/fail mode.
+
     ``ENV_FILE`` is deliberately not forced: several modules set it at import
     time on purpose, and a per-test override would break them.
     """
-    before = dict(os.environ)
-    for name in _AMBIENT_KEYS:
-        os.environ.pop(name, None)
+    probe = os.environ.get("DSA_ENV_LEAK_PROBE") == "1"
+    if not probe:
+        before = dict(os.environ)
+        for name in _AMBIENT_KEYS:
+            os.environ.pop(name, None)
     yield
-    for key in list(os.environ):
-        if key not in before:
-            os.environ.pop(key, None)
-    os.environ.update(before)
-
-
-@pytest.fixture
-def restore_env_after_test():
-    """Kept for modules that want to declare the env dependency explicitly.
-
-    The autouse ``_enforce_ambient_env_baseline`` fixture now restores the full
-    environment after every test, so this fixture is redundant but harmless.
-    """
-    before = dict(os.environ)
-    yield
+    if probe:
+        return
     for key in list(os.environ):
         if key not in before:
             os.environ.pop(key, None)
@@ -115,31 +116,47 @@ def restore_env_after_test():
 
 
 def pytest_runtest_setup(item):
-    global _PROBE_LAST_NODEID, _PROBE_STATE
+    global _PROBE_ENV_STATE, _PROBE_LAST_NODEID, _PROBE_SINGLETON_STATE
     if os.environ.get("DSA_ENV_LEAK_PROBE") != "1":
         return
-    current = _probe_snapshot()
-    if _PROBE_STATE is None:
-        _PROBE_STATE = current
+    current_env = _probe_env_snapshot()
+    current_singletons = _probe_singleton_snapshot()
+    if _PROBE_ENV_STATE is None:
+        _PROBE_ENV_STATE = current_env
+        _PROBE_SINGLETON_STATE = current_singletons
         _PROBE_LAST_NODEID = item.nodeid
         return
-    for name, value in current.items():
-        previous = _PROBE_STATE.get(name)
+    for name, value in current_env.items():
+        previous = _PROBE_ENV_STATE.get(name)
         if value != previous:
-            _PROBE_LEAKS.append((_PROBE_LAST_NODEID, name, previous, value))
-    _PROBE_STATE = current
+            _PROBE_ENV_LEAKS.append((_PROBE_LAST_NODEID, name, previous, value))
+    for name, value in current_singletons.items():
+        previous = _PROBE_SINGLETON_STATE.get(name)
+        if value != previous:
+            _PROBE_SINGLETON_TRANSITIONS.append(
+                (_PROBE_LAST_NODEID, name, previous, value)
+            )
+    _PROBE_ENV_STATE = current_env
+    _PROBE_SINGLETON_STATE = current_singletons
     _PROBE_LAST_NODEID = item.nodeid
 
 
 def pytest_sessionfinish(session, exitstatus):
     if os.environ.get("DSA_ENV_LEAK_PROBE") != "1":
         return
-    if not _PROBE_LEAKS:
-        print("\n[env-leak-probe] clean: no state transitions between tests")
-        return
-    print(f"\n[env-leak-probe] {len(_PROBE_LEAKS)} state transition(s) not restored:")
-    for nodeid, name, before, after in _PROBE_LEAKS:
-        print(f"  {nodeid} :: {name}: {before!r} -> {after!r}")
+    if not _PROBE_ENV_LEAKS:
+        print("\n[env-leak-probe] clean: no env transitions between tests")
+    else:
+        print(
+            f"\n[env-leak-probe] {len(_PROBE_ENV_LEAKS)} state transition(s) not restored:"
+        )
+        for nodeid, name, before, after in _PROBE_ENV_LEAKS:
+            print(f"  {nodeid} :: {name}: {before!r} -> {after!r}")
+    if _PROBE_SINGLETON_TRANSITIONS:
+        print(
+            f"[env-leak-probe] singleton transitions: "
+            f"{len(_PROBE_SINGLETON_TRANSITIONS)} (informational)"
+        )
 
 
 T = TypeVar("T")

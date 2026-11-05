@@ -37,10 +37,7 @@ if (-not $bash) {
     exit 2
 }
 
-$pythonPath = Resolve-DsaPython -Explicit $Python
-$pythonDir = Split-Path -Parent $pythonPath
-$env:PYTHON = $pythonPath
-$env:PATH = "$pythonDir;$(Join-Path $pythonDir 'Scripts');$env:PATH"
+$pythonPath = Initialize-DsaPython -Explicit $Python
 
 & $pythonPath -c "import sys; print('backend-gate: python', sys.executable, sys.version.split()[0])"
 if ($LASTEXITCODE -ne 0) {

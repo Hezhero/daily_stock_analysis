@@ -1,5 +1,6 @@
 # Shared interpreter resolution for PowerShell entry points.
-# Dot-source this file, then call `Resolve-DsaPython -Explicit $path`.
+# Dot-source this file, then call `Initialize-DsaPython` (or `Resolve-DsaPython`
+# when only the path is needed).
 
 function Resolve-DsaPython {
     param([string]$Explicit = '')
@@ -41,4 +42,17 @@ function Resolve-DsaPython {
         return $pythonCommand.Source
     }
     throw 'Python not found. Activate daily_stock_analysis or pass -Python <path>.'
+}
+
+
+# Resolve the interpreter and make it the default `python` for child processes.
+# Returns the absolute interpreter path.
+function Initialize-DsaPython {
+    param([string]$Explicit = '')
+
+    $pythonPath = Resolve-DsaPython -Explicit $Explicit
+    $pythonDir = Split-Path -Parent $pythonPath
+    $env:PYTHON = $pythonPath
+    $env:PATH = "$pythonDir;$(Join-Path $pythonDir 'Scripts');$env:PATH"
+    return $pythonPath
 }

@@ -14,12 +14,13 @@ conda run --live-stream -n daily_stock_analysis python scripts/check_data_freshn
 conda run --live-stream -n daily_stock_analysis python -V
 
 # 3) 从仓库根目录运行：脚本里的 load_dotenv() 不带路径
-Set-Location F:\workspace\pythonProjects\daily_stock_analysis
+Set-Location <repo-root>
 ```
 
 `conda activate` 在非交互 PowerShell 里不会真正切换解释器；要么用上面的
-`conda run --live-stream`，要么直接用绝对路径
-`F:\.conda\envs\daily_stock_analysis\python.exe`。
+`conda run --live-stream`，要么直接用项目解释器的绝对路径（把
+`<envs>\daily_stock_analysis\python.exe` 换成你机器上的实际位置，或用
+`pwsh -File scripts/pytest.ps1` 的解析逻辑）。
 
 数据落后时先补：
 

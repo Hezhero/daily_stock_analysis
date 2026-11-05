@@ -78,6 +78,7 @@ FAILED test_runtime_env_fallback_does_not_override_saved_provider_and_base_url_s
   责任回到票 12（把剩余写入 `LLM_CHANNELS` 的模块找干净）。
 - 本票不再改生产代码。剩余工作只有一条：把该契约写进文档，说明"进程环境里的注册键会被当作运行时
   注入配置"，避免下一个人再把它当 bug 修一遍。
+  文档落点：`docs/full-guide.md` 的「配置校验与运行时环境」段落（已写入）。
 - D1 的 (a)(b) 两个方案**均否**：(a) 破坏 Docker/WebUI 语义；(b) 实测打坏上述两条用例。
 
 ## 待定决策

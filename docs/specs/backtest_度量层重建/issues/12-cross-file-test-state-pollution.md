@@ -333,7 +333,8 @@ POSIX 全量复跑暴露了两类只在“全量”出现的失败：
 修复后 POSIX 全量仍有 12 条“子进程未在 5s 内启动”的失败（Codex App Server、调度器、
 题材搜索）。把同一组 113 条用例复制到 WSL ext4 镜像（`/tmp/dsa-src`）后 **37s 全绿**，
 证明这是 `/mnt/f`（DrvFs）的 `multiprocessing` spawn 启动延迟，不是状态污染。`ci_gate_wsl.ps1`
-因此默认在 ext4 镜像上跑 gate（`-InPlace` 可退回），不修改任何测试断言。
+因此默认在 ext4 镜像上跑 gate（`-InPlace` 可退回），未修改功能断言；只放宽了非功能性的
+启动/时钟宽限（见第九轮）。
 
 ext4 上最后剩 1 条 `test_fetch_enabled_sources_is_fail_open`，根因不是测试污染而是生产缺陷：
 `src/services/intelligence_service.py` 把模块级 `_DISABLE_REQUEST_PROXIES` 直接传给
@@ -342,6 +343,23 @@ ext4 上最后剩 1 条 `test_fetch_enabled_sources_is_fail_open`，根因不是
 就把环境代理键（本机为 `use=false`）永久写进该常量，之后所有“禁用代理”的请求都会带上它。
 修法：每次传 `dict(_DISABLE_REQUEST_PROXIES)` 副本。这解释了为什么该用例单跑绿、全量红：
 只有先发生过一次真实请求，常量才会被污染。
+
+## 2026-11-05 第九轮：启动宽限与时钟分辨率的例外，以及 leak-probe 重新设计
+
+收口时两轴 review 指出，第八轮“不修改任何测试断言”的表述与本批实际改动冲突。核实后的口径：
+
+- `tests/test_runtime_scheduler_service.py` 的 4–10s → 20–40s 改的是**等待最终状态**的上限，
+  不是功能断言；Windows `multiprocessing.spawn` 重新导入 pytest/pandas 的启动时间不属于被测契约。
+- `tests/test_screening_api.py` 把预算 0.25s → 2.0s、采样 5ms → 20ms，是为了绕开 Windows
+  `time.monotonic()` 约 15.6ms 的分辨率；被测契约是“复用同一个 deadline 且剩余预算严格递减”，
+  不是预算必须为 0.25s。
+- 因此本票的验收口径改为“不放宽任何**功能**断言；非功能性的启动/时钟宽限必须有 root cause
+  与复现证据，并记录在本票”。没有这两条证据时，仍按原规则视为契约漂移。
+
+`--leak-probe` 也重新设计：第八轮的全量 env 还原会让 setup-to-setup 探针永远看不到泄漏。
+现在 `DSA_ENV_LEAK_PROBE=1` 会**关闭**还原与 ambient 清理，让探针观察真实的 env 写入；env
+过渡计入 gating 的 `state transition`，单例过渡单独输出为 informational（fixture 创建/重置
+单例是常态，不能作为失败）。
 
 ## 待定决策
 
@@ -396,7 +414,7 @@ ext4 上最后剩 1 条 `test_fetch_enabled_sources_is_fail_open`，根因不是
    集合一致（当前差异 10 条）。
 2. D1 的哨兵能在污染发生时指出**具体的泄漏入口**，而不是只报一条 `ConfigValidationError`。
 3. 修复后，全量连续跑 3 次失败集合完全相同（消除"同一命令两次结果不同"）。
-4. 不删除、不 `xfail`、不放宽任何断言来达成上述目标。
+4. 不删除、不 `xfail`、不放宽任何功能断言；非功能性启动/时钟宽限按第九轮的口径记录。
 5. 若引入随机顺序（D3 选 b），必须记录使用的 seed 与命令，且不得接入阻断 CI。
 
 ## 不在本票范围

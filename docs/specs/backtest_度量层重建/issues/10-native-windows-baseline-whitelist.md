@@ -81,6 +81,15 @@ pytest tests/test_check_windows_test_baseline.py          → 12 passed
 实测：一次真实全量 `17 failed`（pytest）vs `12`（junit 可见）→ 报 `UNREPRESENTED (5)`，
 同时 `12 registered / 12 failing`、退出码 0。
 
+## 收口（2026-11-05）：子测试级失败归零，默认上限收紧为 0
+
+`test_notification` 的 6 条子测试失败随 `simple` 报告数据来源行修复而消失；实测 native Windows
+全量 `5 failed / 0 UNREPRESENTED`（随后白名单又收敛到 2 条确定性平台差异）。因此：
+
+- `--max-unrepresented` 默认值由 5 改为 0；出现任何 JUnit 不可见的子测试级失败立即失败。
+- “信息性”只适用于基线 > 0 的过渡期；基线为 0 时继续允许 5 条差额会重新制造静默吞掉失败的空间。
+- `ci_gate.sh` 与 `windows-baseline.yml` 不再显式传 5。
+
 
 ## 不在本票范围
 

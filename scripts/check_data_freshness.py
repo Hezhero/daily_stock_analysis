@@ -98,6 +98,12 @@ def parse_tables(items: Optional[Sequence[str]]) -> list[tuple[str, str]]:
     return tables
 
 
+def _pg_dbname() -> str:
+    """Match the existing PG settings precedence (PG_DBNAME, then PG_DATABASE)."""
+    value = os.getenv("PG_DBNAME", os.getenv("PG_DATABASE", "tushare"))
+    return value.strip() or "tushare"
+
+
 def _connect():
     load_dotenv(REPO_ROOT / ".env")
     password = os.getenv("PG_PASSWORD", "")
@@ -108,7 +114,7 @@ def _connect():
         port=int(os.getenv("PG_PORT", "5432")),
         user=os.getenv("PG_USER", "root"),
         password=password,
-        dbname=os.getenv("PG_DBNAME", "tushare"),
+        dbname=_pg_dbname(),
         connect_timeout=10,
     )
 

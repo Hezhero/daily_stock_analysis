@@ -33,6 +33,29 @@ def test_parse_repo_rejects_non_github_remotes():
     assert parse_repo("") is None
 
 
+def test_resolve_repo_prefers_explicit_then_environment_then_origin(monkeypatch):
+    monkeypatch.setattr(
+        ci_status, "_git", lambda *args: "git@github.com:origin/repo.git"
+    )
+    assert ci_status.resolve_repo("owner/explicit") == "owner/explicit"
+
+    monkeypatch.setenv("GITHUB_REPOSITORY", "env/repo")
+    assert ci_status.resolve_repo(None) == "env/repo"
+
+    monkeypatch.delenv("GITHUB_REPOSITORY")
+    assert ci_status.resolve_repo(None) == "origin/repo"
+
+    monkeypatch.setattr(ci_status, "_git", lambda *args: None)
+    assert ci_status.resolve_repo(None) is None
+
+
+def test_main_returns_two_when_repo_cannot_be_resolved(monkeypatch, capsys):
+    monkeypatch.setattr(ci_status, "resolve_repo", lambda explicit: None)
+
+    assert main(["--sha", "abc123"]) == 2
+    assert "cannot resolve a GitHub repo" in capsys.readouterr().err
+
+
 def test_select_runs_filters_by_sha_and_workflow():
     runs = [
         _run("aaa", "success"),

@@ -23,7 +23,6 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
-DEFAULT_REPO = "Hezhero/daily_stock_analysis"
 DEFAULT_WORKFLOW = "CI"
 API_ROOT = "https://api.github.com"
 TIMEOUT_SECONDS = 20
@@ -73,12 +72,15 @@ def parse_repo(remote: str) -> Optional[str]:
     return None
 
 
-def resolve_repo(explicit: Optional[str]) -> str:
-    if explicit:
-        return explicit
+def resolve_repo(explicit: Optional[str]) -> Optional[str]:
+    """Resolve ``owner/repo`` from --repo, GITHUB_REPOSITORY, or the origin remote."""
+    if explicit and explicit.strip():
+        return explicit.strip()
+    env_repo = os.environ.get("GITHUB_REPOSITORY", "").strip()
+    if env_repo:
+        return env_repo
     remote = _git("remote", "get-url", "origin")
-    parsed = parse_repo(remote) if remote else None
-    return parsed or DEFAULT_REPO
+    return parse_repo(remote) if remote else None
 
 
 def resolve_branch(explicit: Optional[str]) -> str:
@@ -163,6 +165,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     repo = resolve_repo(args.repo)
+    if not repo:
+        print(
+            "ci-status: cannot resolve a GitHub repo; pass --repo owner/repo, "
+            "set GITHUB_REPOSITORY, or add a GitHub origin remote",
+            file=sys.stderr,
+        )
+        return 2
     branch = resolve_branch(args.branch)
     sha = args.sha or _git("rev-parse", "HEAD")
     if not sha:

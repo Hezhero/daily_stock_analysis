@@ -152,4 +152,5 @@ native Windows 上 `ci_gate.sh offline-tests` 会调用该脚本，不再直接�
 
 JUnit 无法表达 `unittest.subTest` 失败，所以 checker 还会比较 pytest 汇总的 `N failed` 与
 JUnit 失败数，得到 `UNREPRESENTED`；`--max-unrepresented`（默认 0）在出现子测试级失败时立即失败。
-`--leak-probe` 可选开启 `DSA_ENV_LEAK_PROBE=1`，把测试之间的 env / singleton 状态转移视为失败。
+`--leak-probe` 可选开启 `DSA_ENV_LEAK_PROBE=1`：该模式关闭逐用例环境还原，把测试之间真实的
+env 写入视为失败；singleton 过渡只输出为 informational。
