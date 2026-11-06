@@ -32,7 +32,9 @@ Every ticket file must declare, immediately after `**Blocked by:**`:
 `python scripts/check_spec_tickets.py` enforces the applicability boundary:
 `v2-portfolio` requires an unchanged signal set (flip-gate spec §9), a `none`
 gate requires `Signal set: none`, and a signal-changing v1 comparison needs a
-rationale. CI runs this in the `ai-governance` job.
+rationale. CI runs this in the `ai-governance` job. The same checker validates
+the `Status:` token against `triage-labels.md` and compares it with the ticket
+index (`issues/README.md`).
 
 ## Wayfinding operations
 

@@ -89,6 +89,15 @@ if [ '$inPlaceFlag' != '1' ]; then
       -cf - . | tar -C '$SourceMirror' -xf -
   fi
 fi
+
+# src/data collides with the runtime data/ directory excluded above; fail fast
+# instead of letting pytest produce 100+ "No module named 'src.data'" errors.
+if [ ! -f '$runRepo/src/data/__init__.py' ] || [ ! -f '$runRepo/src/data/stock_index_loader.py' ]; then
+  echo "ci_gate_wsl: incomplete worktree: src/data is missing" >&2
+  echo "  check the rsync/tar excludes in scripts/ci_gate_wsl.ps1" >&2
+  exit 2
+fi
+
 cd '$runRepo'
 if [ ! -x '$Venv/bin/python' ]; then
   python3 -m venv '$Venv'

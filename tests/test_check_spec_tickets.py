@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from scripts.check_spec_tickets import check_tickets, main
+from scripts.check_spec_tickets import check_indexes, check_tickets, main
 
 VALID_V2 = """# 05: demo
 
@@ -22,6 +22,16 @@ def _write(root: Path, name: str, body: str) -> Path:
     path = root / "docs" / "specs" / "demo" / "issues" / name
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(body, encoding="utf-8")
+    return path
+
+
+def _write_index(root: Path, rows: str) -> Path:
+    path = root / "docs" / "specs" / "demo" / "issues" / "README.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "# 票索引\n\n| 票 | 主题 | 状态 | 依赖 |\n| --- | --- | --- | --- |\n" + rows,
+        encoding="utf-8",
+    )
     return path
 
 
@@ -73,3 +83,41 @@ def test_main_exit_codes(tmp_path: Path, capsys) -> None:
     _write(tmp_path, "06-bad.md", "# demo\n")
     assert main([str(tmp_path)]) == 1
     assert "FAIL" in capsys.readouterr().out
+
+
+def test_index_status_matches_ticket(tmp_path: Path) -> None:
+    _write(tmp_path, "05-valid.md", VALID_V2)
+    _write_index(tmp_path, "| [05](05-valid.md) | demo | ready-for-agent | — |\n")
+    assert check_indexes(tmp_path) == {}
+
+
+def test_index_status_mismatch_is_reported(tmp_path: Path) -> None:
+    _write(tmp_path, "05-valid.md", VALID_V2)
+    _write_index(tmp_path, "| [05](05-valid.md) | demo | done | — |\n")
+    failures = check_indexes(tmp_path)
+    assert "README says 'done', file says 'ready-for-agent'" in " ".join(
+        next(iter(failures.values()))
+    )
+
+
+def test_index_missing_ticket_is_reported(tmp_path: Path) -> None:
+    _write_index(tmp_path, "| [05](05-missing.md) | demo | done | — |\n")
+    failures = check_indexes(tmp_path)
+    assert "does not exist" in " ".join(next(iter(failures.values())))
+
+
+def test_index_missing_status_is_reported(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "05-valid.md",
+        VALID_V2.replace("**Status:** ready-for-agent\n", ""),
+    )
+    _write_index(tmp_path, "| [05](05-valid.md) | demo | ready-for-agent | — |\n")
+    failures = check_indexes(tmp_path)
+    assert "missing **Status:**" in " ".join(next(iter(failures.values())))
+
+
+def test_invalid_status_is_reported(tmp_path: Path) -> None:
+    _write(tmp_path, "05-valid.md", VALID_V2.replace("ready-for-agent", "in-progress"))
+    failures = check_tickets(tmp_path)
+    assert "invalid Status" in " ".join(next(iter(failures.values())))

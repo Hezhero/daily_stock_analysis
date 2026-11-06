@@ -1,4 +1,5 @@
 ## [Unreleased]
+- [chore] `scripts/check_spec_tickets.py` 增加票状态一致性校验（README 表格 vs 票文件 `**Status:**`，并校验状态词表）；`ci_gate_wsl.ps1` 在镜像同步后检查 `src/data`，避免排除规则再次误伤源码。
 - [修复] `scripts/test.sh` 统一使用 `${PYTHON:-python3}`，native Windows `ci_gate.ps1 deterministic` 不再因 `python3` 缺失退出 49；`tests/conftest.py` 的泄漏探针补上 `REALTIME_SOURCE_PRIORITY`。
 - [文档] 收敛两轴 review 的文档问题：`incremental_daily.py` 文档与按 `trade_date` 拉取一致；`FAQ_EN` 实时源示例同步；清理 `restore_env_after_test` 的过期引用；票 11 降回 `ready-for-human`、票 13 标 `done`，状态词表补 `done`。
 - [修复] `scripts/ci_gate_wsl.ps1` 的 rsync 排除规则锚定到仓库根目录（`/data/`、`/logs/`、`/.git/`）：原先 `--exclude='data/'` 会连 `src/data/` 一起排除，WSL 镜像缺模块导致 167 个用例 collection 失败；tar 兜底路径本来就是 `./data`，现已一致。

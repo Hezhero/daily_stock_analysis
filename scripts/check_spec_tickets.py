@@ -6,6 +6,9 @@ the signal set. The rules encode the applicability boundary in
 ``docs/backtest-flip-gate-spec.md``: the portfolio estimator (v2) only covers
 "same signal set" cards, and a signal-changing v1 comparison needs a written
 rationale (an ADR or a spec section).
+
+The checker also validates each ticket's ``Status:`` token against the triage
+vocabulary and compares it with the status shown in the ticket index.
 """
 
 from __future__ import annotations
@@ -17,11 +20,25 @@ from typing import Iterable, Optional
 
 GATE_VALUES = {"none", "v1-signal", "v2-portfolio", "wfo"}
 SIGNAL_VALUES = {"none", "changed", "unchanged"}
+STATUS_VALUES = {
+    "needs-triage",
+    "needs-info",
+    "ready-for-agent",
+    "ready-for-human",
+    "wontfix",
+    "done",
+}
 TICKET_GLOB = "docs/specs/*/issues/[0-9][0-9]-*.md"
+INDEX_GLOB = "docs/specs/*/issues/README.md"
 
 _GATE = re.compile(r"^\*\*Gate:\*\*\s*`?([a-z0-9-]+)`?\s*$", re.MULTILINE)
 _SIGNAL = re.compile(r"^\*\*Signal set:\*\*\s*`?([a-z]+)`?\s*$", re.MULTILINE)
 _RATIONALE = re.compile(r"^\*\*Gate rationale:\*\*\s*(\S.*)$", re.MULTILINE)
+_STATUS = re.compile(r"^\*\*Status:\*\*\s*`?([a-z-]+)`?", re.MULTILINE)
+_INDEX_ROW = re.compile(
+    r"^\|\s*\[(\d{2})\]\(([^)]+)\)\s*\|[^|]*\|\s*([a-z-]+)",
+    re.MULTILINE,
+)
 
 
 def _field(pattern: re.Pattern[str], text: str) -> Optional[str]:
@@ -48,6 +65,12 @@ def check_ticket(path: Path) -> list[str]:
             f"invalid Signal set {signal_set!r}; expected one of {sorted(SIGNAL_VALUES)}"
         )
 
+    status = _field(_STATUS, text)
+    if status is not None and status not in STATUS_VALUES:
+        errors.append(
+            f"invalid Status {status!r}; expected one of {sorted(STATUS_VALUES)}"
+        )
+
     if gate == "v2-portfolio" and signal_set == "changed":
         errors.append(
             "v2-portfolio is limited to unchanged signal sets (flip-gate spec §9)"
@@ -69,6 +92,33 @@ def check_tickets(root: Path) -> dict[Path, list[str]]:
     return failures
 
 
+def check_indexes(root: Path) -> dict[Path, list[str]]:
+    """Compare each README ticket table with the ticket's **Status:** line."""
+    failures: dict[Path, list[str]] = {}
+    for readme in sorted(root.glob(INDEX_GLOB)):
+        text = readme.read_text(encoding="utf-8")
+        for number, link, index_status in _INDEX_ROW.findall(text):
+            ticket_path = readme.parent / link
+            if not ticket_path.is_file():
+                failures.setdefault(readme, []).append(
+                    f"ticket {number}: linked file {link!r} does not exist"
+                )
+                continue
+            ticket_status = _field(
+                _STATUS, ticket_path.read_text(encoding="utf-8")
+            )
+            if ticket_status is None:
+                failures.setdefault(readme, []).append(
+                    f"ticket {number}: missing **Status:** in {link}"
+                )
+            elif ticket_status != index_status:
+                failures.setdefault(readme, []).append(
+                    f"ticket {number}: README says {index_status!r}, "
+                    f"file says {ticket_status!r}"
+                )
+    return failures
+
+
 def _ticket_paths(root: Path) -> Iterable[Path]:
     return sorted(root.glob(TICKET_GLOB))
 
@@ -77,13 +127,18 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = list(argv if argv is not None else sys.argv[1:])
     root = Path(args[0]).resolve() if args else Path(__file__).resolve().parents[1]
     failures = check_tickets(root)
+    for path, errors in check_indexes(root).items():
+        failures.setdefault(path, []).extend(errors)
     if failures:
         for path, errors in failures.items():
             print(f"FAIL {path.relative_to(root)}")
             for error in errors:
                 print(f"  - {error}")
         return 1
-    print(f"OK: {len(list(_ticket_paths(root)))} ticket(s) declare gate + signal set")
+    print(
+        f"OK: {len(list(_ticket_paths(root)))} ticket(s) declare gate + signal set; "
+        "index statuses match"
+    )
     return 0
 
 
