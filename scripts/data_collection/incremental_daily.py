@@ -72,8 +72,8 @@ DAILY_BASIC_FIELDS = (
 STOCK_BATCH = 200
 SLEEP_BETWEEN = 0.15
 
-# 退市股一次性回填：每日线约 1400 行，逐只请求可稳定低于 API 单次返回上限；
-# 默认夜间批量（200 只/批）只覆盖很短的增量窗口，不受此限制。
+# 退市股一次性回填：每日线约 1400 行，逐只请求可稳定低于 API 单次返回上限。
+# 夜间增量走 trade_date 全市场路径（daily 不支持多 ts_code 批量）。
 BACKFILL_BATCH = 1
 BACKFILL_DEFAULT_START = "20200101"
 
@@ -213,12 +213,34 @@ def pull_market_by_code(
 
 def pull_daily_and_adj(
     client: TushareClient, conn,
-    codes: list[str],
     trade_dates: list[str],
 ):
-    """默认夜间路径：按股票批次拉取 daily 和 adj_factor。"""
-    pull_market_by_code(
-        client, conn, codes, trade_dates, MARKET_APIS, batch_size=STOCK_BATCH,
+    """默认夜间路径：按交易日拉取全市场 daily 和 adj_factor。
+
+    Tushare 的 ``daily`` 接口只接受单个 ``ts_code``；把多个代码用逗号拼进
+    ``ts_code`` 会返回空结果。因此夜间增量按 ``trade_date`` 一次拉一天全市场，
+    而不是按代码分批。``adj_factor`` 同样支持按日返回，沿用同一路径。
+    """
+    if not trade_dates:
+        return
+
+    totals = {name: 0 for name, *_ in MARKET_APIS}
+    for td in trade_dates:
+        for api_name, table_name, fields, conflict in MARKET_APIS:
+            try:
+                df = client.query(api_name, trade_date=td, fields=fields)
+                if not df.empty:
+                    if "change" in df.columns:
+                        df.rename(columns={"change": "change_val"}, inplace=True)
+                    totals[api_name] += insert_dataframe(
+                        conn, table_name, df, conflict
+                    )
+            except Exception as exc:
+                logger.warning("  %s %s 失败: %s", api_name, td, exc)
+        time.sleep(SLEEP_BETWEEN)
+
+    logger.info(
+        "  %s", "  ".join(f"{name}={n:,}" for name, n in totals.items())
     )
 
 
@@ -360,7 +382,7 @@ def main():
 
         # ── 拉取 daily + adj_factor ──
         if need_da:
-            pull_daily_and_adj(client, conn, codes, need_da)
+            pull_daily_and_adj(client, conn, need_da)
 
         # ── 最终统计 ──
         elapsed = time.time() - t0

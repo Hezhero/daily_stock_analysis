@@ -1,4 +1,5 @@
 ## [Unreleased]
+- [修复] `scripts/data_collection/incremental_daily.py` 夜间增量改为按 `trade_date` 拉取 `daily` / `adj_factor`：Tushare 的 `daily` 接口对逗号分隔的多 `ts_code` 请求返回空结果，导致 2026-11-05 日线静默缺失（`adj_factor` 正常）；按日全市场拉取同时把 2 天增量从 28 批降到 2 次调用。新增 `tests/test_incremental_daily.py` 回归。
 - [chore] 本地 guardrail：`ci_gate.sh` / `ci_gate.ps1` 新增 `governance` phase（`check_ai_assets.py` + `check_spec_tickets.py`），并加入 `all` 流程；新增 `.githooks/pre-commit`（启用：`git config core.hooksPath .githooks`），提交前跑 flake8 + 相关 governance 检查。
 - [测试] 新增 `tests/test_env_leak_probe.py`：用子进程跑干净/泄漏两个 fixture，端到端验证 `DSA_ENV_LEAK_PROBE` 仍能报出 `ENV_FILE` 过渡；新增 `tests/test_no_machine_specific_paths.py`：禁止 `scripts/`、`src/`、`docs/agents/` 写死 `F:\workspace`、`C:\Users\` 或 fork 账号。
 - [chore] `scripts/check_windows_test_baseline.py` 默认把 JUnit 写到 `logs/windows-baseline.xml`，`--update` 不再需要从日志解析随机临时路径；`check_ai_assets.py` 在无 `.git` 的导出树/WSL 镜像里跳过 tracked-artifact 检查并打印说明。
