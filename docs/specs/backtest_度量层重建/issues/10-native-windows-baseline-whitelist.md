@@ -7,7 +7,7 @@
 **Gate:** `none`
 **Signal set:** `none`
 
-**Status:** ready-for-human（机制已落地，见「实现」；白名单 52 条 `TODO` 属票 09 剩余项，不新增 Windows CI job 属人工决策）
+**Status:** done（机制 + 夜间非阻断 workflow 已落地；白名单收敛为 2 条，`--max-unrepresented` 默认 0）
 
 ## 背景
 
@@ -96,6 +96,19 @@ pytest tests/test_check_windows_test_baseline.py          → 12 passed
 `.github/workflows/windows-baseline.yml` 已落地：夜间 + 手动触发、`continue-on-error`、
 90 分钟超时，只上传 JUnit 产物，不进入 `backend-gate` 的阻断链。这是对下方“新增 Windows CI job
 需要单独评估”的落地结论——先以观测项运行，稳定一周后再讨论是否升为阻断。
+
+## 收口（2026-11-06）
+
+五条验收标准已全部满足：
+
+1. checker 区分 `NEW` / `STALE` / `TODO` / `COLLECTION_ERROR`，并有单元测试覆盖。
+2. `--update` 保留既有条目的类别与理由，新条目写 `TODO`；本次 2 条已人工归因。
+3. POSIX 下强制白名单时 checker 以退出码 2 拒绝运行（`test_check_windows_test_baseline.py` 覆盖）。
+4. 每条白名单都填了 `known-unattributed` 理由，checker 校验；当前 2 条均为确定性平台差异。
+5. 新增 Windows CI job 已落地为夜间非阻断 `windows-baseline.yml`，稳定后再评估是否升为阻断。
+
+2026-11-06 native Windows 全量：`7801 passed / 289 skipped / 2 failed`，checker
+`2 registered / 2 failing`、`0 NEW / 0 STALE / 0 UNREPRESENTED`，exit 0。
 
 ## 不在本票范围
 

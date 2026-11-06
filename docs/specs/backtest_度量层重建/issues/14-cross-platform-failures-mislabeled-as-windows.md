@@ -8,7 +8,7 @@ Windows 失败清单里。修好它们才能让"POSIX 全绿、Windows 走白名
 **Gate:** `none`
 **Signal set:** `none`
 
-**Status:** ready-for-agent（D1 选 a、D2 已定，三条用例全部转绿；仅剩 POSIX 侧待 CI 验证）
+**Status:** done（D1 选 a、D2 已定；三条用例在 POSIX 与 native Windows 均通过，文档/代码/断言一致）
 
 ## 背景（2026-10-26 实测）
 
@@ -105,3 +105,13 @@ flake 出现；`check_env_encoding` 已从失败集合消失）。**POSIX 侧仍
 - 这三条是本轮最有价值的发现：它们证明"本机红 ≠ Windows 问题"，也证明票 09 的验收标准 1
   从来没有被真正执行过。
 - 修法都很小，但 D2 是产品语义，必须先定。
+
+## 收口（2026-11-06）
+
+1. 三条用例在 POSIX 与 native Windows 上均通过：WSL 全量 `8090 passed / 0 failed`；
+   native Windows 全量仅剩 2 条票 10 白名单项，三条跨平台失败均不在其中。
+2. 文档、代码、断言三者一致：`docs/full-guide.md` / `docs/full-guide_EN.md` / `docs/FAQ.md` /
+   `.env.example` / `src/core/config_registry.py` 的 `REALTIME_SOURCE_PRIORITY` 均为
+   `tushare,tencent,akshare_sina,efinance,akshare_em`；`requirements.txt` 已 ASCII 可解码。
+3. `docs/CHANGELOG.md` 已记录 D1/D2。
+4. native Windows 全量失败集合较修前减少 3 条。

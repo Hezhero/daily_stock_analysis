@@ -7,7 +7,7 @@
 **Gate:** `none`
 **Signal set:** `none`
 
-**Status:** ready-for-agent（决策 1 / 2 口径已定，见「已定口径」；剩余 3 项可 AFK 推进）
+**Status:** done（2026-11-06 收口：POSIX 全量 0 failed；native Windows 仅剩 2 条票 10 白名单内确定性差异）
 
 ## 实测归因（2026-10-22，`daily_stock_analysis` 环境，native Windows）
 
@@ -205,6 +205,19 @@ junit 可见失败 `43`（修复前 `51`）；`python scripts/check_windows_test
    根因与同仓先例），再定位 `ConfigValidationError` 与 analyzer 回退。
 2. `requirements.txt` 的 ASCII 化 vs 放宽测试，需要一个明确选择。
 3. 修完后重跑 `python scripts/check_windows_test_baseline.py`，`NEW` 归零即达成票 09 验收标准 1。
+
+## 收口（2026-11-06）
+
+三条验收标准已全部满足：
+
+| 验收 | 证据 |
+| --- | --- |
+| POSIX 全绿 | WSL Ubuntu 24.04 / Python 3.12.3 ext4 镜像 `ci_gate_wsl.ps1 -Phase offline-tests`：`8090 passed, 2 skipped, 4 deselected, 0 failed`，exit 0 |
+| collection error 为 0 | POSIX 与 native Windows 全量均无 collection error；`fxmacrodata_public` 缺失走 ADR 0005 的可选导入 |
+| Windows 失败集合与白名单一致 | `7801 passed, 289 skipped, 2 failed`；checker `2 registered / 2 failing`、`0 NEW / 0 STALE / 0 UNREPRESENTED`，exit 0 |
+
+“剩余 43 条”已在后续修复轮次清零，当前只剩 `docs/agents/windows-known-failures.md` 登记的
+2 条 `known-unattributed`（macos bash argv、调度子进程时序），由票 10 的 checker 强制。
 
 ## 后续票（不在本票范围）
 

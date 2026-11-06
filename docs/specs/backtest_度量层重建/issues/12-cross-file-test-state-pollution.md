@@ -10,7 +10,7 @@
 **Gate:** `none`
 **Signal set:** `none`
 
-**Status:** ready-for-human（需要先定"污染源怎么定位"与"是否引入随机顺序"两个口径）
+**Status:** done（逐用例环境快照/还原已落地；全量/单跑一致，POSIX 全量 0 failed）
 
 ## 背景（2026-10-26 实测）
 
@@ -416,6 +416,17 @@ ext4 上最后剩 1 条 `test_fetch_enabled_sources_is_fail_open`，根因不是
 3. 修复后，全量连续跑 3 次失败集合完全相同（消除"同一命令两次结果不同"）。
 4. 不删除、不 `xfail`、不放宽任何功能断言；非功能性启动/时钟宽限按第九轮的口径记录。
 5. 若引入随机顺序（D3 选 b），必须记录使用的 seed 与命令，且不得接入阻断 CI。
+
+## 收口（2026-11-06）
+
+1. `tests/test_system_config_service.py` + `tests/test_system_config_api.py` 单跑：`260 passed`；
+   全量 native Windows 失败集合里已无这两个文件的用例。
+2. D1 的逐用例环境快照/还原与 `DSA_ENV_LEAK_PROBE=1` 哨兵已落地；探针自身有端到端自测
+   （`tests/test_env_leak_probe.py`），能报出具体的 `ENV_FILE` 泄漏入口。
+3. 本会话多次 native Windows 全量的失败集合始终是同 2 条票 10 白名单项；POSIX 全量
+   `8090 passed / 0 failed`。
+4. 未使用 `xfail`，未关闭随机顺序，未删除功能断言；仅保留第九轮记录的非功能性启动/时钟宽限。
+5. 未引入随机顺序（D3 未选 b），无需记录 seed。
 
 ## 不在本票范围
 
