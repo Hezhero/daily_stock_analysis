@@ -7,7 +7,7 @@
 **Gate:** `none`
 **Signal set:** `none`
 
-**Status:** ready-for-human
+**Status:** done（2026-11-06 复核：卡 C 已实际使用 `--estimator portfolio`；9 例组合层测试通过）
 
 - [x] `--estimator {signal,portfolio}`，默认 `signal`；默认路径的 `GATE_SPEC_HASH`、估计量字段、判决结构与既有产物逐位不变。
 - [x] 组合层输入：`--baseline-equity` / `--candidate-equity` 指向两臂 `_equity.csv`；`estimator=portfolio` 时必填，`signal` 时缺省且不得多余传入。
@@ -31,3 +31,5 @@
 
 **落地：** `scripts/portfolio_gate.py`（`PORTFOLIO_ESTIMATOR_ID` / `_PORTFOLIO_GATE_SPEC` / `PORTFOLIO_GATE_SPEC_HASH` / `build_portfolio_returns` / `portfolio_block_bootstrap` / `load_equity` / `run_gate(estimator=...)` / `format_human` 的 delta 标度 / CLI 三参数）+ `tests/test_portfolio_gate.py`（9 例）。规格见 `docs/backtest-flip-gate-spec.md` §9，立项记录见 `docs/backtest-optimization-design.md` §10.9。
 **验证：** `pytest tests/test_portfolio_gate.py tests/test_portfolio_sim.py tests/test_portfolio_sim_integration.py tests/test_backtest_pit_universe.py -q` → 79 passed（本批新增默认 `signal` 路径的冻结断言）；`py_compile` 通过。默认路径对比 `HEAD` 版本模块的合成运行：payload（去 `created_at`）、registry 行（去 `recorded_at`）、`verdict_hash` 逐位一致，`GATE_SPEC_HASH` 仍为 `88e87917…`。未对 `result/gates/**` 跑新估计量，`registry.jsonl` 仍为 2 行。
+
+**收口（2026-11-06）**：卡 C 已实际用 `--estimator portfolio` 产出判决（`b742d01b…`，`degenerate=false`、`n_blocks=55`）；`tests/test_portfolio_gate.py` 的 9 例组合层测试通过；`docs/backtest-flip-gate-spec.md` §9 与本票预注册一致。

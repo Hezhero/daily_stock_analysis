@@ -7,7 +7,7 @@
 **Gate:** `none`
 **Signal set:** `none`
 
-**Status:** ready-for-human
+**Status:** done（2026-11-06 复核：画像/登记守卫 + 覆盖路径有单测；87 passed；两个冻结哈希不变）
 
 - [x] 默认配置跑出的 `config_hash` 仍为已发布基线值，指标逐位不变。
 - [x] 显式覆盖已登记的实验参数（如 `min_resonance_families`）时：发出 warning，且 `config_hash` 改变；结果可复现（同参两次运行逐位一致）。
@@ -16,3 +16,5 @@
 - [x] 守卫与覆盖两条路径都有单元测试覆盖（契约守卫 seam）。
 
 **Note:** 2026-10-19 用户批准扩展：同步将持仓上限 / 最大持有 / 持仓簇上限 / 行业上限降级为已登记实验参数（见《指标契约》§2.1）；本 ticket 的 `min_resonance_families` 验收不变。
+
+**收口（2026-11-06）**：`tests/test_portfolio_sim_integration.py` 覆盖四条路径——画像篡改 → `RuntimeError`、登记默认值漂移 → `RuntimeError`、已登记覆盖 → warning + `config_hash` 改变且可复现、未登记覆盖 → `ValueError`。定向套件 87 passed；默认 `config_hash` 仍为 L-only `5eea0519…` / PIT `acb32bd9…`。

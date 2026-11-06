@@ -7,7 +7,7 @@
 **Gate:** `none`
 **Signal set:** `none`
 
-**Status:** ready-for-human（默认已切 `pit`；L-only/PIT 全回测对照已完成并入账本 §10.4）
+**Status:** done（2026-11-06 复核：默认 `pit`；13 个 PIT 测试通过；双口径对照与 `config_hash` 见本票）
 
 - [x] 用 `delist_date` 等时点信息构造 PIT 池；窗口内退市的股票在其可交易期间进入样本，而非被整体剔除。（驱动层已落地：`--universe pit` 按 `[list_date+120d, delist_date]` 建谓词；退市股清单与行情回填由数据层并行推进）
 - [x] 与 L-only 池并列给出同口径指标，量化差异（重点看反转、涨停、小市值类策略的绩效变化）。**全回测已完成（2026-10-19，L-only + PIT 各一次，均 `exit=0`）**；同库同窗口对照见「双口径对照结果」与账本 §10.4。
@@ -142,3 +142,5 @@ python scripts/backtest_5y_23strategies.py --force --no-handoff --portfolio-sim 
 **L→D 迁移零影响已证：** 同库 L-only 全回测逐位复现 2026-10-18 冻结基线（metrics 与 `config_hash` 完全一致），确认 `601198.SH`/`601059.SH` 的 L→D 迁移不影响 L-only 池绩效。
 
 **03/04/05 翻转重验：** 卡 A/B/C 均 `ready-for-agent`（未翻转），本轮无待重验项。
+
+**收口（2026-11-06）**：默认 `pit`；`tests/test_backtest_pit_universe.py` 13 passed；双口径对照、数据回填与 `config_hash` 证据见上文，无待重验项。

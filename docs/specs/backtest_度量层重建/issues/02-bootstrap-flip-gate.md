@@ -7,7 +7,7 @@
 **Gate:** `none`
 **Signal set:** `none`
 
-**Status:** ready-for-human
+**Status:** done（2026-11-06 复核：卡 A–D 真实判决已执行；registry 4 行、每卡 `tested_count=1`；22 gate tests passed）
 
 - [x] 观测单元为 `(strategy, signal_date, code)`；`next_open` 入场、扣成本后的净收益、记录实际持有期；直接池化样本外信号，不平均各折指标。
 - [x] 日期分块 bootstrap：block 长度取实际持有期的 99 分位，重采样 2000 次，有效样本为日期数（不是信号笔数）；输出 95% 置信区间。
@@ -19,3 +19,5 @@
 
 **落地：** `scripts/portfolio_gate.py`（`derive_seed` / `build_observations` / `block_length` / `moving_block_bootstrap` / `evaluate_criteria` / `run_gate` / `write_verdict` / `append_registry` / `format_human`）+ `tests/test_portfolio_gate.py`（8 例）；驱动侧追加去簇信号产物 `result/portfolio_sim_<start>_<end>_signals.csv`（`scripts/backtest_5y_23strategies.py` 的 `_run_portfolio_sim_chain`/`_write_portfolio_sim_artifacts`）。规格与偏离记录见 `docs/backtest-flip-gate-spec.md`、`docs/adr/0003-bootstrap-flip-gate-instead-of-wfo-folds.md`。
 **验证：** `pytest tests/test_portfolio_gate.py tests/test_portfolio_sim_integration.py tests/test_portfolio_sim.py -q` → 39 passed；`py_compile` 通过；改动文件 LSP 无诊断。实际门槛判定（跑一次真实基线/候选）尚未执行——需一次完整组合模拟（≈1.5h/次），留待卡 A 正式判定时按预注册执行。
+
+**收口（2026-11-06）**：原“实际门槛判定尚未执行”已被卡 A–D 覆盖——`result/gates/registry.jsonl` 共 4 行，四张卡的 verdict 均 `variants.tested_count=1`；`tests/test_portfolio_gate.py` 22 passed。

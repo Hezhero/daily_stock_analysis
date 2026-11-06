@@ -1,4 +1,5 @@
 ## [Unreleased]
+- [文档] 收口票 01/02/07/08：契约守卫、bootstrap 门禁、PIT 宇宙、组合层估计量均已落地并有定向测试（87 passed）；票索引中 01/02/07/08 与 09–14 已 done，03–06 仍为 FAIL 待产品决策。
 - [测试] 票 11 收口：`tests/conftest.py` 让裸 `load_dotenv()` 遵守 `ENV_FILE`（缺失基线时跳过，显式 `dotenv_path` / 真实 `ENV_FILE` 放行），driver 测试不再读取仓库根 `.env`；`.env` 有/无两态全量各 `8096 passed / 0 failed`，JUnit 用例集合与失败集合完全一致。
 - [chore] `scripts/check_spec_tickets.py` 增加票状态一致性校验（README 表格 vs 票文件 `**Status:**`，并校验状态词表）；`ci_gate_wsl.ps1` 在镜像同步后检查 `src/data`，避免排除规则再次误伤源码。
 - [修复] `scripts/test.sh` 统一使用 `${PYTHON:-python3}`，native Windows `ci_gate.ps1 deterministic` 不再因 `python3` 缺失退出 49；`tests/conftest.py` 的泄漏探针补上 `REALTIME_SOURCE_PRIORITY`。
