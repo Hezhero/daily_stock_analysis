@@ -107,6 +107,7 @@ CLI 的 `--confluence-only` / `--regime-soft` 只能打开，不能关闭。要�
 | --- | --- |
 | 启动即退出，只有一行 `ERROR` | 今天是否交易日；需要跑就加 `--force` |
 | `PG_PASSWORD 未设置` / 连接失败 | 仓库根目录 `.env` 的 `PG_*`；用 `check_data_freshness.py` 验证连通性 |
+| `server closed the connection unexpectedly` / 连接超时 | PG 若跑在 WSL/Docker 里：先 `wsl -d Ubuntu-24.04`，再用 `docker ps` 确认 `postgresql` 容器 Up；长回测期间保持 WSL 存活，否则容器会随 WSL 停止 |
 | 验证窗口 0 只股票 | `market_ok_enh2` 天数是否为 0；这是观测结果，不是崩溃 |
 | 结果与上次差异很大 | 数据截止日、`config_hash`、`universe`、`.env` 的 confluence/regime 开关 |
 | 组合模拟报参数错误 | 是否同时用了 `--per-strategy-exit`，或 `--entry-timing close` |
