@@ -76,7 +76,7 @@ if [ '$inPlaceFlag' != '1' ]; then
   mkdir -p '$SourceMirror'
   if command -v rsync >/dev/null 2>&1; then
     rsync -a --delete \
-      --exclude='.git/' --exclude='data/' --exclude='logs/' \
+      --exclude='/.git/' --exclude='/data/' --exclude='/logs/' \
       --exclude='node_modules/' --exclude='__pycache__/' \
       --exclude='.pytest_cache/' \
       '$wslRepo'/ '$SourceMirror'/
