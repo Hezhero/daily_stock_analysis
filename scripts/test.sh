@@ -27,6 +27,8 @@
 
 set -e
 
+PYTHON_BIN="${PYTHON:-python3}"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "$REPO_ROOT"
@@ -65,18 +67,18 @@ header() {
 
 # 检查Python环境
 check_python() {
-    if ! command -v python3 &> /dev/null; then
-        error "Python3 未安装"
+    if ! command -v "$PYTHON_BIN" &> /dev/null; then
+        error "Python 未安装（$PYTHON_BIN）"
         exit 1
     fi
-    info "Python版本: $(python3 --version)"
+    info "Python版本: $("$PYTHON_BIN" --version)"
 }
 
 # 检查依赖
 check_deps() {
     info "检查依赖..."
-    python3 -c "import yfinance" 2>/dev/null || { warn "yfinance 未安装，美股测试可能失败"; }
-    python3 -c "import akshare" 2>/dev/null || { warn "akshare 未安装，A股/港股测试可能失败"; }
+    "$PYTHON_BIN" -c "import yfinance" 2>/dev/null || { warn "yfinance 未安装，美股测试可能失败"; }
+    "$PYTHON_BIN" -c "import akshare" 2>/dev/null || { warn "akshare 未安装，A股/港股测试可能失败"; }
     success "依赖检查完成"
 }
 
@@ -86,7 +88,7 @@ check_deps() {
 test_market() {
     header "测试场景: 大盘复盘"
     info "运行大盘复盘分析..."
-    python3 main.py --market-review "$@"
+    "$PYTHON_BIN" main.py --market-review "$@"
     success "大盘复盘测试完成"
 }
 
@@ -94,7 +96,7 @@ test_market() {
 test_a_stock() {
     header "测试场景: A股分析"
     info "分析A股: 600519(茅台), 000001(平安银行)"
-    python3 main.py --stocks 600519,000001  --no-market-review "$@"
+    "$PYTHON_BIN" main.py --stocks 600519,000001  --no-market-review "$@"
     success "A股分析测试完成"
 }
 
@@ -102,7 +104,7 @@ test_a_stock() {
 test_etf() {
     header "测试场景: ETF分析"
     info "分析ETF: 563230(卫星ETF)"
-    python3 main.py --stocks 563230,512400 --no-market-review "$@"
+    "$PYTHON_BIN" main.py --stocks 563230,512400 --no-market-review "$@"
     success "ETF分析测试完成"
 }
 
@@ -110,7 +112,7 @@ test_etf() {
 test_hk_stock() {
     header "测试场景: 港股分析"
     info "分析港股: hk00700(腾讯), hk09988(阿里)"
-    python3 main.py --stocks hk00700,hk09988 --no-market-review "$@"
+    "$PYTHON_BIN" main.py --stocks hk00700,hk09988 --no-market-review "$@"
     success "港股分析测试完成"
 }
 
@@ -119,7 +121,7 @@ test_us_stock() {
     header "测试场景: 美股分析"
     info "分析美股: AAPL(苹果), TSLA(特斯拉)"
     # 允许透传参数，默认不带 --no-notify
-    python3 main.py --stocks AAPL --no-market-review "$@"
+    "$PYTHON_BIN" main.py --stocks AAPL --no-market-review "$@"
     success "美股分析测试完成"
 }
 
@@ -127,7 +129,7 @@ test_us_stock() {
 test_mixed() {
     header "测试场景: 混合市场分析"
     info "分析混合市场: 600519(A股), hk00700(港股), AAPL(美股)"
-    python3 main.py --stocks 600519,hk00700,AAPL --no-market-review
+    "$PYTHON_BIN" main.py --stocks 600519,hk00700,AAPL --no-market-review
     success "混合市场测试完成"
 }
 
@@ -135,7 +137,7 @@ test_mixed() {
 test_single() {
     header "测试场景: 单股推送模式"
     info "测试单股推送模式..."
-    python3 main.py --stocks 600519 --single-notify --no-market-review
+    "$PYTHON_BIN" main.py --stocks 600519 --single-notify --no-market-review
     success "单股推送模式测试完成"
 }
 
@@ -143,7 +145,7 @@ test_single() {
 test_dry_run() {
     header "测试场景: Dry-Run 模式"
     info "仅获取数据，不进行AI分析..."
-    python3 main.py --stocks 600519,AAPL --dry-run --no-notify
+    "$PYTHON_BIN" main.py --stocks 600519,AAPL --dry-run --no-notify
     success "Dry-Run 测试完成"
 }
 
@@ -151,7 +153,7 @@ test_dry_run() {
 test_full() {
     header "测试场景: 完整流程"
     info "运行完整分析流程（个股+大盘）..."
-    python3 main.py --stocks 600519 --no-notify
+    "$PYTHON_BIN" main.py --stocks 600519 --no-notify
     success "完整流程测试完成"
 }
 
@@ -159,7 +161,7 @@ test_full() {
 test_quick() {
     header "测试场景: 快速测试"
     info "单只股票快速测试..."
-    python3 main.py --stocks 600519 --no-market-review --no-notify "$@"
+    "$PYTHON_BIN" main.py --stocks 600519 --no-market-review --no-notify "$@"
     success "快速测试完成"
 }
 
@@ -168,7 +170,7 @@ test_code_recognition() {
     header "测试场景: 代码识别"
     info "测试股票代码识别逻辑..."
 
-    python3 << 'PYTEST'
+    "$PYTHON_BIN" << 'PYTEST'
 import sys
 sys.path.insert(0, '.')
 from data_provider.akshare_fetcher import _is_hk_code, _is_us_code
@@ -209,7 +211,7 @@ test_yfinance_convert() {
     header "测试场景: YFinance 代码转换"
     info "测试YFinance代码转换逻辑..."
 
-    python3 << 'PYTEST'
+    "$PYTHON_BIN" << 'PYTEST'
 import sys
 sys.path.insert(0, '.')
 from data_provider.yfinance_fetcher import YfinanceFetcher
@@ -249,7 +251,7 @@ test_syntax() {
     header "测试场景: Python 语法检查"
     info "检查所有Python文件语法..."
 
-    python3 -m py_compile main.py src/config.py src/notification.py \
+    "$PYTHON_BIN" -m py_compile main.py src/config.py src/notification.py \
         data_provider/akshare_fetcher.py \
         data_provider/yfinance_fetcher.py \
         bot/commands/analyze.py

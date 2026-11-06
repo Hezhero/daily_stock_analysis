@@ -10,7 +10,7 @@
 **Gate:** `none`
 **Signal set:** `none`
 
-**Status:** ready-for-human（需要先定"测试是否允许读开发者 `.env`"的口径，见「待定决策」）
+**Status:** ready-for-human（验收 1/2 未满足：`.env` 有/无两态未测；driver 仍读仓库根 `.env`）
 
 ## 背景（2026-10-26 实测）
 
@@ -72,6 +72,12 @@ per-file fixture 每次都会重新隔离，统一基线只设一次就把这些
 `tests/conftest.py` 在 import 期把 `ENV_FILE` 指向缺失路径的会话级基线覆盖了该需求。
 验证：三个文件 50 passed；POSIX 全量 8087 passed / 0 failed，native Windows 7798 passed /
 2 条白名单内平台差异。
+
+**复核（2026-11-06，两轴 review）**：验收标准 1 的证据比较的是“无基线 / 有基线”，不是
+“仓库根有 `.env` / 没有 `.env`”；验收标准 2 也未满足——driver 测试导入
+`scripts/backtest_5y_23strategies.py` 时，`load_dotenv()` 绕过 `ENV_FILE` 读取仓库根 `.env`，
+autouse fixture 只在事后还原。因此本票降回 `ready-for-human`；补齐两态全量对照与 driver 的
+opt-in 隔离后再收口。
 
 ## 待定决策
 

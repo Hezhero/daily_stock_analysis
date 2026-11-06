@@ -29,7 +29,13 @@ from anyio._backends import _asyncio
 # entry behind. Singleton transitions are reported separately as informational:
 # fixtures create and reset singletons by design, so they are not gating.
 # Inert unless the variable is set.
-_PROBE_VARS = ("ENV_FILE", "DATABASE_PATH", "ADMIN_AUTH_ENABLED", "LLM_CHANNELS")
+_PROBE_VARS = (
+    "ENV_FILE",
+    "DATABASE_PATH",
+    "REALTIME_SOURCE_PRIORITY",
+    "ADMIN_AUTH_ENABLED",
+    "LLM_CHANNELS",
+)
 _PROBE_SINGLETONS = {
     "Config._instance": ("src.config", "Config"),
     "DatabaseManager._instance": ("src.storage", "DatabaseManager"),

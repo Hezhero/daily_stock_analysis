@@ -320,7 +320,7 @@ POSIX 全量复跑暴露了两类只在“全量”出现的失败：
 
 票 12 早前选择“逐触发器打补丁”，但泄漏源数量是 O(文件数)，每个新加入 `load_dotenv()` 的模块
 都会重新引入。改为在 `tests/conftest.py` 的 autouse fixture 里对**整个 `os.environ`** 做逐用例
-快照/还原；`restore_env_after_test` 退化为显式依赖声明，不再承担隔离职责。
+快照/还原；`restore_env_after_test` 已移除，隔离职责完全由 autouse fixture 承担。
 
 `test_auth_api` 的 `setUpClass` 写 env 仍能通过（实测 30 passed）；若后续出现 class 级 env
 依赖，应把复原粒度改为 module 级，而不是回退到 deny-list。

@@ -17,14 +17,14 @@ def _run(sha: str, conclusion: str, name: str = "CI") -> Run:
 
 
 def test_parse_repo_accepts_ssh_and_https_remotes():
-    assert parse_repo("git@github.com:Hezhero/daily_stock_analysis.git") == (
-        "Hezhero/daily_stock_analysis"
+    assert parse_repo("git@github.com:owner/repo.git") == (
+        "owner/repo"
     )
-    assert parse_repo("https://github.com/Hezhero/daily_stock_analysis.git") == (
-        "Hezhero/daily_stock_analysis"
+    assert parse_repo("https://github.com/owner/repo.git") == (
+        "owner/repo"
     )
-    assert parse_repo("ssh://git@github.com/Hezhero/daily_stock_analysis.git") == (
-        "Hezhero/daily_stock_analysis"
+    assert parse_repo("ssh://git@github.com/owner/repo.git") == (
+        "owner/repo"
     )
 
 
@@ -72,7 +72,7 @@ def test_main_returns_zero_for_a_successful_run(monkeypatch, capsys):
     monkeypatch.setattr(ci_status, "fetch_runs", lambda repo, branch: [_run("abc123", "success")])
     monkeypatch.setattr(ci_status, "fetch_check_runs", lambda repo, sha: 1)
 
-    exit_code = main(["--repo", "owner/repo", "--branch", "hzh", "--sha", "abc123"])
+    exit_code = main(["--repo", "owner/repo", "--branch", "main", "--sha", "abc123"])
 
     assert exit_code == 0
     assert "conclusion=success" in capsys.readouterr().out
@@ -82,7 +82,7 @@ def test_main_returns_one_when_head_has_no_run(monkeypatch, capsys):
     monkeypatch.setattr(ci_status, "fetch_runs", lambda repo, branch: [_run("old", "success")])
     monkeypatch.setattr(ci_status, "fetch_check_runs", lambda repo, sha: 0)
 
-    exit_code = main(["--repo", "owner/repo", "--branch", "hzh", "--sha", "abc123"])
+    exit_code = main(["--repo", "owner/repo", "--branch", "main", "--sha", "abc123"])
 
     assert exit_code == 1
     assert "NO RUN for abc123" in capsys.readouterr().out
@@ -92,7 +92,7 @@ def test_main_returns_one_when_the_only_run_failed(monkeypatch):
     monkeypatch.setattr(ci_status, "fetch_runs", lambda repo, branch: [_run("abc123", "failure")])
     monkeypatch.setattr(ci_status, "fetch_check_runs", lambda repo, sha: 1)
 
-    assert main(["--repo", "owner/repo", "--branch", "hzh", "--sha", "abc123"]) == 1
+    assert main(["--repo", "owner/repo", "--branch", "main", "--sha", "abc123"]) == 1
 
 
 def test_main_returns_zero_when_any_run_succeeded(monkeypatch):
@@ -103,7 +103,7 @@ def test_main_returns_zero_when_any_run_succeeded(monkeypatch):
     )
     monkeypatch.setattr(ci_status, "fetch_check_runs", lambda repo, sha: 2)
 
-    assert main(["--repo", "owner/repo", "--branch", "hzh", "--sha", "abc123"]) == 0
+    assert main(["--repo", "owner/repo", "--branch", "main", "--sha", "abc123"]) == 0
 
 
 def test_main_returns_two_on_api_error(monkeypatch, capsys):
@@ -112,7 +112,7 @@ def test_main_returns_two_on_api_error(monkeypatch, capsys):
 
     monkeypatch.setattr(ci_status, "fetch_runs", fail)
 
-    assert main(["--repo", "owner/repo", "--branch", "hzh", "--sha", "abc123"]) == 2
+    assert main(["--repo", "owner/repo", "--branch", "main", "--sha", "abc123"]) == 2
     assert "rate limit reached" in capsys.readouterr().err
 
 

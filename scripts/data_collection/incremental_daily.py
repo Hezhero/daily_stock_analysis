@@ -6,8 +6,8 @@
 三张表中缺失的交易日数据。
 
 策略:
-  - 默认（夜间增量）: daily_basic 按 trade_date 逐日全市场拉取（API 支持不传
-    ts_code）；daily / adj_factor 按上市股票批次 + 日期范围拉取
+  - 默认（夜间增量）: daily / adj_factor / daily_basic 均按 trade_date 逐日全市场拉取
+    （Tushare 的 daily 接口不接受逗号分隔的多 ts_code，按代码批量会返回空结果）
   - 退市股回填（opt-in，一次性）: 通过 --codes 或 --include-delisted 启用，
     daily / adj_factor / daily_basic 全部按 ts_code 逐只拉取，避免长区间
     批量请求超过 API 单次返回上限；默认夜间行为完全不变
