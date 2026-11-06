@@ -1,4 +1,5 @@
 ## [Unreleased]
+- [测试] 票 11 收口：`tests/conftest.py` 让裸 `load_dotenv()` 遵守 `ENV_FILE`（缺失基线时跳过，显式 `dotenv_path` / 真实 `ENV_FILE` 放行），driver 测试不再读取仓库根 `.env`；`.env` 有/无两态全量各 `8096 passed / 0 failed`，JUnit 用例集合与失败集合完全一致。
 - [chore] `scripts/check_spec_tickets.py` 增加票状态一致性校验（README 表格 vs 票文件 `**Status:**`，并校验状态词表）；`ci_gate_wsl.ps1` 在镜像同步后检查 `src/data`，避免排除规则再次误伤源码。
 - [修复] `scripts/test.sh` 统一使用 `${PYTHON:-python3}`，native Windows `ci_gate.ps1 deterministic` 不再因 `python3` 缺失退出 49；`tests/conftest.py` 的泄漏探针补上 `REALTIME_SOURCE_PRIORITY`。
 - [文档] 收敛两轴 review 的文档问题：`incremental_daily.py` 文档与按 `trade_date` 拉取一致；`FAQ_EN` 实时源示例同步；清理 `restore_env_after_test` 的过期引用；票 11 降回 `ready-for-human`、票 13 标 `done`，状态词表补 `done`。

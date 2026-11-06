@@ -17,11 +17,34 @@ from typing import Any, TypeVar
 from warnings import warn
 
 import anyio.to_thread
+import dotenv
 import pytest
 import fastapi.testclient
 import httpx
 import starlette.testclient
 from anyio._backends import _asyncio
+
+# Ticket 11: the suite points ENV_FILE at a missing path, but bare
+# ``load_dotenv()`` calls (notably scripts/backtest_5y_23strategies.py) search
+# upward from the caller and would still read the developer's repo-root .env.
+# Route bare calls through the same ENV_FILE contract; an explicit dotenv_path
+# remains the opt-in.
+_REAL_LOAD_DOTENV = dotenv.load_dotenv
+
+
+def _load_dotenv_with_env_file(*args, **kwargs):
+    env_file = os.environ.get("ENV_FILE")
+    dotenv_path = kwargs.get("dotenv_path")
+    if dotenv_path is None and args:
+        dotenv_path = args[0]
+    if dotenv_path is None and env_file:
+        if not os.path.exists(env_file):
+            return False
+        kwargs["dotenv_path"] = env_file
+    return _REAL_LOAD_DOTENV(*args, **kwargs)
+
+
+dotenv.load_dotenv = _load_dotenv_with_env_file
 
 # Leak probe (ticket 12, D1). With ``DSA_ENV_LEAK_PROBE=1`` the autouse fixture
 # below deliberately stops restoring the environment, and each test's setup is

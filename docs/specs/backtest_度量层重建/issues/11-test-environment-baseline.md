@@ -10,7 +10,7 @@
 **Gate:** `none`
 **Signal set:** `none`
 
-**Status:** ready-for-human（验收 1/2 未满足：`.env` 有/无两态未测；driver 仍读仓库根 `.env`）
+**Status:** done（验收 1–5 已满足；两态全量 0 failed，失败集合一致）
 
 ## 背景（2026-10-26 实测）
 
@@ -73,11 +73,12 @@ per-file fixture 每次都会重新隔离，统一基线只设一次就把这些
 验证：三个文件 50 passed；POSIX 全量 8087 passed / 0 failed，native Windows 7798 passed /
 2 条白名单内平台差异。
 
-**复核（2026-11-06，两轴 review）**：验收标准 1 的证据比较的是“无基线 / 有基线”，不是
-“仓库根有 `.env` / 没有 `.env`”；验收标准 2 也未满足——driver 测试导入
-`scripts/backtest_5y_23strategies.py` 时，`load_dotenv()` 绕过 `ENV_FILE` 读取仓库根 `.env`，
-autouse fixture 只在事后还原。因此本票降回 `ready-for-human`；补齐两态全量对照与 driver 的
-opt-in 隔离后再收口。
+**收口（2026-11-06）**：`tests/conftest.py` 让裸 `load_dotenv()` 遵守 `ENV_FILE`：基线指向
+缺失路径时直接跳过，显式 `dotenv_path` 或真实 `ENV_FILE` 仍然放行。driver 测试导入
+`scripts/backtest_5y_23strategies.py` 时不再读取仓库根 `.env`。
+两态全量（同一份代码、同一台机器、镜像内 `.env` 有/无）：
+`8096 passed / 2 skipped / 4 deselected / 0 failed`（两次相同）；JUnit XML 的
+8098 个 testcase 完全一致，失败集合为空且 diff 为空。
 
 ## 待定决策
 
