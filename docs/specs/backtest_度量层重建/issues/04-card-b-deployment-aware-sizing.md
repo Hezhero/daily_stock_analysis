@@ -7,7 +7,9 @@
 **Gate:** `v1-signal`
 **Signal set:** `unchanged`
 
-**Status:** ready-for-human（预注册比较已执行，判决 FAIL，默认保持 `fixed_1n`；见文末判决与账本 §10.8）
+**Status:** done（2026-11-08 收口：预注册比较已执行，判决 FAIL，默认保持 `fixed_1n`；见文末判决与账本 §10.8）
+
+**收口（2026-11-08）：** 产品决策接受 FAIL，默认保持 `fixed_1n`；本卡关闭。任何重测须开新票并重新预注册。
 
 - [x] 以 `SimConfig` 三个旋钮（`size_mode` / `target_positions` / `cash_buffer_pct`）实现，不新增平行模拟路径；v1 未启用波动率目标缩放（`_TARGET_VOL_ANNUAL` 保持 0.0），`_MAX_LEVERAGE` 保持 1.0，不引入杠杆。
 - [x] 不变量测试：部署金额 ≤ 可用现金；持仓数 ≤ `max_positions`；`max_dd_floor_pct` 生效；结果确定性（同参两次运行逐位一致）。

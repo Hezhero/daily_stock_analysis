@@ -8,7 +8,9 @@
 **Signal set:** `changed`
 **Gate rationale:** `docs/backtest-flip-gate-spec.md` §2（两臂各用自己信号集；`min_resonance_families` 改变去簇结果）
 
-**Status:** ready-for-human（判决 FAIL，默认值保持 2，见账本 §10.5）
+**Status:** done（2026-11-08 收口：判决 FAIL，默认值保持 2，见账本 §10.5）
+
+**收口（2026-11-08）：** 产品决策接受 FAIL，默认值保持 2；本卡关闭。任何重测须开新票并重新预注册。
 
 - [x] 用 02 对 ≥1 vs ≥2 的消融产出明确的通过／不通过判决。
 - [x] 通过时：默认值变为 1，`config_hash` 相应改变；旧结果与产物并列保留，不覆盖历史产物。→（未触发：判决不通过，默认值保持 2，PIT `config_hash` 仍为 `acb32bd9…`）

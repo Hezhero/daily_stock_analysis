@@ -7,7 +7,9 @@
 **Gate:** `v2-portfolio`
 **Signal set:** `unchanged`
 
-**Status:** ready-for-human（预注册比较已执行，判决 FAIL，默认保持 `lead_exp_first`；见文末判决）
+**Status:** done（2026-11-08 收口：预注册比较已执行，判决 FAIL，默认保持 `lead_exp_first`；见文末判决）
+
+**收口（2026-11-08）：** 产品决策接受 FAIL，默认保持 `lead_exp_first`；本卡关闭。任何重测须开新票并重新预注册。
 
 ## 现状更正（2026-10-23）
 
