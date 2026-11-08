@@ -81,6 +81,7 @@ conda activate daily_stock_analysis
 `conda run --live-stream -n daily_stock_analysis python ...`，或 `scripts/ci_gate.ps1` /
 `scripts/pytest.ps1` 自带的解释器解析。
 
+- 定向 pytest 一律走 `pwsh -File scripts/pytest.ps1 <files>`；直接调用解释器只用于调试 resolver。
 - 不要用 base 或其他环境的解释器跑本项目脚本；跨环境（Python / numpy 版本不同）会让回测结果不可比。
 - 该环境未安装 `numexpr`，pandas 会回退到 NumPy，因此不受 numexpr 2.14.1「多线程静默返回全零缓冲」缺陷影响；不要在未评估的情况下给它装 numexpr。根因、护栏与已验证的升级路径见 `docs/CHANGELOG.md` 的 `[Unreleased]` 条目。
 

@@ -5,7 +5,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from scripts.check_spec_tickets import check_indexes, check_tickets, main
+from scripts.check_spec_tickets import (
+    STATUS_VALUES,
+    check_indexes,
+    check_tickets,
+    main,
+    stale_warnings,
+)
 
 VALID_V2 = """# 05: demo
 
@@ -15,6 +21,18 @@ VALID_V2 = """# 05: demo
 **Signal set:** `unchanged`
 
 **Status:** ready-for-agent
+"""
+
+VALID_NONE_COMPLETE = """# 07: demo
+
+**Blocked by:** None
+
+**Gate:** `none`
+**Signal set:** `none`
+
+**Status:** ready-for-human
+
+- [x] first acceptance item
 """
 
 
@@ -73,6 +91,53 @@ def test_v1_with_changed_signal_set_requires_rationale(tmp_path: Path) -> None:
     path = tmp_path / "docs/specs/demo/issues/04-v1-no-rationale.md"
     path.unlink()
     assert check_tickets(tmp_path) == {}
+
+
+def test_gate_none_complete_ticket_is_a_stale_warning(tmp_path: Path) -> None:
+    path = _write(tmp_path, "07-complete.md", VALID_NONE_COMPLETE)
+    warnings = stale_warnings(path)
+    assert len(warnings) == 1
+    assert "ready-for-human" in warnings[0]
+
+
+def test_stale_warning_skips_gated_ticket(tmp_path: Path) -> None:
+    body = VALID_V2.replace(
+        "**Status:** ready-for-agent",
+        "- [x] done\n\n**Status:** ready-for-agent",
+    )
+    path = _write(tmp_path, "05-gated.md", body)
+    assert stale_warnings(path) == []
+
+
+def test_stale_warning_skips_open_acceptance_box(tmp_path: Path) -> None:
+    body = VALID_NONE_COMPLETE + "- [ ] remaining item\n"
+    path = _write(tmp_path, "07-open.md", body)
+    assert stale_warnings(path) == []
+
+
+def test_stale_warning_skips_done_ticket(tmp_path: Path) -> None:
+    body = VALID_NONE_COMPLETE.replace("ready-for-human", "done")
+    path = _write(tmp_path, "07-done.md", body)
+    assert stale_warnings(path) == []
+
+
+def test_main_reports_stale_warning_without_failing(tmp_path: Path, capsys) -> None:
+    _write(tmp_path, "07-complete.md", VALID_NONE_COMPLETE)
+    assert main([str(tmp_path)]) == 0
+    out = capsys.readouterr().out
+    assert "WARN" in out
+    assert "stale warning" in out
+
+
+def test_status_vocabulary_matches_triage_labels() -> None:
+    doc = (
+        Path(__file__).resolve().parents[1]
+        / "docs"
+        / "agents"
+        / "triage-labels.md"
+    ).read_text(encoding="utf-8")
+    for status in STATUS_VALUES:
+        assert f"`{status}`" in doc
 
 
 def test_main_exit_codes(tmp_path: Path, capsys) -> None:

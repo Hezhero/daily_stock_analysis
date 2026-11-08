@@ -1,4 +1,6 @@
 ## [Unreleased]
+- [chore] `scripts/check_spec_tickets.py` 新增 stale 警告：`Gate: none` 且验收框全勾、状态仍为 `ready-for-agent`/`ready-for-human` 时提示收口；新增状态词表与 `docs/agents/triage-labels.md` 的一致性测试。
+- [文档] retro 导航收口：票索引状态图例不再内联词表、改指 `triage-labels.md`；`docs/agents/repo-map.md` 补 `result/指标契约...` 与 `result/gates/`；`AGENTS.md` §4 明确定向 pytest 走 `scripts/pytest.ps1`，`validation-matrix.md` 记录并发解析回退到 PATH 的失败模式。
 - [文档] 收口票 01/02/07/08：契约守卫、bootstrap 门禁、PIT 宇宙、组合层估计量均已落地并有定向测试（87 passed）；票索引中 01/02/07/08 与 09–14 已 done，03–06 仍为 FAIL 待产品决策。
 - [测试] 票 11 收口：`tests/conftest.py` 让裸 `load_dotenv()` 遵守 `ENV_FILE`（缺失基线时跳过，显式 `dotenv_path` / 真实 `ENV_FILE` 放行），driver 测试不再读取仓库根 `.env`；`.env` 有/无两态全量各 `8096 passed / 0 failed`，JUnit 用例集合与失败集合完全一致。
 - [chore] `scripts/check_spec_tickets.py` 增加票状态一致性校验（README 表格 vs 票文件 `**Status:**`，并校验状态词表）；`ci_gate_wsl.ps1` 在镜像同步后检查 `src/data`，避免排除规则再次误伤源码。

@@ -8,7 +8,9 @@ the signal set. The rules encode the applicability boundary in
 rationale (an ADR or a spec section).
 
 The checker also validates each ticket's ``Status:`` token against the triage
-vocabulary and compares it with the status shown in the ticket index.
+vocabulary and compares it with the status shown in the ticket index. Gate-none
+tickets whose acceptance boxes are all checked but still carry an open status
+are reported as warnings: the work looks finished, so the status is likely stale.
 """
 
 from __future__ import annotations
@@ -39,6 +41,8 @@ _INDEX_ROW = re.compile(
     r"^\|\s*\[(\d{2})\]\(([^)]+)\)\s*\|[^|]*\|\s*([a-z-]+)",
     re.MULTILINE,
 )
+_CHECKED_BOX = re.compile(r"^- \[x\]", re.MULTILINE)
+_OPEN_BOX = re.compile(r"^- \[ \]", re.MULTILINE)
 
 
 def _field(pattern: re.Pattern[str], text: str) -> Optional[str]:
@@ -80,6 +84,23 @@ def check_ticket(path: Path) -> list[str]:
     if gate == "v1-signal" and signal_set == "changed" and _field(_RATIONALE, text) is None:
         errors.append("v1-signal on a changed signal set requires **Gate rationale:**")
     return errors
+
+
+def stale_warnings(path: Path) -> list[str]:
+    """Flag gate-none tickets whose acceptance boxes are all checked but status is open."""
+    text = path.read_text(encoding="utf-8")
+    gate = _field(_GATE, text)
+    status = _field(_STATUS, text)
+    if gate != "none" or status not in {"ready-for-agent", "ready-for-human"}:
+        return []
+    checked = len(_CHECKED_BOX.findall(text))
+    open_boxes = len(_OPEN_BOX.findall(text))
+    if checked and not open_boxes:
+        return [
+            f"all {checked} acceptance box(es) checked but Status is {status!r}; "
+            "mark it done or reopen the remaining work"
+        ]
+    return []
 
 
 def check_tickets(root: Path) -> dict[Path, list[str]]:
@@ -129,15 +150,25 @@ def main(argv: Optional[list[str]] = None) -> int:
     failures = check_tickets(root)
     for path, errors in check_indexes(root).items():
         failures.setdefault(path, []).extend(errors)
+    warnings = {
+        path: messages
+        for path in _ticket_paths(root)
+        if (messages := stale_warnings(path))
+    }
+    for path, messages in warnings.items():
+        print(f"WARN {path.relative_to(root)}")
+        for message in messages:
+            print(f"  - {message}")
     if failures:
         for path, errors in failures.items():
             print(f"FAIL {path.relative_to(root)}")
             for error in errors:
                 print(f"  - {error}")
         return 1
+    warning_suffix = f"; {len(warnings)} stale warning(s)" if warnings else ""
     print(
         f"OK: {len(list(_ticket_paths(root)))} ticket(s) declare gate + signal set; "
-        "index statuses match"
+        f"index statuses match{warning_suffix}"
     )
     return 0
 

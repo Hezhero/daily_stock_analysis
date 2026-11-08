@@ -25,3 +25,4 @@
   - `docs/`：文档与说明
   - `docs/agents/`：协作规则、验证矩阵、平台边界与已知失败
   - `docs/specs/`：本地 issue / 规格与变更记录
+  - `result/`：回测产物；`result/指标契约_metric_contract_v1_20261017.md` 是冻结度量口径，`result/gates/` 是翻转门槛判决与 registry

@@ -2,7 +2,7 @@
 
 度量层重建的票按编号推进；**下一个可用编号：15**。
 
-状态取值见 `docs/agents/triage-labels.md`（`needs-triage` / `needs-info` / `ready-for-agent` / `ready-for-human` / `wontfix`）。`ready-for-agent` 且依赖全清的那一张就是当前 frontier。
+状态取值见 `docs/agents/triage-labels.md`（含终态 `done`）。`ready-for-agent` 且依赖全清的那一张就是当前 frontier。
 
 | 票 | 主题 | 状态 | 依赖 |
 | --- | --- | --- | --- |

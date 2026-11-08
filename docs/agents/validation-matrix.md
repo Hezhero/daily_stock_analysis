@@ -45,7 +45,9 @@ On Windows, `ci_gate.ps1` resolves the project interpreter in this order: `-Pyth
 `DSA_PYTHON`, `conda run -n daily_stock_analysis python -c "import sys; print(sys.executable)"`,
 then `python`. It sets `PYTHON` and prepends the interpreter's directory to `PATH`, so the
 Git Bash child no longer silently falls back to the base environment. If resolution fails,
-activate `daily_stock_analysis` first or pass `-Python <path>`.
+activate `daily_stock_analysis` first or pass `-Python <path>`. Do not run two
+conda-resolving helpers concurrently: `conda run` can lock and the resolver falls back to
+`python` on PATH, which then fails on plugins such as `pytest-timeout`.
 
 ### Fast iteration loop
 
