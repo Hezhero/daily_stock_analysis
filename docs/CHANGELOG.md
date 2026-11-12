@@ -1,4 +1,5 @@
 ## [Unreleased]
+- [文档] 记录市场环境口径设计决定（`docs/adr/0006`）：`--regime-mode` 默认由 `enh2` 改为 `auto`（不传参即逐日自动判断、显式传档位为覆盖），`enh2` 退化为显式覆盖值；仅记录设计，CLI 默认值、选择器与 `config_hash` 登记等代码改动留待独立改动轮；冻结基线与 10 月实验卡复现须显式传 `--regime-mode enh2`。
 - [文档] 收口卡 03–06：四张卡均为判决 FAIL、默认值不变（`min_resonance_families=2` / `fixed_1n` / `lead_exp_first` / 因子关闭）；票索引 14/14 done，任何重测须开新票并重新预注册。
 - [chore] `scripts/check_spec_tickets.py` 新增 stale 警告：`Gate: none` 且验收框全勾、状态仍为 `ready-for-agent`/`ready-for-human` 时提示收口；新增状态词表与 `docs/agents/triage-labels.md` 的一致性测试。
 - [文档] retro 导航收口：票索引状态图例不再内联词表、改指 `triage-labels.md`；`docs/agents/repo-map.md` 补 `result/指标契约...` 与 `result/gates/`；`AGENTS.md` §4 明确定向 pytest 走 `scripts/pytest.ps1`，`validation-matrix.md` 记录并发解析回退到 PATH 的失败模式。
