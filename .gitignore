@@ -106,6 +106,8 @@ result/*.txt
 # 回测实验过程产物（可重新生成的中间输出；精选报告/模型仍显式跟踪）
 result/*.json
 result/wfo_experiments_*.md
+# 翻转门槛判决与 A/B 实跑证据：本地产物，跨 clone 不入库（AGENTS.md §1）
+result/gates/
 
 # 本机 pyright 类型检查配置（含本机绝对路径，不入库）
 pyrightconfig.json

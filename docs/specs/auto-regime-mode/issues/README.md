@@ -8,7 +8,7 @@
 | --- | --- | --- | --- |
 | [01](01-daily-regime-observability.md) | 逐日市况观测基建（prefactor） | done | — |
 | [02](02-auto-regime-default.md) | `auto` 默认口径主实现 | done | 01 |
-| [03](03-three-mode-ab-experiment.md) | 同一天三口径 A/B 实验卡 | ready-for-human | 02 |
+| [03](03-three-mode-ab-experiment.md) | 同一天三口径 A/B 实验卡 | done | 02 |
 
 ## 开新票前的两句提醒
 

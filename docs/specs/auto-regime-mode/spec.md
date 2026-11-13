@@ -4,9 +4,11 @@
 > 产物保存在本地文件 `docs/specs/auto-regime-mode/spec.md`，纳入 git 版本管理；本地 markdown 追踪约定见
 > `docs/agents/issue-tracker.md`。设计取舍与豁免记录见 `docs/adr/0006-auto-regime-mode-default.md`。
 > **本 spec 的票 01/02 行为已于 2026-11-12 在集成分支 `auto-regime-mode-integration` 实现**；
-> 票 03（同一天四口径 A/B 实跑）按 Q8/R4=否 与 Out of Scope **未开跑**，仅交付预注册卡与对照
-> 脚手架、状态 `ready-for-human`。设计文本保留作为口径来源，实现细节见
-> `docs/adr/0006-auto-regime-mode-default.md` 的「实现记录」与各票 Comments。
+> 票 03 四口径 A/B 实跑由用户 2026-11-13 显式授权并完成（同快照 `20261112_pit`），
+> 产出**观察性记录**（无数值 PASS gate，`overall_pass: null`；详见
+> `result/gates/auto-regime-ab/verdict.json` 与票 03 实跑结果）。三票均为 `done`。
+> 设计文本保留作为口径来源，实现细节见 `docs/adr/0006-auto-regime-mode-default.md`
+> 的「实现记录」与各票 Comments。
 > 术语一律使用 `GLOSSARY.md`「市场环境与市况」段定义；遵守 `docs/adr/0001`–`0006` 与
 > `result/指标契约_metric_contract_v1_20261017.md` §2.1。
 
@@ -149,7 +151,9 @@
 - 不引入实盘链路的市况词表、不建立跨链路映射表、不通过 handoff 传参。
 - 不改 `--regime-soft` / `--regime-filter` / `--defensive-half-pos` / `--confluence-only` 的既有语义。
 - 不新增「只能开不能关」式 env 开关，不叠加互斥模式。
-- 不跑同一天三口径 A/B 对照、不跑完整 WFO、不重判 10 月四张实验卡（这些是 Further Notes 里的后续证据工作）。
+- 原 Out of Scope 列「不跑同一天三口径 A/B 对照」；用户 2026-11-13 显式授权票 03 四口径对照实跑，
+  该条仅对本次授权解除（见 `issues/03-three-mode-ab-experiment.md` 实跑结果与
+  `result/gates/auto-regime-ab/verdict.json`）。仍不跑完整 WFO、不重判 10 月四张实验卡。
 - 不做本机仓库外调度器排查、不连 PG 查事件表新鲜度、不改实盘 `main.py` 日报链路。
 - 不在此 spec 内 `git commit` / `tag` / `push`；文档侧 5 处未提交改动的处置由用户另行拍板。
 
@@ -160,9 +164,17 @@
   §2.1 条款；实现轮（票 01/02）已消除 runbook / CHANGELOG / ADR 里「当前代码尚未实现
   `auto`」的标注，并把 `regime_selector` 登记、逐日市况表、启动日志序列摘要落地。
   config_hash 陷阱按「保持已发布哈希 + 运行时注入 `auto_v1`」处置，见指标契约 §2.1。
-- **待验证项（开跑前已知）**：无同一天三口径 A/B 对照；`auto` 实际减少多少 `0/5` 天、对 CAGR/maxDD/胜率
-  的影响未知；`bull 70.3% / range 20.0% / bear 9.7%`、仅 58 个 regime 连续段下的过拟合风险未测；
-  同型 `regime` 切换 trail 曾被证伪。
+- **待验证项（2026-11-13 实跑后已关闭，票 03，观察性记录）**：四口径对照已在 `20261112_pit`
+  快照实跑（`result/gates/auto-regime-ab/verdict.json`，`status=observations-recorded` /
+  `overall_pass: null` / `adjudicated: false`）。按 ADR 0003，baseline 预注册卡只冻结描述性判据、
+  §7.3 原定人工填充；实现轮曾事后加入数值 PASS gate 已按用户裁决移除，**不作 PASS/FAIL 判定**。
+  观察结论：`auto` 与 `enh2` 指标**逐位相同**（Δ 全 0）——334 个判 `enh` 日中 314 个
+  `market_ok_enh=True` 且全部 `market_ok_enh2=True`，保守门控未产生新可开仓日；四臂验证窗口均 `0/5`，
+  `auto` 未减少 0/5 天；`enh`/`strict` 的 CAGR/maxDD 差异属固定档位本身，非 auto 增益。
+  ADR 0006 仅承诺免手工，不承诺改善收益 / 减少 0 推荐。过拟合风险
+  （`bull 70.3% / range 20.0% / bear 9.7%`、58 个 regime 连续段、同型 regime 切换 trail 曾被证伪）
+  维持「任何增益暂定」；结果中性，未回滚默认值。哈希对齐局限（固定三档 config_hash 不可区分）见 verdict
+  `interpretation.hash_alignment_limit`；ADR 0003 处置见 `interpretation.adr0003_note`。
 - **A/B 实验卡排位（已裁决：与实现并行、取数依赖 02）**：用户 2026-11-12 明确「与实现并行」，
   `/to-tickets` 进一步裁决该票 `Blocked by: 02`——同一天三口径对照、`0/5` 改善幅度与过拟合验证
   作为实验卡票，其**取数依赖 02 已落地的构建，但 02 不依赖它**，因此不列为实现的前置阻塞
