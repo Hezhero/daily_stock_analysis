@@ -57,11 +57,13 @@ conda run --live-stream -n daily_stock_analysis python .\scripts\backtest_5y_23s
 - `--force`：只跳过“非交易日直接退出”的检查，不跳过验证窗口。
 - `--no-handoff`：结果表输出后退出，跳过 handoff 评分、5 日选股与 `main.py` 子进程；
   5 日验证本身仍会跑，约 12 分钟。
-- `--regime-mode`：设计默认 `auto`（不传参即逐日按市况自动选可开仓判定列；显式传
-  `enh2` / `enh` / `strict` 为覆盖并在启动日志标注）；`enh2` 是 `auto` 的基准与冲突回退档。
-  **当前代码尚未实现 `auto`**，实际默认仍为 `enh2`；复现 2026-10-19 冻结 PIT 基线、10 月
-  四张实验卡与 2026-10-29 起的 0/5 日志时须显式传 `--regime-mode enh2`。设计取舍见
-  `docs/adr/0006-auto-regime-mode-default.md`。
+- `--regime-mode`：默认 `auto`（不传参即逐日按市况自动选可开仓判定列；仅
+  `regime=bull` 且 `breadth≥0.45` 且 `vol_pct≤0.85` 的当日放宽到 `enh`，其余回退 `enh2`；
+  显式传 `enh2` / `enh` / `strict` 为覆盖并在启动日志标注「覆盖(档位)」）。
+  `enh2` 是 `auto` 的基准与冲突回退档，`strict` 永不自动选中。复现 2026-10-19 冻结 PIT
+  基线、10 月四张实验卡与 2026-10-29 起的 0/5 日志时须显式传 `--regime-mode enh2`（这些
+  历史结果基于「默认 `enh2`」口径）。规则版本 `auto_v1` 单值计入 `config_hash`，默认 `auto`
+  与显式 `enh2` 的哈希可区分。设计取舍见 `docs/adr/0006-auto-regime-mode-default.md`。
 - `--portfolio-sim`：T+1、最多 10 仓位、0.35% 成本、ADV 滑点、日频盯市；
   要求 `--entry-timing next_open`（默认），且与 `--per-strategy-exit` 互斥。
 - `--universe`：默认 `pit`（按 `list_date` / `delist_date` 的可交易窗口纳入退市股；数据不足时
@@ -86,16 +88,25 @@ CLI 的 `--confluence-only` / `--regime-soft` 只能打开，不能关闭。要�
 日志里先确认这两行，再读收益：
 
 ```text
-市场环境口径: ... (env)
-组合模拟 config_hash: ...
+市场环境: regime-mode=auto (market_ok_auto) | 口径标记: 自动(auto) | 规则版本: auto_v1 | ...
+组合模拟 config_hash: ...（--portfolio-sim 时由 print_portfolio_report 打印）
+```
+
+此外 `auto` 运行会另打一行逐日市况摘要（票 01 观测 seam）：
+
+```text
+逐日市况: 规则版本=auto_v1 | 口径=自动(auto) | market_ok=... | 逐日选档序列=enh:N,enh2:M | 产物: result/daily_regime.csv
 ```
 
 `config_hash` 用于确认口径没有漂移；数据窗口变化会改变收益数字，但不应该改变同一口径的 hash。
+`auto` 默认会把规则版本 `auto_v1` 计入 `config_hash`，与显式 `--regime-mode enh2` 的冻结基线
+哈希可区分。
 
-`auto` 口径落地后，启动日志须能表达「规则版本 + 逐日选档序列 + 显式覆盖标记」，且逐日
-市况表须落盘；否则同一 `config_hash` 下仍可能因逐日序列不同而无法离线复算，排障对齐清单
-（数据截止日 / `config_hash` / `universe` / `.env` 静态开关）也不再充分。当前代码尚未实现，
-以上为设计要求。
+`auto` 口径落地后，启动日志表达「规则版本 + 逐日选档序列 + 显式覆盖标记」，逐日市况表
+（`result/daily_regime.csv`，含 `date` / 三档布尔列 / `regime` / `breadth` / `vol_pct`，
+auto 口径下另含 `auto_mode` / `market_ok_auto`）落盘到既有 result/ 出口，供离线复算「哪天
+被判成哪一档」。排障对齐清单（数据截止日 / `config_hash` / `universe` / `.env` 静态开关）
+之外，比对 `auto` 结果时还须对齐该逐日市况表。
 
 ## 4. 结果怎么读
 

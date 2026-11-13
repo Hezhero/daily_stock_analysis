@@ -5,7 +5,7 @@
 - 状态：已批准开工（2026-10-17）；参数冻结见 §2.1；实现按 S1–S5 增量推进
 - 修订：2026-10-19 — 冻结范围收敛为度量口径与验收门槛；`min_resonance_families` 及部署/选取旋钮（持仓上限/最大持有/持仓簇上限/行业上限）降级为已登记实验参数（守卫见 `_portfolio_sim_config`）
 - 修订：2026-10-23 — 登记同日候选排序优先级 `rank_mode`（§2.1）：排序**机制**仍冻结，**仅前两位键的先后顺序**降级为已登记实验参数，默认 `lead_exp_first` 与冻结基线哈希逐位不变
-- 修订：2026-11-12 — 记录「市场环境口径默认改为 `auto`」的**设计决定**（`docs/adr/0006`），代码尚未实现，冻结值不变。`compute_market_ok` 三列算法（定义）冻结；`auto` 逐日选择器的规则版本、阈值与回退行为按 §2.1「定义冻结、阈值登记」的示范列为**已登记实验参数**，规则版本单值计入 `config_hash`。默认值由 `enh2` 翻为 `auto` 属显式豁免 §「预注册放行规则」，须重算登记 `config_hash` 并在此处补记；此前所有冻结基线、实验卡与日志复现须显式传 `--regime-mode enh2`
+- 修订：2026-11-12 — 记录「市场环境口径默认改为 `auto`」的**设计决定**（`docs/adr/0006`）并落地实现。`compute_market_ok` 三列算法（定义）冻结；`auto` 逐日选择器的规则版本、阈值与回退行为按 §2.1「定义冻结、阈值登记」的示范列为**已登记实验参数** `regime_selector`（见下表）。规则版本 `auto_v1` 单值计入 `config_hash`；此前所有冻结基线、实验卡与日志复现须显式传 `--regime-mode enh2`。默认值由 `enh2` 翻为 `auto` 属显式豁免 §「预注册放行规则」（ADR 0006 记录）。
 - 关系：Track 0 交付物 v1；依据 `result/backtest_胜率收益率提升规划_v2_20261017.md`（v2.1）；性质：规格文档，未获批准不改代码
 
 ---
@@ -79,17 +79,24 @@
 | 最大持有 `max_holding_bars` | **10** | 已登记默认值；覆盖须走相应登记路径（附 warning 并改变 `config_hash`） |
 | 持仓簇上限 `family_cap` | **trend ≤ 3** | 已登记默认值（`_REGISTERED_EXPERIMENT_FAMILY_CAP`）；覆盖须走相应登记路径（附 warning 并改变 `config_hash`） |
 | 行业上限 `industry_cap` | **2** | 已登记默认值；覆盖须走相应登记路径（附 warning 并改变 `config_hash`） |
+| 口径规则版本 `regime_selector` | **`enh2`** | ADR 0006 `auto` 选择器规则版本（如 `auto_v1`）单值计入 `config_hash`；登记默认值 `enh2` 与冻结基线一致，运行 `auto` 时由驱动显式注入 `auto_v1`（≠ 默认值 → 哈希改变），显式 `--regime-mode enh2` 保持冻结基线哈希逐位不变 |
 
 > 去簇共振的**定义**（4 家族、同日同股同家族只计一次）属冻结度量画像；`≥N 家族` 的**阈值**属已登记实验参数 `min_resonance_families`，两者不得混为一谈。
 >
 > 上述参数写入 `SimConfig` 并计入 `config_hash`。守卫区分两类变更：`_METRIC_PROFILE_*` 不符 → `RuntimeError`（契约变更，须走 ADR）；已登记实验参数默认值不符 → 同样 `RuntimeError`，显式登记覆盖 → warning + `config_hash` 改变（已登记重跑）。
 >
-> 市场环境口径按同一分界处理（`docs/adr/0006`，设计决定、代码未实现）：`market_ok` /
+> 市场环境口径按同一分界处理（`docs/adr/0006`，已实现）：`market_ok` /
 > `market_ok_enh` / `market_ok_enh2` 三列的**算法定义**属冻结项，不得被选择器覆盖；`auto`
-> 选择器的**规则版本、阈值与回退行为**属已登记实验参数，规则版本（如 `auto_v1`）单值计入
-> `config_hash`，逐日选档结果是数据的确定性函数、不单独入哈希。默认值由 `enh2` 翻为 `auto`
-> 属翻转默认值，触发 `rank_mode` 同型的「默认翻转不改变哈希」陷阱，须把该键移出
-> `_HASH_OPTIONAL_KEYS` 并重算冻结基线哈希后方可生效。
+> 选择器的**规则版本、阈值与回退行为**属已登记实验参数 `regime_selector`，规则版本
+> `auto_v1` 单值计入 `config_hash`，逐日选档结果是数据的确定性函数、不单独入哈希。
+>
+> 「默认翻转不改变哈希」陷阱的处置（实现）：`regime_selector` 登记默认值取冻结值 `enh2`
+> 且保留在 `_HASH_OPTIONAL_KEYS` 内，故显式 `--regime-mode enh2` 与冻结基线哈希逐位不变；
+> 运行 `auto` 时由 `_portfolio_sim_config(regime_mode="auto")` 显式注入 `auto_v1`（≠ 登记
+> 默认值），该值经 optional-key 弹出后仍留在 `config_hash` 中，使默认翻转可被察觉。
+> 采用「保持已发布哈希 + 运行时注入」而非「移出 optional keys + 重算基线」，是为了同时满足
+> 票 02「冻结 PIT 基线 / 10 月四张实验卡逐位可复现」与「auto 默认改变哈希」两条要求；
+> 若未来把 `auto_v1` 设为登记默认值，须重算并公告全部冻结基线哈希。
 
 ---
 

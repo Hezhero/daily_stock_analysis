@@ -26,3 +26,4 @@
   - `docs/agents/`：协作规则、验证矩阵、平台边界与已知失败
   - `docs/specs/`：本地 issue / 规格与变更记录
   - `result/`：回测产物；`result/指标契约_metric_contract_v1_20261017.md` 是冻结度量口径，`result/gates/` 是翻转门槛判决与 registry
+- 回测 driver seam（改 `scripts/backtest_5y_23strategies.py` 前先沿这条链定位）：`compute_market_ok` → `main()` 中按 `date` merge 进 `df_all` → `_regime_col` / `_entry_mask` 统一取列 → 启动日志与 `result/` 产物；口径解析与测试 seam 见 `docs/specs/auto-regime-mode/spec.md` Testing Decisions。

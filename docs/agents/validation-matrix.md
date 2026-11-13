@@ -53,13 +53,21 @@ conda-resolving helpers concurrently: `conda run` can lock and the resolver fall
 
 The full suite is delivery evidence, not an edit loop:
 
-1. Run the touched files: `pwsh -File scripts/pytest.ps1 <test files> -q`.
-2. Re-run only the last failures by appending `--lf` to the same file list.
-3. Before commit/delivery run the full gate: `pwsh -File scripts/ci_gate_wsl.ps1 -Phase offline-tests`
+1. After a refactor that moves a function or module boundary, run the existing
+   `pwsh -File scripts/ci_gate.ps1 flake8` (or `./scripts/ci_gate.sh flake8`) **before**
+   the touched-pytest step. The `E9,F63,F7,F82` selection catches `F821 undefined name`
+   from a stale local reference (e.g. a `parser.error()` left behind after extracting a
+   builder); targeted tests do not necessarily exercise that path.
+2. Run the touched files: `pwsh -File scripts/pytest.ps1 <test files> -q`.
+3. Re-run only the last failures by appending `--lf` to the same file list.
+4. Before commit/delivery run the full gate: `pwsh -File scripts/ci_gate_wsl.ps1 -Phase offline-tests`
    (POSIX) and `pwsh -File scripts/ci_gate.ps1 offline-tests` (native Windows).
 
 `--lf` is an iteration aid; never quote it as the verification result, and re-run the full
-gate after the last fix.
+gate after the last fix. When review fixes land, re-run only the touched files plus the one
+test that caught a regression; run the full gate once at the very end. If a review agent
+reads a diff snapshot, regenerate that snapshot after every fix batch so it never reviews
+stale code.
 
 ## CI unavailable: WSL fallback
 

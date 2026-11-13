@@ -3,7 +3,10 @@
 > 状态：**已定稿**（`/grill-with-docs` 会话，Q1–Q23 + Q18′ 全部裁决；用户 2026-11-12 显式拍板）。
 > 产物保存在本地文件 `docs/specs/auto-regime-mode/spec.md`，纳入 git 版本管理；本地 markdown 追踪约定见
 > `docs/agents/issue-tracker.md`。设计取舍与豁免记录见 `docs/adr/0006-auto-regime-mode-default.md`。
-> **本 spec 只描述待实现的行为；代码尚未改动**，`scripts/backtest_5y_23strategies.py` 当前默认仍为 `enh2`。
+> **本 spec 的票 01/02 行为已于 2026-11-12 在集成分支 `auto-regime-mode-integration` 实现**；
+> 票 03（同一天四口径 A/B 实跑）按 Q8/R4=否 与 Out of Scope **未开跑**，仅交付预注册卡与对照
+> 脚手架、状态 `ready-for-human`。设计文本保留作为口径来源，实现细节见
+> `docs/adr/0006-auto-regime-mode-default.md` 的「实现记录」与各票 Comments。
 > 术语一律使用 `GLOSSARY.md`「市场环境与市况」段定义；遵守 `docs/adr/0001`–`0006` 与
 > `result/指标契约_metric_contract_v1_20261017.md` §2.1。
 
@@ -32,8 +35,9 @@
 1. 不传参即逐日自动判断；显式传 `enh2` / `enh` / `strict` 即为覆盖，并在启动日志打印覆盖标记。
 2. 逐日只用截至当日 as-of 可得的市况输入（`bull/range/bear`、`breadth`、`vol_pct`），不引入前视。
 3. 规则保守门控：默认与冲突回退均为 `enh2`；仅在 `regime=bull` 且 `breadth≥0.45` 且 `vol_pct≤0.85`
-   时放宽到 `enh`；`bear`、高波动、数据缺失或判定冲突一律保持 `enh2` 并对缺失打 WARNING；
-   `strict` 永不自动选中。
+   时放宽到 `enh`；`bear`、高波动、数据缺失或判定冲突一律保持 `enh2`；`regime`/`breadth` 缺失打
+   WARNING，`vol_pct` 预热期 NaN（当日无值，非加载失败）只记 INFO（详见 Implementation Decisions
+   「缺失/异常语义」）；`strict` 永不自动选中。
 4. `enh2` 退化为显式覆盖值，同时是 `auto` 的基准与回退档。既有 `--strict` / `--regime-mode` 保留为逃生舱。
 5. 治理上按《指标契约》§2.1「定义冻结、阈值登记」的示范拆两层：三列算法定义冻结；
    `auto` 选择器的规则版本、阈值与回退行为作为已登记实验参数，规则版本单值计入 `config_hash`。
@@ -81,16 +85,28 @@
 - **规则形态（保守门控）**：基准档 `enh2`；放宽条件为 `regime=bull & breadth≥0.45 & vol_pct≤0.85` → `enh`；
   其余（含 bear、高波动、缺失、冲突）一律 `enh2`；`strict` 不在自动输出集内。
   规则常量（阈值、回退档、放宽条件）与规则版本一起登记，可被测试直接断言。
-- **缺失/异常语义**：`breadth` / `vol_pct` / `regime` 缺失或异常时回退 `enh2` 并打 WARNING，不静默放行。
-  这与既有 `fillna(1.0)` / `fillna(0.0)` 的容错默认值不同，需在实现中显式区分「加载失败」与「当日无值」。
+- **缺失/异常语义**：`breadth` / `vol_pct` / `regime` 缺失或异常时一律回退 `enh2`，不静默放行。
+  这与既有 `fillna(1.0)` / `fillna(0.0)` 的容错默认值不同，需在实现中显式区分「加载失败」与「当日无值」：
+  `regime` / `breadth` 缺失或非法值属**加载失败** → 回退 `enh2` 并打 WARNING；`vol_pct` 在扩展波动率
+  分位预热期（前 ~20 日）天然为 NaN 属**当日无值**（非缺失），仍按保守口径回退 `enh2`，但只记 INFO
+  （否则每次 auto 运行都会刷无意义 WARNING）。两类都保证「缺失不被静默当成满足条件」。
 - **治理归类**：`market_ok` / `market_ok_enh` / `market_ok_enh2` 三列的算法定义属冻结项，不得被选择器覆盖；
   `auto` 选择器的规则版本（如 `auto_v1`）、阈值与回退行为属已登记实验参数，沿用
   `_REGISTERED_EXPERIMENT_DEFAULTS` 既有守卫（未登记参数拒绝覆盖、显式登记覆盖 → warning + `config_hash` 改变）。
 - **可复现性**：规则版本作为**单值**纳入 `config_hash`；逐日选档结果是数据的确定性函数，不单独入哈希。
-  默认翻转会触发 `rank_mode` 同型的「默认翻转不改变哈希」陷阱，须把该键移出 `_HASH_OPTIONAL_KEYS`
-  并重算登记冻结基线哈希后生效。
-- **观测**：逐日市况表写入既有 result/ 产物出口（不新增平行目录）；启动日志在既有「市场环境」串上
-  追加规则版本、逐日序列摘要与覆盖标记，保持 `docs/backtest-runbook.md` §3「先确认这两行」的可读性。
+  默认翻转会触发 `rank_mode` 同型的「默认翻转不改变哈希」陷阱。
+  **实现裁决（与最初设想的偏离，已记录）**：`regime_selector` 保留在 `_HASH_OPTIONAL_KEYS` 内、
+  登记默认值取冻结值 `enh2`；`auto` 运行由驱动显式注入 `auto_v1`（≠ 登记默认值，故弹出后仍留在哈希里），
+  显式 `--regime-mode enh2` 则保持已发布的冻结基线哈希逐位不变。采用「保持已发布哈希 + 运行时注入」
+  而非「移出 optional keys + 重算基线」，是为了同时满足 US-9（auto 改变哈希）与 US-22 / 票 02
+  「冻结基线逐位可复现」两条要求；详见《指标契约》§2.1 与 ADR 0006「实现记录」。
+  若未来把 `auto_v1` 设为登记默认值，再按「移出 + 重算」处置并公告全部冻结基线哈希。
+- **观测**：逐日市况表写入既有 result/ 产物出口（不新增平行目录），逐日七列 + auto 选档两列，
+  **完整有序序列**以 CSV 为准（可离线复算「哪天被判成哪一档」）；启动日志分两处表达：
+  既有「市场环境」串（配置段、早于 `compute_market_ok`）追加规则版本与覆盖标记；
+  merge 点另打一行「逐日市况」摘要，含规则版本、口径标记、三列计数与逐日选档**档位分布摘要**
+  （`enh:N,enh2:M`，非有序序列，有序序列在 CSV）。两处规则版本/覆盖标记判据一致，
+  保持 `docs/backtest-runbook.md` §3「先确认这两行」的可读性（config_hash 仍由组合模拟报告打印）。
 - **与软加权正交**：`BACKTEST_REGIME_SOFT` / `--regime-soft` / `--regime-filter` 继续在同一轮运行内按
   `regime` 调整策略信号；`--defensive-half-pos` 保持显式 opt-in，不与自动选档叠加。
 - **不做全市场软化**：与 2026-09-19 X5 的否决保持一致；`auto` 只在「已满足严条件的 bull 日」放宽，
@@ -139,10 +155,11 @@
 
 ## Further Notes
 
-- **设计已落盘、代码未动**：`GLOSSARY.md`（市场环境与市况段）、`docs/adr/0006-auto-regime-mode-default.md`、
-  `docs/CHANGELOG.md` `[Unreleased]`、`docs/backtest-runbook.md` §2/§3、
-  `result/指标契约_metric_contract_v1_20261017.md` 修订行与 §2.1 条款，均在设计轮完成；
-  其中 runbook / CHANGELOG / ADR 已显式标注「当前代码尚未实现 `auto`」。实现轮须消除这处文档—代码不一致。
+- **设计与实现均已落盘**：设计轮完成 `GLOSSARY.md`（市场环境与市况段）、ADR 0006、
+  `docs/CHANGELOG.md` `[Unreleased]`、`docs/backtest-runbook.md` §2/§3、指标契约修订行与
+  §2.1 条款；实现轮（票 01/02）已消除 runbook / CHANGELOG / ADR 里「当前代码尚未实现
+  `auto`」的标注，并把 `regime_selector` 登记、逐日市况表、启动日志序列摘要落地。
+  config_hash 陷阱按「保持已发布哈希 + 运行时注入 `auto_v1`」处置，见指标契约 §2.1。
 - **待验证项（开跑前已知）**：无同一天三口径 A/B 对照；`auto` 实际减少多少 `0/5` 天、对 CAGR/maxDD/胜率
   的影响未知；`bull 70.3% / range 20.0% / bear 9.7%`、仅 58 个 regime 连续段下的过拟合风险未测；
   同型 `regime` 切换 trail 曾被证伪。

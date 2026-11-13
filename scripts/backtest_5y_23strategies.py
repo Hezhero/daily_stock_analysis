@@ -305,8 +305,15 @@ MAX_DRAGON_PROFIT_RATIO = 0.9    # 龙头策略获利盘上限，剔除纯高位
 WASHOUT_PROFIT_RATIO = 0.35      # 超跌族策略的获利盘上限（P1：0.2→0.35，放宽深度套牢约束以捕捉突破时刻）
 
 # ── P1 批次 2：可配置行为开关（由 main() 按 CLI 参数设置，旧行为均有回退开关） ──
-_REGIME_MODE = "enh2"            # 市场环境口径：enh2=market_ok_enh2(广度+波动率确认, 默认)；
+_REGIME_MODE = "auto"            # 市场环境口径：ADR 0006 默认 auto（逐日自动判断），由 main() 重设；
+                                 # 显式 enh2/enh/strict 为覆盖。模块导入默认值不影响实际运行。
+                                 # enh2=market_ok_enh2(广度+波动率确认, auto 的基准/回退档)；
                                  # enh=market_ok_enh(旧增强)；strict=market_ok(旧严格)
+# 口径规则版本：enh2/enh/strict 为冻结固定档（legacy），auto 为登记实验参数（票 02）。
+# 逐日市况表 / 启动日志统一带此值，便于分辨「已登记重跑」与「静默调参」。
+RULE_VERSION_FIXED = "fixed_v1"
+RULE_VERSION_AUTO = "auto_v1"
+_REGIME_OVERRIDE: Optional[str] = None   # 显式档位覆盖标记（None=自动，供启动日志）
 _BEAR_CONFIRM_MIN = 2            # bear 日弱信号所需的强势确认数（锚或 bear 族命中），旧行为=1
 _HANDOFF_MODE = "score"          # handoff 口径：score=共振强度评分排序(默认)；gate=旧硬门槛
 _ENSEMBLE_CLASSIC = False        # True=旧 3 组件二值 ensemble；False=6 组件连续强度 ensemble
@@ -988,13 +995,15 @@ def compute_market_ok(index_df: pd.DataFrame, stock_df: Optional[pd.DataFrame] =
       - market_ok_enh（增强, P0-1）: 严格条件 OR (指数 > MA20 且 MA20 上行)，
         放宽 MA60/MA5 要求以减少空仓天数（WFO Exp2c：年化 4.6%→18-21%，
         回撤 12.7%→10.8%，代价是胜率微降 ~1.5pct）
-      - market_ok_enh2（P1 批次2, 默认）: market_ok_enh 再叠加
+      - market_ok_enh2（P1 批次2, auto 的基准/回退档）: market_ok_enh 再叠加
         市场广度（close>ma20 的股票占比 >= 0.45）与指数 20 日年化波动率
         分位（<= 0.85，高波动恐慌期不开仓）双重确认；stock_df 缺失或
         列不全时退化为 market_ok_enh（不误杀）
       - regime（P1-4）: bull/range/bear 三态市况，供策略分族调度
     返回 DataFrame,含 date、market_ok(bool)、market_ok_enh(bool)、
-    market_ok_enh2(bool)、regime(str)五列。
+    market_ok_enh2(bool)、regime(str)、breadth(float)、vol_pct(float) 七列；
+    vol_pct 为 enh2 定义所用「指数 20 日年化波动率扩展分位」原值，随结果导出
+    供逐日市况表离线复算（票 01 观测前置；不改变任何可开仓判定）。
     """
     df = index_df.sort_values("date").reset_index(drop=True).copy()
     close = df["index_close"]
@@ -1037,6 +1046,8 @@ def compute_market_ok(index_df: pd.DataFrame, stock_df: Optional[pd.DataFrame] =
     vol_ok = vol_pct.fillna(0.0).le(0.85)
     df["market_ok_enh2"] = df["market_ok_enh"] & breadth_ok & vol_ok
     df["breadth"] = breadth_vals
+    # 导出 enh2 定义实际使用的波动率分位原值（票 01 观测前置），值不变、不改判定。
+    df["vol_pct"] = vol_pct.reset_index(drop=True)
     n_enh = int(df["market_ok_enh"].sum())
     n_enh2 = int(df["market_ok_enh2"].sum())
     logger.info(f"市场环境: enh 可开仓 {n_enh}/{len(df)} ({n_enh/len(df)*100:.1f}%), "
@@ -1050,7 +1061,73 @@ def compute_market_ok(index_df: pd.DataFrame, stock_df: Optional[pd.DataFrame] =
     regime[(close < df["idx_ma60"]) & (slope5 < 0)] = "bear"
     df["regime"] = regime
 
-    return df[["date", "market_ok", "market_ok_enh", "market_ok_enh2", "regime", "breadth"]]
+    return df[["date", "market_ok", "market_ok_enh", "market_ok_enh2", "regime", "breadth", "vol_pct"]]
+
+
+# ─── 逐日市况观测（票 01：观测 seam，不改变任何可开仓判定） ───────────────────
+# 只把 compute_market_ok 已算好的列写入既有 result/ 出口，供离线复算「哪天被判成
+# 哪一档」；不新增平行目录、不新增参数、不写死路径（out_dir 由调用方传入）。
+DAILY_REGIME_COLUMNS = (
+    "date", "market_ok", "market_ok_enh", "market_ok_enh2", "regime", "breadth", "vol_pct",
+)
+# 票 02 的逐日选档序列列（auto 口径下由 select_auto_regime_mode 追加），
+# 追加导出以便离线复算「哪天被判成哪一档」；固定三档口径下不含这两列。
+DAILY_REGIME_AUTO_COLUMNS = ("auto_mode", "market_ok_auto")
+
+
+def write_daily_regime_table(regime_df: pd.DataFrame, out_dir: str = "result/") -> str:
+    """把逐日市况表写入既有 result/ 出口，返回 CSV 路径。
+
+    校验前置：空表或漏列直接 ValueError（不静默返回空产物）。同一数据快照
+    两次写入逐位一致；只产出单个 CSV，不创建平行目录。若输入含
+    ``auto_mode`` / ``market_ok_auto``（auto 口径选档结果），一并追加导出。
+    """
+    if regime_df is None or regime_df.empty:
+        raise ValueError("逐日市况表为空：拒绝写入空产物（缺失不静默放行）")
+    missing = [c for c in DAILY_REGIME_COLUMNS if c not in regime_df.columns]
+    if missing:
+        raise ValueError(f"逐日市况表缺列: {', '.join(missing)}（含 vol_pct）")
+    columns = list(DAILY_REGIME_COLUMNS) + [
+        c for c in DAILY_REGIME_AUTO_COLUMNS if c in regime_df.columns
+    ]
+    out_path = Path(out_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+    csv_path = out_path / "daily_regime.csv"
+    table = regime_df.loc[:, columns].copy()
+    table["date"] = pd.to_datetime(table["date"]).dt.strftime("%Y-%m-%d")
+    table.to_csv(csv_path, index=False, encoding="utf-8-sig")
+    return str(csv_path)
+
+
+def format_regime_log_summary(regime_df: pd.DataFrame, rule_version: str,
+                              override_mode: Optional[str] = None,
+                              auto_modes: Optional[pd.Series] = None) -> str:
+    """拼装启动日志用的口径摘要串：规则版本 + 覆盖标记 + 逐日序列计数。
+
+    保持 docs/backtest-runbook.md §3「先确认这两行」的单行可读性；auto_modes
+    为票 02 的逐日选档序列，给出档位分布（票 01 下为 None 时只报三列计数）。
+    """
+    parts = [f"规则版本={rule_version}", f"口径={format_override_marker(override_mode)}"]
+    for col in ("market_ok", "market_ok_enh", "market_ok_enh2"):
+        parts.append(f"{col}={int(regime_df[col].fillna(False).astype(bool).sum())}/{len(regime_df)}")
+    if auto_modes is not None:
+        counts = auto_modes.value_counts().to_dict()
+        seq = ",".join(f"{k}:{counts.get(k, 0)}" for k in ("enh", "enh2"))
+        parts.append(f"逐日选档序列={seq}")
+    return " | ".join(parts)
+
+
+def export_daily_regime(regime_df: pd.DataFrame, out_dir: str, rule_version: str,
+                        override_mode: Optional[str] = None,
+                        auto_modes: Optional[pd.Series] = None) -> str:
+    """观测 seam 的统一入口：写逐日市况表 + 打一行口径摘要日志。
+
+    main() 在 compute_market_ok 合并处只调这一个函数；返回 CSV 路径。
+    """
+    path = write_daily_regime_table(regime_df, out_dir)
+    summary = format_regime_log_summary(regime_df, rule_version, override_mode, auto_modes)
+    logger.info(f"逐日市况: {summary} | 产物: {path}")
+    return path
 
 
 # ─── 财务质量过滤(ann_date 对齐防前视偏差,B3) ─────────────────────────────────
@@ -2205,21 +2282,109 @@ def _volume_ratio_ok(df: pd.DataFrame) -> pd.Series:
 
 
 def _regime_col(mode: Optional[str] = None) -> str:
-    """当前 _REGIME_MODE 对应的市场环境列名（回测/验证/handoff/统计统一口径）。"""
+    """当前 _REGIME_MODE 对应的市场环境列名（回测/验证/handoff/统计统一口径）。
+
+    auto 映射到由 select_auto_regime_mode 逐日填好的 market_ok_auto 列；
+    下游（_entry_mask / 验证统计 / handoff / 打印）无需另开分支即沿用该列。
+    """
     m = mode or _REGIME_MODE
     if m == "strict":
         return "market_ok"
     if m == "enh":
         return "market_ok_enh"
+    if m == "auto":
+        return "market_ok_auto"
     return "market_ok_enh2"
+
+
+# ─── auto 口径逐日选择器（ADR 0006 / 票 02 主 seam） ─────────────────────────
+# 保守门控规则版本与阈值：登记为已登记实验参数（定义冻结、阈值登记），单值入
+# config_hash。逐日序列是数据的确定性函数，不单独入哈希、不引入前视。
+# 注意：以下阈值是 auto 选择器**自己的**已登记参数，与 compute_market_ok 里
+# 冻结 enh2 定义的内联 0.45 / 0.85 字面量刻意解耦——两者当前取值相同，但
+# 「冻结定义」与「已登记规则」必须能独立演进（auto_v2 改阈值不得改写 enh2）。
+AUTO_MIN_BREADTH = 0.45               # auto 放宽的广度下限（已登记实验参数）
+AUTO_MAX_VOL_PCT = 0.85               # auto 放宽的波动率分位上限（已登记实验参数）
+AUTO_FALLBACK_MODE = "enh2"           # 默认/冲突/缺失回退档
+AUTO_RELAXED_MODE = "enh"             # 放宽档（strict 永不自动选中）
+
+
+def select_auto_regime_mode(regime_df: pd.DataFrame) -> pd.DataFrame:
+    """逐日把冻结的三列市况解析为 auto 选档（主 seam 的纯数据函数）。
+
+    返回原 DataFrame 的副本，新增两列：
+      - ``auto_mode``：逐日选档（"enh" / "enh2"）；
+      - ``market_ok_auto``：所选档位对应的**冻结列**布尔值（不重算定义）。
+
+    规则：仅当 ``regime=bull`` 且 ``breadth>=AUTO_MIN_BREADTH`` 且
+    ``vol_pct<=AUTO_MAX_VOL_PCT`` 时放宽到 enh；其余（bear / 高波动 / range /
+    缺失 / 异常）一律回退 enh2 并对缺失打 WARNING。strict 不在输出集内。
+    只用当日行（as-of），不读未来行、不用全期占比或事后统计量。
+    """
+    required = ("market_ok", "market_ok_enh", "market_ok_enh2", "regime", "breadth", "vol_pct")
+    missing = [c for c in required if c not in regime_df.columns]
+    if missing:
+        raise ValueError(f"逐日市况表缺列，无法执行 auto 选档: {', '.join(missing)}")
+
+    out = regime_df.copy()
+    n = len(out)
+    mode = pd.Series(AUTO_FALLBACK_MODE, index=out.index, dtype=object)
+
+    regime = out["regime"].astype("string")
+    breadth = pd.to_numeric(out["breadth"], errors="coerce")
+    vol_pct = pd.to_numeric(out["vol_pct"], errors="coerce")
+
+    # 缺失/异常检测：与既有 fillna(1.0)/fillna(0.0) 的「当日无值」容错区分，
+    # 缺失必须回退 enh2，不得静默当成满足条件。
+    # vol_pct 在扩展波动率分位的预热期（前 ~20 日）天然为 NaN，属正常 warm-up
+    # 而非「数据缺失」：不计入 WARNING 的 invalid，但仍按保守口径回退 enh2
+    # （vol_pct 不可判定 ⇒ 不放宽），避免每次 auto 运行都刷无意义告警。
+    invalid = (
+        regime.isna() | ~regime.isin(["bull", "range", "bear"])
+        | breadth.isna()
+    )
+    if bool(invalid.any()):
+        logger.warning(
+            "auto 选档：%d/%d 个交易日 regime/breadth 缺失或异常，按 %s 回退（不静默放行）",
+            int(invalid.sum()), n, AUTO_FALLBACK_MODE,
+        )
+    warmup_vol = vol_pct.isna()
+    if bool(warmup_vol.any()):
+        logger.info(
+            "auto 选档：%d/%d 个交易日 vol_pct 处于预热期不可判定，按 %s 回退（正常 warm-up）",
+            int(warmup_vol.sum()), n, AUTO_FALLBACK_MODE,
+        )
+
+    qualified = (
+        (regime == "bull")
+        & breadth.ge(AUTO_MIN_BREADTH).fillna(False)
+        & vol_pct.fillna(float("inf")).le(AUTO_MAX_VOL_PCT)
+        & ~invalid
+    )
+    mode[qualified] = AUTO_RELAXED_MODE
+    out["auto_mode"] = mode
+
+    # 按所选档位取对应冻结列的值（定义不重算），缺失时按 enh2 列。
+    enh = out["market_ok_enh"].fillna(False).astype(bool)
+    enh2 = out["market_ok_enh2"].fillna(False).astype(bool)
+    out["market_ok_auto"] = enh.where(mode == AUTO_RELAXED_MODE, enh2)
+    return out
+
+
+def format_override_marker(override_mode: Optional[str] = None) -> str:
+    """启动日志用的覆盖标记：显式档位与自动判断必须可分辨。"""
+    if override_mode in ("enh2", "enh", "strict"):
+        return f"覆盖({override_mode})"
+    return "自动(auto)"
 
 
 def _entry_mask(df: pd.DataFrame, enhanced: bool = False, name: Optional[str] = None) -> pd.Series:
     """统一的买入可成交性掩码:剔除涨跌停日,并叠加市场环境、
     主力资金、市值、量比、财务质量过滤(回测/验证/推荐共用)。
 
-    市场环境列由全局 _REGIME_MODE 决定（--regime-mode）：enh2=market_ok_enh2
-    （默认，广度+波动率确认）、enh=market_ok_enh、strict=market_ok；
+    市场环境列由全局 _REGIME_MODE 决定（--regime-mode，ADR 0006）：
+    auto=market_ok_auto（默认，逐日自动选档结果）、enh2=market_ok_enh2
+    （auto 的基准/回退档，广度+波动率确认）、enh=market_ok_enh、strict=market_ok；
     enhanced=False 仅在显式严格模式（--strict/--regime-mode strict）下等价。
     目标列缺失时（如 regime 加载失败）退化为不过滤，保持旧容错行为。
 
@@ -4294,6 +4459,9 @@ _REGISTERED_EXPERIMENT_DEFAULTS = {
     "target_positions": None,
     "cash_buffer_pct": 0.0,
     "rank_mode": "lead_exp_first",
+    # ADR 0006：auto 选择器规则版本属已登记实验参数（定义冻结、阈值登记）。
+    # 默认值 "enh2" 与冻结基线一致；auto 运行由 _portfolio_sim_config 显式注入 "auto_v1"。
+    "regime_selector": "enh2",
 }
 _REGISTERED_EXPERIMENT_FAMILY_CAP = {"trend": 3}
 
@@ -4308,12 +4476,17 @@ def _registered_experiment_override(param: str, value: Any) -> Any:
     return value
 
 
-def _portfolio_sim_config() -> SimConfig:
+def _portfolio_sim_config(regime_mode: Optional[str] = None) -> SimConfig:
     """构造 T0.1 冻结配置，并校验 metric contract §2.1 的两类参数。
 
     度量画像（_METRIC_PROFILE_*）不符 → `RuntimeError`（契约变更须走 ADR）；
     已登记实验参数默认值不符 → 同样 `RuntimeError`（禁止静默改默认），
     但允许经显式登记路径覆盖（附 warning 且改变 `config_hash`）。
+
+    ``regime_mode``：ADR 0006 的 auto 默认。为 ``"auto"`` 时显式把已登记实验参数
+    ``regime_selector`` 注入为规则版本 ``auto_v1``（与冻结默认 ``enh2`` 不同，
+    故经 _HASH_OPTIONAL_KEYS 弹出后仍留在 config_hash 里，默认翻转可被察觉）；
+    其余取值（含显式 ``enh2``）保持 ``enh2``，冻结基线哈希逐位不变。
     """
     cfg = SimConfig()
     mismatches: List[str] = []
@@ -4384,6 +4557,16 @@ def _portfolio_sim_config() -> SimConfig:
                 cfg.rank_mode, rank_override,
             )
             cfg = replace(cfg, rank_mode=rank_override)
+    # ADR 0006：auto 口径把规则版本作为单值注入 config_hash（已登记重跑，非静默调参）。
+    if regime_mode == "auto":
+        selector = _registered_experiment_override("regime_selector", RULE_VERSION_AUTO)
+        if selector != cfg.regime_selector:
+            logger.warning(
+                "口径规则版本（已登记实验参数）：regime_selector 由冻结默认 %r 改为 %r"
+                "（auto 默认口径，非静默调参）",
+                cfg.regime_selector, selector,
+            )
+            cfg = replace(cfg, regime_selector=selector)
     return cfg
 
 
@@ -4616,7 +4799,7 @@ def _run_portfolio_sim_chain(sim_bars: pd.DataFrame, pre_resonance: Dict[str, pd
                              df_bt: pd.DataFrame, industry_members: Optional[pd.DataFrame],
                              sim_window: Optional[str], sim_out: str) -> Dict:
     """T0.1 S4：build → 去簇共振 → 因果期望 → collapse → simulate（不写 results）。"""
-    cfg = _portfolio_sim_config()
+    cfg = _portfolio_sim_config(regime_mode=_REGIME_MODE)
     warnings: List[str] = []
     book = dict(pre_resonance)
 
@@ -6108,23 +6291,18 @@ def is_trading_day(date):
 # 主函数
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def main(argv=None):
-    """主流程：交易日检查 -> 数据加载 -> 复权 -> 指标 -> 回测 -> 验证 -> 推荐 -> 主程序。
-
-    区间划分（基于最近交易日集合）：
-      - 回测区间：最早交易日 ~ 倒数第 6 个交易日
-      - 验证区间：倒数第 5 个交易日 ~ 最后 1 个交易日
-    非交易日默认退出，--force 可强制运行。
-    """
+def _build_parser() -> argparse.ArgumentParser:
+    """构造 CLI parser（单独函数便于测试默认/覆盖语义，不改变既有参数集合）。"""
     parser = argparse.ArgumentParser()
     _add_universe_argument(parser)
     parser.add_argument("--force", action="store_true", help="强制运行（非交易日也执行）")
     parser.add_argument("--strict", action="store_true",
-                        help="使用严格 regime（market_ok）替代默认的 enhanced regime（market_ok_enh，P0-1）")
-    parser.add_argument("--regime-mode", choices=["enh2", "enh", "strict"], default=None,
-                        help="市场环境口径（P1 批次2）：enh2=market_ok_enh2（默认，enh 再叠加市场广度≥0.45 "
-                             "与指数 20 日波动率分位≤0.85 双重确认）；enh=旧 market_ok_enh；"
-                             "strict=旧 market_ok。未显式指定时由 --strict 决定（strict 传参等价 strict）")
+                        help="严格 regime 逃生舱（market_ok）：等价 --regime-mode strict，优先级低于显式 --regime-mode（ADR 0006）")
+    parser.add_argument("--regime-mode", choices=["auto", "enh2", "enh", "strict"], default=None,
+                        help="市场环境口径（ADR 0006）：auto=逐日按市况自动判断（默认，不传参即启用）；"
+                             "enh2=market_ok_enh2（冻结基线，广度≥0.45 且波动率分位≤0.85 双重确认）；"
+                             "enh=旧 market_ok_enh；strict=旧 market_ok。显式传档位为覆盖并在启动日志标注；"
+                             "未显式指定且传 --strict 时等价 strict（旧逃生舱不变）")
     parser.add_argument("--bear-confirm", type=int, default=None,
                         help="bear 日弱信号所需强势确认数（P1 批次2，默认 2；旧行为传 1）")
     parser.add_argument("--handoff-mode", choices=["score", "gate"], default=None,
@@ -6267,6 +6445,30 @@ def main(argv=None):
     parser.add_argument("--no-exit-diagnostics", action="store_true",
                         help="关闭出场诊断列（A1/A2，默认开启）：dyn_reason/dyn_mae/dyn_mfe 每"
                              "持有期 3 列会增加内存占用（580 万行约 +400MB），低内存环境可关闭")
+    return parser
+
+
+def resolve_regime_mode(args: argparse.Namespace) -> str:
+    """口径解析统一入口（主 seam）：把 CLI 语义解析为具体口径取值。
+
+    优先级：显式 --regime-mode > --strict > 默认 auto（ADR 0006 翻转默认值）。
+    """
+    if args.regime_mode is not None:
+        return args.regime_mode
+    if args.strict:
+        return "strict"
+    return "auto"
+
+
+def main(argv=None):
+    """主流程：交易日检查 -> 数据加载 -> 复权 -> 指标 -> 回测 -> 验证 -> 推荐 -> 主程序。
+
+    区间划分（基于最近交易日集合）：
+      - 回测区间：最早交易日 ~ 倒数第 6 个交易日
+      - 验证区间：倒数第 5 个交易日 ~ 最后 1 个交易日
+    非交易日默认退出，--force 可强制运行。
+    """
+    parser = _build_parser()
     args = parser.parse_args(argv)
 
     global _UNIVERSE, _PIT_UNIVERSE_WARNING
@@ -6329,10 +6531,14 @@ def main(argv=None):
     if _regime_soft_from_env:
         args.regime_soft = True
 
-    # P0 默认启用 enhanced regime + 共振≥2；P2 默认启用行业动量（P2-7 实测最优）。
-    # 旧行为分别通过 --strict / --resonance 1 / --no-industry-momentum 显式回退。
-    global _REGIME_MODE, _BEAR_CONFIRM_MIN, _HANDOFF_MODE, _ENSEMBLE_CLASSIC
-    _REGIME_MODE = args.regime_mode or ("strict" if args.strict else "enh2")
+    # 默认口径 auto（ADR 0006），enhanced 由其 != "strict" 推出；共振≥2 与行业动量仍默认启用。
+    # 旧行为分别通过 --regime-mode strict / --resonance 1 / --no-industry-momentum 显式回退。
+    global _REGIME_MODE, _REGIME_OVERRIDE, _BEAR_CONFIRM_MIN, _HANDOFF_MODE, _ENSEMBLE_CLASSIC
+    # ADR 0006：默认翻转为 auto；显式档位与 --strict 逃生舱优先级不变。
+    # 覆盖标记以「解析后的口径」为准：--strict 未显式传 --regime-mode 也属 fixed 覆盖，
+    # 否则启动日志/逐日表会把 strict 运行误标成 auto（C6 复核修正）。
+    _REGIME_MODE = resolve_regime_mode(args)
+    _REGIME_OVERRIDE = None if _REGIME_MODE == "auto" else _REGIME_MODE
     if args.bear_confirm is not None:
         _BEAR_CONFIRM_MIN = max(1, args.bear_confirm)
     _HANDOFF_MODE = args.handoff_mode or "score"
@@ -6513,6 +6719,8 @@ def main(argv=None):
     else:
         confluence_label = "未启用"
     logger.info(f"市场环境: regime-mode={_REGIME_MODE} ({_regime_col()})"
+                f" | 口径标记: {format_override_marker(_REGIME_OVERRIDE)}"
+                f" | 规则版本: {RULE_VERSION_AUTO if _REGIME_MODE == 'auto' else RULE_VERSION_FIXED}"
                 f" | 共振门槛: {'同股同日≥' + str(args.resonance) + '策略' if args.resonance > 1 else '未启用'}"
                 f"{'(分层)' if args.resonance_layered else ''}"
                 f" | 市况分族: {regime_label}"
@@ -6607,12 +6815,30 @@ def main(argv=None):
                 n_ok = int(regime_df[col].sum())
                 logger.info(f"市场环境 {col}: {n_ok}/{len(regime_df)} 个交易日可开仓 "
                             f"({n_ok/len(regime_df)*100:.1f}%)")
+        # 票 02 主 seam：auto 口径在合并前逐日解析出 market_ok_auto / auto_mode，
+        # 三列冻结定义不变；下游 _regime_col("auto") 统一指向 market_ok_auto。
+        _auto_modes = None
+        if _REGIME_MODE == "auto":
+            regime_df = select_auto_regime_mode(regime_df)
+            _auto_modes = regime_df["auto_mode"]
         df_all = df_all.merge(regime_df, on="date", how="left")
         for col in ("market_ok", "market_ok_enh", "market_ok_enh2"):
             if col in df_all.columns:
                 df_all[col] = df_all[col].fillna(False).astype(bool)
+        if "market_ok_auto" in df_all.columns:
+            df_all["market_ok_auto"] = df_all["market_ok_auto"].fillna(False).astype(bool)
         if "breadth" in df_all.columns:
             df_all["breadth"] = df_all["breadth"].fillna(1.0)
+        # 票 01 观测前置 + 票 02 序列摘要：逐日市况表写入既有 result/ 出口，
+        # 启动日志表达规则版本 / 覆盖标记 / 逐日选档序列；不新增平行目录。
+        try:
+            _override = _REGIME_OVERRIDE
+            # 规则版本以解析后的口径为准，与启动日志同一判据（auto → auto_v1，其余 → fixed_v1）。
+            _rule_version = RULE_VERSION_AUTO if _REGIME_MODE == "auto" else RULE_VERSION_FIXED
+            export_daily_regime(regime_df, _PORTFOLIO_SIM_OUT, _rule_version,
+                                _override, _auto_modes)
+        except Exception as e:
+            logger.warning(f"逐日市况表落盘失败（不影响回测判定）: {e}")
         del df_index, regime_df
         gc.collect()
     except Exception as e:
@@ -6620,7 +6846,13 @@ def main(argv=None):
         df_all["market_ok"] = True
         df_all["market_ok_enh"] = True
         df_all["market_ok_enh2"] = True
+        # auto 口径下补齐选档列，避免 _regime_col("auto") 指向的列缺失而走
+        # _entry_mask 的 fallback 链（旧行为同样是「全部放行」，此处显式对齐）。
+        df_all["market_ok_auto"] = True
+        df_all["auto_mode"] = "enh2"
         df_all["breadth"] = 1.0
+        df_all["vol_pct"] = 0.0
+        df_all["regime"] = "range"
 
     # 财务质量过滤:按 ann_date 对齐(防前视偏差)
     try:

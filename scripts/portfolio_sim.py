@@ -53,7 +53,7 @@ STRATEGY_FAMILY: dict[str, str] = {
 
 _SIZE_MODES = ("fixed_1n", "deploy_aware")
 _RANK_MODES = ("lead_exp_first", "resonance_first")
-_HASH_OPTIONAL_KEYS = ("size_mode", "target_positions", "cash_buffer_pct", "rank_mode")
+_HASH_OPTIONAL_KEYS = ("size_mode", "target_positions", "cash_buffer_pct", "rank_mode", "regime_selector")
 
 
 @dataclass(frozen=True)
@@ -86,6 +86,12 @@ class SimConfig:
     cash_buffer_pct: float = 0.0
     # Card C ordering knob: only the first two same-day sort keys move (see _RANK_KEYS).
     rank_mode: str = "lead_exp_first"
+    # ADR 0006 / spec auto-regime-mode: registered experiment param. The frozen
+    # legacy default is "enh2" (matches the published baseline hash). When the
+    # driver runs with the new `auto` default it explicitly injects "auto_v1";
+    # that value differs from the default so it survives the optional-key pop
+    # and changes config_hash. An explicit `--regime-mode enh2` stays byte-identical.
+    regime_selector: str = "enh2"
     vote_exclude: Tuple[str, ...] = (
         "box_oscillation",
         "chan_theory",

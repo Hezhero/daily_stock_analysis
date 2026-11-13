@@ -1,6 +1,6 @@
 # 0006. 市场环境口径默认改为逐日自动判断
 
-- 状态: 已接受（2026-11-12，用户显式拍板；代码尚未实现）
+- 状态: 已接受（2026-11-12，用户显式拍板）；已实现（2026-11-12，集成分支 `auto-regime-mode-integration`）
 
 ## 背景
 
@@ -61,8 +61,19 @@
   防守族半仓的保守路径仍保留为显式 opt-in。若 A/B 显示弱市净贡献为负，回滚为把默认值
   改回 `enh2` 并作废本 ADR。
 
-## 未实现
+## 实现记录（2026-11-12）
 
-本 ADR 只记录设计决定。`--regime-mode auto` 的 CLI 默认值、选择器实现、`config_hash` 登记、
-启动日志、逐日市况表落盘、`.env.example` / `docs/CHANGELOG.md` / 指标契约 / runbook 的
-代码级同步，均留待独立的改动轮；届时按 `docs/agents/validation-matrix.md` 走验证矩阵。
+- CLI 默认翻为 `auto`（第 4 个取值，非新开关）；显式 `enh2` / `enh` / `strict` 覆盖并
+  在启动日志标注「覆盖(档位)」；`--strict` 逃生舱优先级不变。
+- 主 seam = `select_auto_regime_mode()` 逐日解析统一入口，产出 `auto_mode` 与
+  `market_ok_auto`（取冻结列值、不重算定义）；`_regime_col("auto")` 指向该列，
+  `_entry_mask` / 验证统计 / handoff / 打印无需另开分支。
+- 观测 seam = `result/daily_regime.csv`（既有 result/ 出口，含逐日七列 + auto 序列列）与
+  启动日志「规则版本 / 覆盖标记 / 逐日选档序列」。
+- 治理：`regime_selector` 登记为已登记实验参数（默认值 `enh2` 与冻结基线一致）；运行
+  `auto` 时驱动显式注入规则版本 `auto_v1`（≠ 默认值 → 经 `_HASH_OPTIONAL_KEYS` 弹出后
+  仍留在 `config_hash`），显式 `--regime-mode enh2` 的冻结基线哈希逐位不变。
+  采用「保持已发布哈希 + 运行时注入」而非重算基线，以同时满足默认翻转可察觉与历史
+  结果逐位可复现（详见 `result/指标契约_metric_contract_v1_20261017.md` §2.1）。
+- 待验证项（A/B 实验卡，票 03）：同一天四口径对照、`0/5` 改善幅度、CAGR/maxDD/胜率与
+  过拟合风险；本实现不承诺减少 0 推荐或提高收益，回滚方式见「后果」段。
