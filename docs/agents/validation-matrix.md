@@ -49,6 +49,17 @@ activate `daily_stock_analysis` first or pass `-Python <path>`. Do not run two
 conda-resolving helpers concurrently: `conda run` can lock and the resolver falls back to
 `python` on PATH, which then fails on plugins such as `pytest-timeout`.
 
+`conda run ... python -c` takes a **single line**. A multi-line `-c` body fails with
+`NotImplementedError: Support for scripts where arguments contain newlines not implemented`
+and dumps a full conda error report. Write the body to a file and run that file:
+
+```bash
+conda run --live-stream -n daily_stock_analysis python scripts/_tmp_probe.py
+```
+
+Put throwaway scripts under `scripts/` with a `_tmp_` prefix, and delete them in the same
+command that runs them (`... && rm -f scripts/_tmp_probe.py`), so they never reach a commit.
+
 ### Fast iteration loop
 
 The full suite is delivery evidence, not an edit loop:
@@ -68,6 +79,20 @@ gate after the last fix. When review fixes land, re-run only the touched files p
 test that caught a regression; run the full gate once at the very end. If a review agent
 reads a diff snapshot, regenerate that snapshot after every fix batch so it never reviews
 stale code.
+
+#### Throwaway verification scripts point at temp dirs
+
+A one-off script written to prove a code path works is still a *destructive* actor: the
+function it calls deletes, writes, or trims real files. Point it at a temp dir
+(`tempfile.TemporaryDirectory()`, or pytest's `tmp_path`) and let it operate on copies.
+
+Reach a real path (a cache dir, `result/`, `logs/`) only when the run is genuinely
+non-destructive, and say so in the script's first line. Copy first, operate on the copy,
+otherwise.
+
+The failure this prevents is silent and expensive: exercising a real `data/cache/` deletion
+path removes the developer's real cache, and any fixture file left behind becomes a *false
+cache hit* that the next real run consumes as if it were real data.
 
 ## CI unavailable: WSL fallback
 
