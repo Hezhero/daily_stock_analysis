@@ -64,3 +64,4 @@ N 个（新增 `--cache-keep N`，默认 1，`0` = 不删除），只删本 driv
   缓解：`docs/backtest-runbook.md` §3.1 已加醒目提醒（需要跨口径保留时传更大 `--cache-keep`，
   或跑 `l-only` 前先备份其缓存）。**未实现按口径分组保留**——那是行为变更且属破坏性默认值，
   按 `CODING_STANDARDS.md`「破坏性默认行为必须落票」需另开票重新裁决。
+  → 已由票 [02](02-no-grouped-retention.md) 裁决：**保持不分组**，理由与代价见该票。

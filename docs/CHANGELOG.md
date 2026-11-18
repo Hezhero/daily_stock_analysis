@@ -1,4 +1,5 @@
 ## [Unreleased]
+- [文档] 缓存保留边界裁决（票 02，2026-11-18）：`--cache-keep` **不**按股票池口径 / `inst-window` 分组，仍按 mtime 全局保留最新 N 个——这是显式裁决而非遗漏（理由：分组会让「每组 N 个还是总数 N 个」的语义更难解释，而全局 1 个已消除 13GB 累积的主诉求）。代价已写入 `docs/backtest-runbook.md` §3.1：`l-only` 冻结基线缓存可能与 `pit` 互相覆盖，需跨口径共存时传更大 `--cache-keep` 或先备份。
 - [chore] 换行符策略收口：`.gitattributes` 新增 `* text=auto`（仓库存 LF、由 `core.autocrlf` 决定检出）+ `*.bat`/`*.cmd text eol=crlf`；配套 `git config core.autocrlf true`。根因是此前 `core.autocrlf` 未设、`.py`/`.md` 工作区与索引行尾不一致，导致每次编辑器写入都产生整文件 diff。已存在的 `tdx_mcp_output/*.csv`（35 个、索引内 CRLF、已被 gitignore）按用户裁决保持不动。
 - [chore] 协作规则再收口：`AGENTS.md` §8.1 的 review 反馈收敛细则与 PR 审查顺序/阻断条件下沉到 `docs/agents/review-rules.md`，AGENTS.md 保留硬规则 + 一行指针（258 → 219 行）；四个测试文件重复的 `_load_driver` 收敛到 `tests/_driver.py`（净删 55 行）；`docs/backtest-runbook.md` §3.1 补「缓存保留不区分股票池口径」的已知局限提醒。
 - [文档] 协作规则收口（2026-11-18 retro）：`CODING_STANDARDS.md` 新增三节——「扫描目录后删除或改写文件」（先收集元数据再排序、按文件粒度容错、必须有文件消失测试）、「默认值与开关」（默认值单常量 + help 用 f-string + 测试锁定四处一致）、「破坏性默认行为必须落票」（点明 `check_spec_tickets.py` 对缺失的票是盲的）；`docs/agents/validation-matrix.md` 新增「一次性验证脚本指向临时目录」与「`conda run -c` 只能单行」两条指引。

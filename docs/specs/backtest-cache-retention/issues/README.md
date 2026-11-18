@@ -1,12 +1,13 @@
 # 票索引
 
-准备态缓存保留策略的票按编号推进；**下一个可用编号：02**。
+准备态缓存保留策略的票按编号推进；**下一个可用编号：03**。
 
 状态取值见 `docs/agents/triage-labels.md`（含终态 `done`）。`ready-for-agent` 且依赖全清的那一张就是当前 frontier。
 
 | 票 | 主题 | 状态 | 依赖 |
 | --- | --- | --- | --- |
 | [01](01-prepared-cache-retention.md) | 准备态缓存保留策略（`--cache-keep`） | done | — |
+| [02](02-no-grouped-retention.md) | 缓存保留**不**按口径分组（显式裁决） | done | 01 |
 
 ## 开新票前的两句提醒
 
