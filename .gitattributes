@@ -3,6 +3,15 @@
 # 适用于 append-only 的 changelog 文件。
 docs/CHANGELOG.md merge=union
 
+# === 全局换行策略 ===
+# 仓库内一律存 LF；检出时由 core.autocrlf 决定（本项目建议 true → 本地 CRLF）。
+# 这里只声明「文本文件」，不写 eol=lf——那会覆盖 core.autocrlf，使本地无法转 CRLF。
+* text=auto
+
+# Windows 批处理必须 CRLF，否则 cmd.exe 解析出错。
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
 # Documentation image/design assets are binary. Keep GitHub review diffs from
 # trying to decode moved binary files as UTF-8.
 sources/**/*.ai binary
