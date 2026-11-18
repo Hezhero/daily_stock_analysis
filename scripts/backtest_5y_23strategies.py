@@ -262,6 +262,8 @@ PRINT_PERIOD_DETAIL = True       # 打印分持有期明细表与出场原因分
 # 公告日计算过期（预告/龙虎榜），旧缓存无 close_raw 且保留陈旧信号，必须失效。
 CACHE_VERSION = "v2"
 CACHE_DIR = BASE_DIR / "data" / "cache"
+# 准备态缓存默认保留个数（--cache-keep 的唯一来源：CLI 默认、函数默认、文档与测试都引它）。
+CACHE_KEEP_DEFAULT = 1
 
 # ─── 信号质量过滤（P1） ────────────────────────────────────────────────────────
 MIN_CIRC_MV_W = 200000           # 最小流通市值（万元，即 20 亿），过滤易被操纵的小盘股
@@ -1564,16 +1566,116 @@ def load_prepared_cache(start: str, end: str, universe: str = UNIVERSE_DEFAULT):
 
 
 def write_prepared_cache(df: pd.DataFrame, start: str, end: str,
-                         universe: str = UNIVERSE_DEFAULT) -> None:
-    """写准备态缓存；失败仅告警不中断（磁盘不足/权限问题不应影响回测）。"""
+                         universe: str = UNIVERSE_DEFAULT) -> bool:
+    """写准备态缓存；失败仅告警不中断（磁盘不足/权限问题不应影响回测）。
+
+    返回是否写入成功——调用方据此决定能否执行「保留 N 个」的清理：
+    写失败（磁盘满是最常见原因）时旧缓存必须留着，那正是它还能派上用场的时候。
+    """
     try:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
         path = _prepared_cache_path(start, end, universe)
         t0 = time.time()
         df.to_parquet(path, index=False)
         logger.info(f"已写缓存 {path.name} ({len(df):,} 行, 耗时 {time.time()-t0:.1f}s)")
+        return True
     except Exception as e:
         logger.warning(f"缓存写入失败（不影响本次运行）: {e}")
+        return False
+
+
+def cleanup_prepared_cache(cache_dir: Path = CACHE_DIR,
+                           keep: int = CACHE_KEEP_DEFAULT) -> Dict[str, Any]:
+    """准备态缓存保留策略：只保留 mtime 最新的 N 个 backtest_*.parquet。
+
+    缓存文件名内嵌运行日期（``backtest_{start}_{end}_{ver}.parquet``），读取又只按
+    精确路径命中，所以**换一天运行必然 miss 并新增一个 ~800MB 文件**，目录只增不减
+    （2026-11-18 实测 16 个文件 / 13GB）。历史文件除「同一天重跑」外永不可读。
+
+    保留数按**文件 mtime**（真实写入时间）判定，而非文件名里的日期——文件名只是命名
+    约定，可被手工改名破坏。目录内其他文件（``akshare_name_map.json`` /
+    ``stocks.index.json``，分别被名称解析与前端索引使用）一律不碰。
+
+    清理是纯磁盘回收：删除失败只计入 failed 并告警，绝不中断回测。
+    ``keep=0`` 表示不删除。
+    """
+    stats: Dict[str, Any] = {"kept": 0, "deleted": 0, "deleted_bytes": 0, "failed": 0}
+    try:
+        if not cache_dir.exists():
+            return stats
+        # 先安全地收集候选：文件可能在 glob 与 stat 之间被删（并发运行 / 外部清理），
+        # is_file() 与排序键里的 p.stat() 都会抛错中断整轮清理，还让 kept 计数说谎。
+        dated: List[Tuple[float, str, Path]] = []
+        for path in cache_dir.glob("backtest_*.parquet"):
+            try:
+                if not path.is_file():
+                    continue
+                dated.append((path.stat().st_mtime, path.name, path))
+            except FileNotFoundError:
+                # 文件已被别处删除：目标已达成，不算失败。
+                logger.debug(f"缓存清理跳过（文件已不存在）: {path.name}")
+            except OSError as e:
+                stats["failed"] += 1
+                logger.warning(f"缓存清理跳过（无法读取文件属性）: {path.name}: {e}")
+        if not dated:
+            return stats
+        # mtime 降序：最新写入的在前；同 mtime 时用文件名兜底保证确定性。
+        dated.sort(key=lambda item: (-item[0], item[1]))
+        keep_n = max(0, int(keep))
+        if keep_n == 0:
+            # keep=0 = 不删除（保留全部历史缓存），不是「一个都不留」。
+            stats["kept"] = len(dated)
+            return stats
+        to_keep = dated[:keep_n]
+        to_delete = dated[keep_n:]
+        stats["kept"] = len(to_keep)
+        for _mtime, name, path in to_delete:
+            size = 0
+            try:
+                size = path.stat().st_size
+            except OSError:
+                # 文件可能刚被删掉：取不到大小不影响删除，继续删。
+                size = 0
+            try:
+                path.unlink()
+                stats["deleted"] += 1
+                stats["deleted_bytes"] += size
+            except FileNotFoundError:
+                # 已被别处删除：不算失败（目标已达成）。
+                stats["deleted"] += 1
+            except Exception as e:
+                stats["failed"] += 1
+                logger.warning(f"缓存清理失败（不影响本次运行）: {name}: {e}")
+        return stats
+    except Exception as e:
+        logger.warning(f"缓存清理异常（不影响本次运行）: {e}")
+        return stats
+
+
+def log_cache_cleanup_status(stats: Dict[str, Any]) -> None:
+    """打印一行缓存现状（总是打印，让「缓存占了多少」可观测）。"""
+    freed_gb = stats.get("deleted_bytes", 0) / 1e9
+    logger.info(
+        f"准备态缓存: 保留 {stats.get('kept', 0)} 个 | "
+        f"删除 {stats.get('deleted', 0)} 个（释放 {freed_gb:.1f} GB）"
+        + (f" | 失败 {stats['failed']} 个" if stats.get("failed") else "")
+    )
+
+
+def write_and_retain_prepared_cache(df: pd.DataFrame, start: str, end: str,
+                                     universe: str = UNIVERSE_DEFAULT,
+                                     keep: int = CACHE_KEEP_DEFAULT) -> bool:
+    """写准备态缓存并执行保留策略（写 → 清理 → 打印状态），返回是否写入成功。
+
+    调用点只有 main() 的缓存分支一处；「写成功才清理」是 2026-11-18 用户裁决
+    Q2 的保证：写失败（磁盘满最常见）时旧缓存正是还能用的那份，不能因这次写失败就删掉。
+    """
+    wrote = write_prepared_cache(df, start, end, universe=universe)
+    if not wrote:
+        return False
+    stats = cleanup_prepared_cache(CACHE_DIR, keep=keep)
+    log_cache_cleanup_status(stats)
+    return True
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -6377,6 +6479,10 @@ def _build_parser() -> argparse.ArgumentParser:
                              "close=信号日收盘（旧口径，用于复现历史数字）")
     parser.add_argument("--no-cache", action="store_true",
                         help="跳过已加载数据的 parquet 缓存（data/cache/），强制从 PG 重新加载")
+    parser.add_argument("--cache-keep", type=int, default=CACHE_KEEP_DEFAULT, metavar="N",
+                        help=f"准备态缓存保留个数（默认 {CACHE_KEEP_DEFAULT}）：写完新缓存后删除较旧的 "
+                             "backtest_*.parquet，按文件 mtime 保留最新 N 个；0=不删除（保留全部历史缓存）。"
+                             "同目录其他文件（akshare_name_map.json / stocks.index.json）不受影响")
     parser.add_argument("--portfolio-opt", action="store_true",
                         help="推荐列表组合优化：行业分散(≤2/行业)+持仓上限(≤10)（P3-12）")
     parser.add_argument("--ml-filter", action="store_true",
@@ -6769,7 +6875,13 @@ def main(argv=None):
         log_memory_usage("增强信号合并后")
         logger.info(f"准备态数据就绪，耗时 {time.time()-t_prep:.1f}s")
         if not args.no_cache:
-            write_prepared_cache(df_adjusted, anchored_start, today_str, universe=_UNIVERSE)
+            # 写 → 清理 → 打印状态：写成功才清理（写失败时旧缓存保留，见该函数 docstring）。
+            # --no-cache 不写缓存，故也不触发清理（它只管本次运行读写，不动历史缓存）；
+            # 缓存命中（同日重跑）路径不清理、不打印状态行（同上裁决）。
+            write_and_retain_prepared_cache(
+                df_adjusted, anchored_start, today_str,
+                universe=_UNIVERSE, keep=args.cache_keep,
+            )
 
     df_all = compute_indicators(df_adjusted)
     del df_adjusted
