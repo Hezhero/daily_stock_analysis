@@ -15,16 +15,13 @@ from re-running the implementation.
 
 from __future__ import annotations
 
-import importlib.util
-import os
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
 from scripts.portfolio_sim import _config_hash
-
-DRIVER = Path(__file__).resolve().parents[1] / "scripts" / "backtest_5y_23strategies.py"
+from tests._driver import load_driver as _load_driver
 
 # Published T0.1 frozen baseline (2026-10-17, project conda env).
 T01_BASELINE_CONFIG_HASH = "5eea05195af3d89432af8b2a049fde2517d6a53b"
@@ -38,17 +35,6 @@ DAILY_REGIME_COLUMNS = (
     "breadth",
     "vol_pct",
 )
-
-
-def _load_driver(log_dir: Path):
-    os.environ["LOG_DIR"] = str(log_dir)
-    spec = importlib.util.spec_from_file_location(
-        f"bt_driver_obs_{log_dir.name}", DRIVER
-    )
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def _index_frame(n: int = 80) -> pd.DataFrame:

@@ -18,20 +18,10 @@ These tests pin the externally observable retention behaviour:
 
 from __future__ import annotations
 
-import importlib.util
 import os
 from pathlib import Path
 
-DRIVER = Path(__file__).resolve().parents[1] / "scripts" / "backtest_5y_23strategies.py"
-
-
-def _load_driver(log_dir: Path):
-    os.environ["LOG_DIR"] = str(log_dir)
-    spec = importlib.util.spec_from_file_location(f"bt_cache_{log_dir.name}", DRIVER)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+from tests._driver import load_driver as _load_driver
 
 
 def _make_cache(cache_dir: Path, name: str, mtime: float) -> Path:

@@ -57,3 +57,10 @@ N 个（新增 `--cache-keep N`，默认 1，`0` = 不删除），只删本 driv
 - 复核未采纳的 review 建议：保留数按 mtime（用户裁决 Q4，review 建议改用文件名日期）、
   日志额外输出「失败 N 个」（必要的实现细化：Q5 要求失败可见）、日志附当前磁盘占用
   （review 建议；未采纳——那需要额外 stat 目录，且本轮 Q9 只要求 kept/deleted/freed）。
+- **已知局限（review J1，2026-11-18 用户裁决 C：不改行为、仅文档提醒）**：`keep=N` 按 mtime
+  全局保留，**不区分股票池口径**。`l-only` 的缓存名为 `backtest_{start}_{end}_v2.parquet`，
+  `pit` 为 `..._v2upit.parquet`，两者是不同文件，但清理用 `glob("backtest_*.parquet")` 一网打尽，
+  所以 `keep=1` 下用 `l-only` 复现冻结基线的缓存可能被随后的 `pit` 跑删掉。
+  缓解：`docs/backtest-runbook.md` §3.1 已加醒目提醒（需要跨口径保留时传更大 `--cache-keep`，
+  或跑 `l-only` 前先备份其缓存）。**未实现按口径分组保留**——那是行为变更且属破坏性默认值，
+  按 `CODING_STANDARDS.md`「破坏性默认行为必须落票」需另开票重新裁决。
